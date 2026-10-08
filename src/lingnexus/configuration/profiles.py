@@ -1,0 +1,108 @@
+"""Persist non-secret model profiles; runtime credentials deliberately stay in memory."""
+
+import json
+from threading import RLock
+
+from lingnexus.common.errors import NotFound, PermissionDenied
+from lingnexus.common.types import new_id
+from lingnexus.models import ModelProfile, RuntimeCredentials
+
+
+class Profiles:
+    def __init__(self, database):
+        self.database = database
+        self._keys: dict[str, tuple[str, str]] = {}
+        self._lock = RLock()
+
+    def save(
+        self,
+        name: str,
+        profile: ModelProfile,
+        *,
+        api_key: str | None = None,
+        profile_id: str | None = None,
+    ) -> dict:
+        if not name.strip():
+            raise ValueError("连接名称不能为空")
+        with self.database.transaction() as db, self._lock:
+            if (
+                profile_id
+                and not db.execute(
+                    "SELECT 1 FROM model_profiles WHERE id=?", (profile_id,)
+                ).fetchone()
+            ):
+                raise NotFound("模型连接不存在")
+            pid = profile_id or new_id()
+            db.execute(
+                "INSERT INTO model_profiles VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,profile=excluded.profile",
+                (pid, name, profile.model_dump_json()),
+            )
+            # Bind each runtime key to its configured endpoint, never to a reusable ID alone.
+            if api_key is not None:
+
+                def publish_key() -> None:
+                    with self._lock:
+                        if api_key:
+                            self._keys[pid] = (profile.base_url, api_key)
+                        else:
+                            self._keys.pop(pid, None)
+
+                self.database.after_commit(publish_key)
+        return self.get(pid)
+
+    def get(self, profile_id: str) -> dict:
+        with self.database.transaction() as db:
+            row = db.execute("SELECT * FROM model_profiles WHERE id=?", (profile_id,)).fetchone()
+            if row is None:
+                raise NotFound("模型连接不存在")
+            result = {"id": row["id"], "name": row["name"], "profile": json.loads(row["profile"])}
+        with self._lock:
+            saved = self._keys.get(profile_id)
+            result["credentials_available"] = (
+                saved is not None and saved[0] == result["profile"]["base_url"]
+            )
+        return result
+
+    def list(self) -> list[dict]:
+        with self.database.transaction() as db:
+            ids = [row[0] for row in db.execute("SELECT id FROM model_profiles ORDER BY rowid")]
+        return [self.get(pid) for pid in ids]
+
+    def credentials(self, profile_id: str) -> RuntimeCredentials:
+        return self.resolve(profile_id)[1]
+
+    def resolve(self, profile_id: str) -> tuple[ModelProfile, RuntimeCredentials]:
+        """Take a matching configuration/credential snapshot for a network call."""
+        with self.database.transaction(), self._lock:
+            item = self.get(profile_id)
+            saved = self._keys.get(profile_id)
+            if saved is None or saved[0] != item["profile"]["base_url"]:
+                raise PermissionDenied("本次运行尚未配置该模型的凭据")
+            return ModelProfile.model_validate(item["profile"]), RuntimeCredentials(
+                api_key=saved[1]
+            )
+
+    def select(self, primary: str, fallback: str | None) -> dict:
+        with self.database.transaction() as db:
+            # Query without credentials lock; never invert database/credential lock order.
+            for pid in (primary, fallback):
+                if (
+                    pid
+                    and not db.execute("SELECT 1 FROM model_profiles WHERE id=?", (pid,)).fetchone()
+                ):
+                    raise NotFound("所选模型连接不存在")
+            value = {"primary": primary, "fallback": fallback}
+            db.execute(
+                "INSERT INTO settings VALUES ('model_selection',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(value),),
+            )
+            return value
+
+    def selection(self) -> dict:
+        with self.database.transaction() as db:
+            row = db.execute("SELECT value FROM settings WHERE key='model_selection'").fetchone()
+            return json.loads(row[0]) if row else {"primary": None, "fallback": None}
+
+    def clear_credentials(self) -> None:
+        with self._lock:
+            self._keys.clear()

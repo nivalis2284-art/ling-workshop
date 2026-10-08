@@ -1,0 +1,2 @@
+CREATE TABLE skills (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES agents(id), name TEXT NOT NULL, description TEXT NOT NULL, current_revision INTEGER NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, UNIQUE(agent_id,request_id));
+CREATE TABLE skill_revisions (skill_id TEXT NOT NULL REFERENCES skills(id),revision INTEGER NOT NULL,instructions TEXT NOT NULL,status TEXT NOT NULL,sources TEXT NOT NULL,created_at TEXT NOT NULL,PRIMARY KEY(skill_id,revision));

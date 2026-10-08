@@ -1,0 +1,1 @@
+CREATE TABLE conversation_segments(id TEXT PRIMARY KEY,conversation_id TEXT NOT NULL REFERENCES conversations(id),title TEXT NOT NULL,start_message_id TEXT NOT NULL REFERENCES conversation_messages(id),last_message_id TEXT NOT NULL REFERENCES conversation_messages(id),revision INTEGER NOT NULL,origin TEXT NOT NULL,started_at TEXT NOT NULL,updated_at TEXT NOT NULL);

@@ -1,0 +1,124 @@
+.management-page {
+  display: grid;
+  gap: 22px;
+  min-width: 0;
+}
+.management-page .page-header {
+  margin-bottom: 0;
+}
+.management-form {
+  display: grid;
+  gap: 16px;
+}
+.management-form label {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--green);
+}
+.management-form fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  min-width: 0;
+  display: grid;
+  gap: 16px;
+}
+.management-form .check-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.management-form .check-label input {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+.management-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.management-page .stack {
+  display: grid;
+  gap: 16px;
+}
+.management-page h2 {
+  font-size: 18px;
+}
+.management-page h3 {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.management-card {
+  padding: 22px;
+  min-width: 0;
+}
+.management-card > :last-child {
+  margin-bottom: 0;
+}
+.management-copy {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.management-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 16px;
+}
+.management-record {
+  margin: 12px 0;
+}
+.management-record summary {
+  color: var(--green);
+  font-size: 13px;
+}
+.management-page pre,
+.management-record pre {
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 480px;
+  padding: 16px;
+  border-radius: 8px;
+  background: #f3f6ed;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.management-page .notice {
+  margin: 0;
+}
+.management-status {
+  margin: 0;
+  color: var(--green);
+}
+.management-page .button-row {
+  margin-top: 12px;
+}
+.management-page input,
+.management-page textarea,
+.management-page select {
+  min-width: 0;
+  width: 100%;
+}
+.management-page textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+.management-page .section-heading {
+  flex-wrap: wrap;
+}
+.management-page .path-preview {
+  max-height: 400px;
+  overflow: auto;
+}
+@media (max-width: 700px) {
+  .management-fields {
+    grid-template-columns: 1fr;
+  }
+  .management-card {
+    padding: 18px;
+  }
+}

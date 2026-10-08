@@ -1,0 +1,2 @@
+CREATE TABLE model_profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL, profile TEXT NOT NULL);
+CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);

@@ -16,6 +16,8 @@ node_modules/
 *.db-wal
 *.db-shm
 .artifacts/
+.ling-data/
+.workbuddy/
 .tools/
 packaging/installer/
 packaging/smoke-*/

@@ -45,6 +45,15 @@ from lingnexus.runtime import ChatRuntime
 from lingnexus.tasks import TaskRuntime
 
 
+def _package_version() -> str:
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("lingnexus")
+    except PackageNotFoundError:
+        return "unknown"
+
+
 def default_data_dir() -> Path:
     override = os.environ.get("LINGNEXUS_DATA_DIR")
     if override:
@@ -171,7 +180,7 @@ def create_app(
 
     @server.get("/health")
     def health():
-        return {"status": "ok", "version": "0.1.0"}
+        return {"status": "ok", "version": _package_version()}
 
     server.include_router(identity.router)
     server.include_router(history.router)

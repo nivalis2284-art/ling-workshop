@@ -52,7 +52,6 @@ function AgentWorkspace({
     agent.id,
     chatSession.getSnapshot().conversationId,
   );
-  const [newChatOpen, setNewChatOpen] = useState(false);
   const currentId = conversations.selectedId ?? conversations.list[0]?.id ?? "";
   return (
     <Shell
@@ -67,11 +66,7 @@ function AgentWorkspace({
             conversations={conversations}
             currentId={currentId}
             disabled={conversations.creating}
-            onSelect={(id) => {
-              conversations.choose(id);
-              setNewChatOpen(false);
-            }}
-            onNew={() => setNewChatOpen(true)}
+            onSelect={conversations.choose}
           />
         ) : undefined
       }
@@ -87,8 +82,6 @@ function AgentWorkspace({
             agent={agent}
             session={chatSession}
             conversations={conversations}
-            newChatOpen={newChatOpen}
-            onCloseNewChat={() => setNewChatOpen(false)}
             openSettings={() => setPage("settings")}
           />
         )}

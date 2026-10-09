@@ -1,20 +1,21 @@
 import { useEffect, useRef, useState } from "react";
 import { MoreHorizontal } from "lucide-react";
-import type { ConversationBranch } from "../../api/types";
 
 /** One quiet row: the conversation name, and everything occasional behind the ⋯. */
 export function ChatHeader({
   title,
-  branches,
-  onBranch,
+  selecting,
+  canSelect,
+  onSelectTurns,
   segmentsOpen,
   onToggleSegments,
   onOpenSettings,
   disabled,
 }: {
   title: string;
-  branches: ConversationBranch[];
-  onBranch: (id: string) => void;
+  selecting: boolean;
+  canSelect: boolean;
+  onSelectTurns: () => void;
   segmentsOpen: boolean;
   onToggleSegments: () => void;
   onOpenSettings: () => void;
@@ -61,28 +62,17 @@ export function ChatHeader({
         </button>
         {open && (
           <div className="chat-head-popup">
-            {branches.length > 0 && (
-              <label className="chat-head-field">
-                对话分支
-                <select
-                  value={branches.find((branch) => branch.selected)?.id ?? ""}
-                  disabled={disabled}
-                  onChange={(event) => onBranch(event.target.value)}
-                >
-                  {!branches.some((branch) => branch.selected) && (
-                    <option value="" disabled>
-                      选择分支
-                    </option>
-                  )}
-                  {branches.map((branch, index) => (
-                    <option key={branch.id} value={branch.id}>
-                      {branch.selected ? "当前 · " : ""}分支 {index + 1} ·{" "}
-                      {branch.text.slice(0, 30)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
+            <button
+              type="button"
+              className="chat-head-action"
+              disabled={!canSelect}
+              onClick={() => {
+                onSelectTurns();
+                setOpen(false);
+              }}
+            >
+              {selecting ? "退出批量删除" : "批量删除"}
+            </button>
             <button
               type="button"
               className="chat-head-action"

@@ -670,3 +670,62 @@
     max-width: 150px;
   }
 }
+
+/* --- 删除一轮：悬停操作、批量选择、确认框 --- */
+.chat-message-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-select {
+  display: inline-flex;
+  align-items: center;
+}
+.chat-select input {
+  width: 15px;
+  height: 15px;
+  accent-color: #315e4b;
+}
+.text-button.danger {
+  color: #a0452a;
+}
+.chat-select-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 0 2px;
+  font-size: 12.5px;
+  color: #5b6a58;
+}
+.chat-select-bar > span {
+  margin-right: auto;
+}
+.chat-select-bar .button {
+  min-height: 34px;
+  padding: 7px 13px;
+}
+.chat-confirm {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: #22301f47;
+}
+.chat-confirm-card {
+  width: 100%;
+  max-width: 420px;
+  padding: 24px 26px;
+}
+.chat-confirm-card h2 {
+  font-size: 16px;
+  margin: 0 0 10px;
+}
+.chat-confirm-card p {
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 0 0 18px;
+}

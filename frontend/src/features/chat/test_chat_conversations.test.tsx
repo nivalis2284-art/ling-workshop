@@ -150,7 +150,7 @@ function backend(
       return json(value, 201);
     }
     const match = path.match(
-      /^\/api\/conversations\/([^/]+)\/(messages|branches|edit|head)$/,
+      /^\/api\/conversations\/([^/]+)\/(messages|branches|edit|head|delete-turns)$/,
     );
     if (match) {
       const value = conversations.find((c) => c.id === match[1])!;
@@ -181,6 +181,22 @@ function backend(
         paths.edited = [edited];
         value.head_id = edited.id;
         return json(edited);
+      }
+      if (match[2] === "delete-turns") {
+        const anchors: string[] = body.anchors ?? [];
+        const snapshot: ConversationMessage[] = paths[value.head_id ?? ""] ?? [];
+        const removed = new Set<string>();
+        let dropping = false;
+        for (const item of snapshot) {
+          if (item.role === "user") dropping = anchors.includes(item.id);
+          if (dropping) removed.add(item.id);
+        }
+        const survivors = snapshot.filter((item) => !removed.has(item.id));
+        for (const key of Object.keys(paths))
+          paths[key] = paths[key].filter((item) => !removed.has(item.id));
+        paths[survivors.at(-1)?.id ?? ""] = survivors;
+        value.head_id = survivors.at(-1)?.id ?? null;
+        return json(value);
       }
       value.head_id = body.message_id;
       return json(value);
@@ -319,7 +335,7 @@ test("backend transcripts survive fresh browser storage and conversations of the
   ).toBeGreaterThanOrEqual(3);
 });
 
-test("editing a user creates a branch, old branch selection restores source IDs, and assistants cannot be edited", async () => {
+test("editing a user forks the transcript and assistants cannot be edited", async () => {
   const server = backend();
   const user = userEvent.setup();
   open();
@@ -345,22 +361,15 @@ test("editing a user creates a branch, old branch selection restores source IDs,
     content: "修改的问题",
     request_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
   });
-  await openChatMenu(user);
-  expect(screen.getByLabelText("对话分支")).toHaveValue("edited");
-  await user.selectOptions(screen.getByLabelText("对话分支"), "a1");
-  await user.keyboard("{Escape}");
-  expect(await screen.findByText("原回复")).toBeVisible();
-  expect(server.requests.find((r) => r.path.endsWith("/head"))?.body).toEqual({
-    message_id: "a1",
-  });
+  // Branch switching is no longer a UI control, so what the owner sees is the
+  // fork itself: a new node for the edited text and no stale reply behind it.
   expect(screen.getByRole("article", { name: "你的消息" })).toHaveAttribute(
     "data-message-id",
-    "u1",
+    "edited",
   );
-  expect(screen.getByRole("article", { name: "你的消息" })).toHaveAttribute(
-    "data-source-id",
-    "source-u1",
-  );
+  expect(
+    within(log).queryByRole("article", { name: "灵的回复" }),
+  ).not.toBeInTheDocument();
 });
 
 test("regenerate reuses exact parent user text and reads the committed replacement without duplicating the user", async () => {
@@ -408,8 +417,12 @@ test("regenerate reuses exact parent user text and reads the committed replaceme
     "data-source-id",
     "source-a-new",
   );
-  await openChatMenu(user);
-  expect(screen.getByLabelText("对话分支")).toHaveValue("a-new");
+  // The user line is reused rather than duplicated; branch switching is no
+  // longer a UI control, so the source id is the observable proof.
+  expect(screen.getByRole("article", { name: "你的消息" })).toHaveAttribute(
+    "data-message-id",
+    "u1",
+  );
 });
 
 test("model restart removes old reply and thinking, announces backup, and a replayed switch cannot clear new text", async () => {
@@ -638,4 +651,103 @@ test("a terminal failure joins its persisted user node without displaying the op
       .getAllByRole("article", { name: "你的消息" })
       .at(-1),
   ).toHaveAttribute("data-message-id", "user-" + request.request_id);
+});
+
+/** Mirrors the established send pattern so a second round exists to compare with. */
+async function secondRound(
+  user: ReturnType<typeof userEvent.setup>,
+  server: ReturnType<typeof backend>,
+) {
+  await user.type(screen.getByLabelText("消息"), "第二个问题");
+  await user.click(screen.getByRole("button", { name: "发送消息" }));
+  await server.emit("started", { conversation_id: "c1" }, 1);
+  await server.emit("text", { text: "第二条回复" }, 2);
+  await server.emit("complete", { status: "completed", assistant_source: null }, 3);
+  await screen.findByText("第二个问题");
+}
+
+test("deleting a round asks first, then removes it with its reply", async () => {
+  const server = backend();
+  const user = userEvent.setup();
+  open();
+  await screen.findByText("原回复");
+  await secondRound(user, server);
+  const log = screen.getByRole("log");
+  // Only the owner's messages offer deletion; a reply is removed with its round.
+  expect(
+    within(screen.getByRole("article", { name: "灵的回复" })).queryByRole(
+      "button",
+      { name: "删除这一轮" },
+    ),
+  ).not.toBeInTheDocument();
+  const mine = within(log).getAllByRole("article", { name: "你的消息" });
+  expect(mine).toHaveLength(2);
+  await user.click(within(mine[0]).getByRole("button", { name: "删除这一轮" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/无法撤销/)).toBeInTheDocument();
+  expect(screen.queryByText("原问题")).toBeVisible();
+  await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  await waitFor(() => expect(screen.queryByText("原问题")).not.toBeInTheDocument());
+  expect(screen.queryByText("原回复")).not.toBeInTheDocument();
+  expect(screen.getByText("第二个问题")).toBeVisible();
+  expect(server.requests.find((r) => r.path.endsWith("/delete-turns"))?.body)
+    .toEqual({ anchors: ["u1"] });
+});
+
+test("a cancelled confirmation keeps the round", async () => {
+  const server = backend();
+  const user = userEvent.setup();
+  open();
+  await screen.findByText("原回复");
+  await secondRound(user, server);
+  await user.click(
+    within(
+      within(screen.getByRole("log")).getAllByRole("article", {
+        name: "你的消息",
+      })[0],
+    ).getByRole("button", { name: "删除这一轮" }),
+  );
+  await user.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "取消",
+    }),
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByText("原问题")).toBeVisible();
+  expect(
+    server.requests.some((r) => r.path.endsWith("/delete-turns")),
+  ).toBe(false);
+});
+
+test("batch deletion removes several rounds in one request", async () => {
+  const server = backend();
+  const user = userEvent.setup();
+  open();
+  await screen.findByText("原回复");
+  await secondRound(user, server);
+  await openChatMenu(user);
+  await user.click(screen.getByRole("button", { name: "批量删除" }));
+  const boxes = await screen.findAllByRole("checkbox");
+  expect(boxes).toHaveLength(2);
+  expect(screen.getByRole("button", { name: "删除所选" })).toBeDisabled();
+  await user.click(boxes[0]);
+  await user.click(boxes[1]);
+  expect(screen.getByText("已选 2 轮")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "删除所选" }));
+  await user.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "确认删除",
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText("第二个问题")).not.toBeInTheDocument(),
+  );
+  expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+  const sent = server.requests.find((r) => r.path.endsWith("/delete-turns"))!
+    .body as { anchors: string[] };
+  expect(sent.anchors).toHaveLength(2);
+  expect(sent.anchors[0]).toBe("u1");
 });

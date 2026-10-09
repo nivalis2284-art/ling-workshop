@@ -294,6 +294,22 @@ export class ChatSession {
       ),
     );
   };
+  deleteTurns = async (anchors: string[]): Promise<boolean> => {
+    if (
+      !this.canMutate() ||
+      !this.state.conversationId ||
+      !anchors.length ||
+      !anchors.every((id) =>
+        this.state.messages.some(
+          (message) => message.id === id && message.role === "user",
+        ),
+      )
+    )
+      return false;
+    return this.mutateBranch(() =>
+      this.api.deleteConversationTurns(this.state.conversationId!, anchors),
+    );
+  };
   selectBranch = async (messageId: string) => {
     if (
       !this.canMutate() ||

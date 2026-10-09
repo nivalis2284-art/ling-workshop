@@ -20,20 +20,19 @@ export function ChatPage({
   agent,
   session: agentSession,
   conversations,
-  newChatOpen,
-  onCloseNewChat,
   openSettings,
 }: {
   api: LingApi;
   agent: Agent;
   session: ChatSession;
   conversations: ConversationList;
-  newChatOpen: boolean;
-  onCloseNewChat: () => void;
   openSettings: () => void;
 }) {
   const [segmentsOpen, setSegmentsOpen] = useState(false);
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState(new Set<string>());
+  const [confirming, setConfirming] = useState<string[]>([]);
   const list = conversations.list;
   const unresolved =
     isPending(agentSession.getSnapshot().turns.at(-1)) &&
@@ -106,15 +105,33 @@ export function ChatPage({
     pending || state.busy || conversations.creating || attachments.uploading;
   const disabled = locked || historyUnavailable || conversations.loading;
   const send = () => session.send(state.draft, profileId, effort);
+  const togglePick = (id: string) =>
+    setPicked((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const stopSelecting = () => {
+    setSelecting(false);
+    setPicked(new Set());
+  };
+  const runDelete = async (anchors: string[]) => {
+    setConfirming([]);
+    const done = await session.deleteTurns(anchors);
+    if (done) stopSelecting();
+  };
+  const userTurns = state.messages.filter(
+    (message) => message.role === "user",
+  ).length;
   return (
     <div className="page chat-page">
       <section className="panel chat-panel" aria-label="聊天">
         <ChatHeader
           title={selected?.title ?? "新对话"}
-          branches={state.branches}
-          onBranch={(id) => {
-            if (!disabled) void session.selectBranch(id);
-          }}
+          selecting={selecting}
+          canSelect={!!userTurns && !disabled}
+          onSelectTurns={() => (selecting ? stopSelecting() : setSelecting(true))}
           segmentsOpen={segmentsOpen}
           onToggleSegments={() => setSegmentsOpen(!segmentsOpen)}
           onOpenSettings={openSettings}
@@ -145,20 +162,6 @@ export function ChatPage({
               </details>
             )}
           </div>
-        )}
-        {newChatOpen && (
-          <NewConversation
-            api={api}
-            agentId={agent.id}
-            disabled={locked}
-            onCreated={(value: Conversation) => {
-              onCloseNewChat();
-              conversations.adopt(value);
-              void conversations.refresh();
-            }}
-            onCancel={onCloseNewChat}
-            onCreating={conversations.setCreating}
-          />
         )}
         {models.status === "loading" && <Loading label="正在读取对话模型…" />}
         {models.status === "error" && (
@@ -218,6 +221,10 @@ export function ChatPage({
           canRegenerate={!!profileId && models.status === "ready"}
           onEdit={session.editMessage}
           onRegenerate={(id) => session.regenerate(id, profileId, effort)}
+          onDeleteTurn={(id) => setConfirming([id])}
+          selecting={selecting}
+          selected={picked}
+          onToggleSelect={togglePick}
           attachments={attachments.items}
           regenerateProblem={(user) =>
             attachmentProblem(
@@ -262,6 +269,21 @@ export function ChatPage({
               onClick={() => session.retry(profileId, effort)}
             >
               再次发送
+            </button>
+          </div>
+        )}
+        {selecting && (
+          <div className="chat-select-bar">
+            <span>已选 {picked.size} 轮</span>
+            <button className="button secondary" onClick={stopSelecting}>
+              取消
+            </button>
+            <button
+              className="button danger"
+              disabled={!picked.size}
+              onClick={() => setConfirming([...picked])}
+            >
+              删除所选
             </button>
           </div>
         )}
@@ -318,6 +340,36 @@ export function ChatPage({
           }
         />
       </section>
+      {confirming.length > 0 && (
+        <div
+          className="chat-confirm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="chat-confirm-heading"
+        >
+          <section className="panel chat-confirm-card">
+            <h2 id="chat-confirm-heading">删除这一轮？</h2>
+            <p>
+              将删除 {confirming.length} 轮。这些内容会从对话中消失，之后发给模型的
+              请求里不再出现；由它们产生的记忆和身份变化也会一起作废，删除后无法撤销。
+            </p>
+            <div className="button-row">
+              <button
+                className="button secondary"
+                onClick={() => setConfirming([])}
+              >
+                取消
+              </button>
+              <button
+                className="button danger"
+                onClick={() => void runDelete(confirming)}
+              >
+                确认删除
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

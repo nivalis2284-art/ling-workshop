@@ -365,6 +365,11 @@ export class LingApi {
       "/conversations/" + encodeURIComponent(id) + "/head",
       { message_id: messageId },
     );
+  deleteConversationTurns = (id: string, anchors: string[]) =>
+    this.post<Conversation>(
+      "/conversations/" + encodeURIComponent(id) + "/delete-turns",
+      { anchors },
+    );
   chatEvents = (runId: string, after: string, signal: AbortSignal) =>
     this.response(
       "/chat/runs/" +

@@ -66,6 +66,10 @@ function SavedMessage({
   canRegenerate,
   onEdit,
   onRegenerate,
+  onDeleteTurn,
+  selecting,
+  selected,
+  onToggleSelect,
   attachments,
   regenerateIssue,
 }: {
@@ -76,6 +80,10 @@ function SavedMessage({
   canRegenerate: boolean;
   onEdit: (id: string, content: string) => Promise<boolean>;
   onRegenerate: (id: string) => void;
+  onDeleteTurn?: (id: string) => void;
+  selecting: boolean;
+  selected: boolean;
+  onToggleSelect: (id: string) => void;
   attachments: Attachment[];
   regenerateIssue?: string;
 }) {
@@ -90,7 +98,20 @@ function SavedMessage({
       data-source-id={message.source.id}
       data-source-revision={message.source.revision}
     >
-      <span className="chat-speaker">{user ? "你" : name}</span>
+      <div className="chat-message-head">
+        {selecting && user && (
+          <label className="chat-select">
+            <input
+              type="checkbox"
+              checked={selected}
+              disabled={disabled}
+              aria-label={"选择这一轮：" + message.text.slice(0, 24)}
+              onChange={() => onToggleSelect(message.id)}
+            />
+          </label>
+        )}
+        <span className="chat-speaker">{user ? "你" : name}</span>
+      </div>
       {user && (
         <AttachmentNames
           ids={message.attachment_ids ?? []}
@@ -117,7 +138,7 @@ function SavedMessage({
             autoFocus
           />
           <p className="metadata">
-            保存会创建新分支，原对话仍可从分支列表查看。
+            保存会从这里重新生成回复，原来的说法仍保留在记录中。
           </p>
           <div className="chat-message-actions">
             <button
@@ -146,16 +167,27 @@ function SavedMessage({
           )}
           <div className="chat-message-actions">
             {user ? (
-              <button
-                className="text-button"
-                disabled={disabled}
-                onClick={() => {
-                  setContent(message.text);
-                  setEditing(true);
-                }}
-              >
-                编辑消息
-              </button>
+              <>
+                <button
+                  className="text-button"
+                  disabled={disabled}
+                  onClick={() => {
+                    setContent(message.text);
+                    setEditing(true);
+                  }}
+                >
+                  编辑消息
+                </button>
+                {onDeleteTurn && (
+                  <button
+                    className="text-button danger"
+                    disabled={disabled}
+                    onClick={() => onDeleteTurn(message.id)}
+                  >
+                    删除这一轮
+                  </button>
+                )}
+              </>
             ) : (
               canRegenerate && (
                 <button
@@ -185,6 +217,10 @@ export function ChatTranscript({
   canRegenerate,
   onEdit,
   onRegenerate,
+  onDeleteTurn,
+  selecting = false,
+  selected = new Set<string>(),
+  onToggleSelect = () => {},
   attachments = [],
   regenerateProblem,
 }: {
@@ -194,6 +230,10 @@ export function ChatTranscript({
   canRegenerate: boolean;
   onEdit: (id: string, content: string) => Promise<boolean>;
   onRegenerate: (id: string) => void;
+  onDeleteTurn?: (id: string) => void;
+  selecting?: boolean;
+  selected?: Set<string>;
+  onToggleSelect?: (id: string) => void;
   attachments?: Attachment[];
   regenerateProblem?: (user: ConversationMessage) => string | undefined;
 }) {
@@ -261,6 +301,10 @@ export function ChatTranscript({
           }
           onEdit={onEdit}
           onRegenerate={onRegenerate}
+          onDeleteTurn={onDeleteTurn}
+          selecting={selecting}
+          selected={selected.has(message.id)}
+          onToggleSelect={onToggleSelect}
           attachments={attachments}
           regenerateIssue={
             message.role === "assistant" &&

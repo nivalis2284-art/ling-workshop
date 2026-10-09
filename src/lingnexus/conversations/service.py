@@ -13,30 +13,16 @@ class Conversations:
     def __init__(self, database, history):
         self.database, self.history = database, history
 
-    def create(
-        self, agent_id: str, title: str, *, scene: str | None = None, background: str = ""
-    ) -> dict:
-        if not title.strip() or len(background) > 6000 or scene is not None and not scene.strip():
-            raise ValueError("交流名称或场景编号无效")
-        if scene is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", scene):
-            scene = new_id()
-        if scene is None and background:
-            raise ValueError("背景只用于明确的场景交流")
+    def create(self, agent_id: str, title: str) -> dict:
+        if not title.strip():
+            raise ValueError("交流名称无效")
         with self.database.transaction() as db:
             if not db.execute("SELECT 1 FROM agents WHERE id=?", (agent_id,)).fetchone():
                 raise NotFound("个体不存在")
             cid = new_id()
             db.execute(
-                "INSERT INTO conversations(id,agent_id,title,scope,head_id,created_at,background) VALUES (?,?,?,?,?,?,?)",
-                (
-                    cid,
-                    agent_id,
-                    title,
-                    "scene:" + scene if scene else "real",
-                    None,
-                    utc_now(),
-                    background,
-                ),
+                "INSERT INTO conversations(id,agent_id,title,scope,head_id,created_at) VALUES (?,?,?,?,?,?)",
+                (cid, agent_id, title.strip(), "real", None, utc_now()),
             )
             return self.read(cid)
 
@@ -53,7 +39,7 @@ class Conversations:
         value = self.read(conversation_id)
         if value["agent_id"] != agent_id:
             raise PermissionDenied("交流属于其他个体")
-        if not re.fullmatch(r"real|scene:[A-Za-z0-9_-]+", value["scope"]):
+        if value["scope"] != "real":
             raise PermissionDenied("该交流情境不支持聊天")
         return value
 
@@ -226,4 +212,91 @@ class Conversations:
             db.execute(
                 "UPDATE conversations SET head_id=? WHERE id=?", (message_id, conversation_id)
             )
+            return self.read(conversation_id)
+
+    def delete_turns(self, conversation_id: str, anchors: list[str]) -> dict:
+        """Remove whole turns from the selected path.
+
+        A turn is a user message plus the assistant replies that follow it. The
+        surviving messages are re-linked into one chain, the sources of the removed
+        messages are deactivated (which retires memory derived from them), and the
+        removed nodes — including old branches hanging below them — are deleted.
+        """
+        with self.database.transaction() as db:
+            value = self.read(conversation_id)
+            path = self._path(conversation_id, value["head_id"])
+            by_id = {node["id"]: node for node in path}
+            anchor_set = dict.fromkeys(anchors)  # de-duplicate, keep order
+            for anchor in anchor_set:
+                node = by_id.get(anchor)
+                if node is None:
+                    raise NotFound("消息不在当前对话路径")
+                if node["role"] != "user":
+                    raise PermissionDenied("只能删除以你的消息开头的整轮")
+            removed: set[str] = set()
+            in_removed_turn = False
+            for node in path:
+                if node["role"] == "user":
+                    in_removed_turn = node["id"] in anchor_set
+                if in_removed_turn:
+                    removed.add(node["id"])
+            survivors = [node for node in path if node["id"] not in removed]
+            parent = path[0]["parent_id"]
+            for node in survivors:
+                if node["parent_id"] != parent:
+                    db.execute(
+                        "UPDATE conversation_messages SET parent_id=? WHERE conversation_id=? AND id=?",
+                        (parent, conversation_id, node["id"]),
+                    )
+                parent = node["id"]
+            db.execute(
+                "UPDATE conversations SET head_id=? WHERE id=?",
+                (survivors[-1]["id"] if survivors else None, conversation_id),
+            )
+            # Old branches below a removed message die with the turn; survivors
+            # were just re-linked out of the way.
+            children: dict[str | None, list[str]] = {}
+            for row in db.execute(
+                "SELECT id,parent_id FROM conversation_messages WHERE conversation_id=?",
+                (conversation_id,),
+            ).fetchall():
+                children.setdefault(row["parent_id"], []).append(row["id"])
+            # Depth 0 is the top of each removed stretch, not every removed node,
+            # or a parent could be deleted before its own child.
+            level = {
+                mid: 0 for mid in removed if by_id[mid]["parent_id"] not in removed
+            }
+            queue = list(level)
+            while queue:
+                current = queue.pop(0)
+                for child in children.get(current, []):
+                    if child not in level:
+                        level[child] = level[current] + 1
+                        queue.append(child)
+            doomed = set(level)
+            for node in path:
+                if node["id"] in doomed:
+                    self.history.set_visible(node["source"], False)
+            db.executemany(
+                "DELETE FROM conversation_attachments WHERE message_id=?",
+                [(mid,) for mid in doomed],
+            )
+            db.executemany(
+                "UPDATE chat_runs SET user_message_id=NULL WHERE user_message_id=?",
+                [(mid,) for mid in doomed],
+            )
+            db.executemany(
+                "DELETE FROM conversation_segments WHERE start_message_id=? OR last_message_id=?",
+                [(mid, mid) for mid in doomed],
+            )
+            # parent_id is a self-referencing key: children must go before parents.
+            for depth in sorted(set(level.values()), reverse=True):
+                db.executemany(
+                    "DELETE FROM conversation_messages WHERE conversation_id=? AND id=?",
+                    [
+                        (conversation_id, mid)
+                        for mid, node_level in level.items()
+                        if node_level == depth
+                    ],
+                )
             return self.read(conversation_id)

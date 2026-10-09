@@ -168,6 +168,14 @@ svg {
   background: #edf1e9;
   border-color: #b5c4b6;
 }
+.danger {
+  color: #fffefa;
+  background: #8c3b26;
+  border-color: #8c3b26;
+}
+.danger:hover:not(:disabled) {
+  background: #75311f;
+}
 .button-row {
   display: flex;
   align-items: center;

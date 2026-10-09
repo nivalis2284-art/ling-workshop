@@ -10,7 +10,7 @@
 
 /* --- 侧栏里的对话列表 --- */
 .chat-history {
-  margin-top: 26px;
+  margin-top: 20px;
 }
 .chat-history-new {
   display: flex;
@@ -18,8 +18,8 @@
   justify-content: center;
   gap: 8px;
   width: 100%;
-  padding: 10px 12px;
-  margin-bottom: 20px;
+  padding: 9px 12px;
+  margin-bottom: 14px;
   background: #315e4b;
   color: #fff;
   border: 0;
@@ -48,7 +48,7 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 9px 10px;
+  padding: 7px 10px;
   background: transparent;
   border: 0;
   border-radius: 8px;
@@ -184,23 +184,45 @@
 }
 .chat-message + .chat-message,
 .chat-message + .chat-turn {
-  margin-top: 20px;
+  margin-top: 14px;
 }
 .chat-message-actions {
+  /* Out of flow: a transparent toolbar would otherwise reserve ~47px under every
+     message. It floats in the gap below the bubble, over the padding only. */
+  position: absolute;
+  right: 8px;
+  bottom: -16px;
+  z-index: 2;
   display: flex;
-  gap: 14px;
-  margin-top: 12px;
-  flex-wrap: wrap;
-  /* Kept in the DOM for keyboard and screen readers; only revealed on approach. */
+  gap: 2px;
+  padding: 2px 5px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 6px 18px #3d543214;
   opacity: 0;
   transition: opacity 0.14s;
+}
+.chat-assistant .chat-message-actions {
+  right: auto;
+  left: 8px;
+}
+.chat-message-actions .text-button {
+  padding: 3px 5px;
+  font-size: 12px;
 }
 .chat-message:hover .chat-message-actions,
 .chat-message:focus-within .chat-message-actions {
   opacity: 1;
 }
 @media (hover: none) {
+  /* No hover on touch: keep them in flow so they never overlap a neighbour. */
   .chat-message-actions {
+    position: static;
+    margin-top: 8px;
+    padding: 0;
+    border: 0;
+    box-shadow: none;
     opacity: 1;
   }
 }
@@ -221,23 +243,29 @@
   overflow-y: auto;
   max-height: 55dvh;
   min-height: 260px;
-  padding: 28px 26px;
+  padding: 20px 22px;
   scrollbar-gutter: stable;
 }
 .chat-turn + .chat-turn {
-  margin-top: 30px;
+  margin-top: 24px;
 }
 .chat-message {
+  position: relative;
   max-width: 90%;
-  padding: 18px 20px;
+  padding: 12px 16px;
   border-radius: 14px;
 }
 .chat-message p:last-child {
   margin-bottom: 0;
 }
 .chat-message > p {
-  margin: 10px 0;
+  margin: 5px 0;
   font-size: 14px;
+}
+/* Chat text reads tighter than the global paragraph rhythm (1.85). */
+.chat-message p,
+.chat-message .preserve-text {
+  line-height: 1.55;
 }
 .chat-user {
   margin-left: auto;
@@ -245,15 +273,16 @@
   border: 1px solid #dfe7d9;
 }
 .chat-assistant {
-  margin-top: 15px;
+  margin-top: 10px;
   background: #fafbf7;
   border: 1px solid var(--line);
 }
 .chat-speaker {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  color: #4e6b58;
+  color: #6a8069;
+  margin-bottom: 2px;
 }
 .chat-thinking {
   border-bottom: 1px solid var(--line);

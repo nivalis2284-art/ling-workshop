@@ -8,6 +8,21 @@
 
 开发工作树 H:/文档/LingNexus/Ling/.worktrees/m0-continuity，feature/m0-continuity。主目录 H:/文档/LingNexus/Ling的main已快进到同一源码，工作区干净。工作树保留.venv/node_modules/.tools和测试产物供后续开发，均不进入Git；根目录交付dist安装包/说明。
 
+## 收紧间距（2026-10-09，用户先看预览图后确认）
+
+用户反馈"行间距太大、看着奇怪"。**先量后改**，实测出两处原因，画了改前后对比图确认后才动手。
+
+根因：① `.chat-message-actions` 用 `opacity: 0` 隐藏按钮，但**仍占布局**，每条消息底部白留 47px（实测"你好"那条气泡高 137px，其中 1/3 是空的）；② 正文吃全局 `p { line-height: 1.85 }`。
+
+- 消息操作改为 `position: absolute` 浮在气泡下方（`bottom: -16px`，胶囊底），不再占位；`opacity: 0` 保留以便键盘可达，`(hover: none)` 下回落为 `position: static` 避免与相邻消息重叠。实测按钮与正文留 2px 间隙、不压字。
+- **行高只在聊天气泡内收紧**：`.chat-message p, .chat-message .preserve-text { line-height: 1.55 }`，全局 1.85 不动（身份页、记忆页长文保持原样）。
+- 其余：段落间距 20→10、气泡内边距 18→12、消息间距 20→14、说话人标签 12→11px。
+- 侧栏收紧：导航项 43→37px、`.nav-caption` 下边距 11→8、`新聊天` 下边距 20→14、对话条目 34→30px。
+
+实测（1440×900 真实浏览器）：用户气泡 **137→73px**、灵的气泡 **205→159px**、行高 **25.9→21.7px**、导航 **43→37px**。前端 143 项全过，typecheck 与 build 通过。
+
+**待办（已告知用户，未做）**：短消息时用户气泡仍被撑满 90% 宽度（`.chat-message` 是块级 + `margin-left:auto`），"你好"两个字配一个横幅。改成 `width: fit-content` 会自然得多，但不在本次确认范围内。
+
 ## 对话页改版：回归正常聊天界面（2026-10-09）
 
 用户反馈"操作逻辑反人类、看不懂"，要求参照 ChatGPT 重排。

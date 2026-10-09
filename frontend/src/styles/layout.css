@@ -115,21 +115,21 @@
   color: #84907f;
   letter-spacing: 2px;
   padding: 0 12px;
-  margin: 0 0 11px;
+  margin: 0 0 8px;
 }
 .nav-item {
   width: 100%;
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 10px 13px;
+  padding: 8px 12px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   font-size: 13px;
   color: #647361;
   text-align: left;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 .nav-item:hover:not(.upcoming) {
   background: #e6ebdf;

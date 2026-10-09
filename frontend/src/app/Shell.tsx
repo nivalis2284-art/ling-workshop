@@ -155,7 +155,7 @@ export function Shell({
           </p>
         </div>
       </aside>
-      <div className="workspace">
+      <div className={"workspace" + (page === "chat" ? " workspace-chat" : "")}>
         <div className="topbar">
           <span>
             我的空间 <span className="crumb">/</span>{" "}

@@ -120,6 +120,7 @@ export function ChatPage({
           onOpenSettings={openSettings}
           disabled={locked}
         />
+        <div className="chat-column">
         {segmentsOpen && state.conversationId && (
           <div className="chat-segments">
             <SegmentPanel
@@ -264,6 +265,7 @@ export function ChatPage({
             </button>
           </div>
         )}
+        </div>
         <ChatComposer
           draft={state.draft}
           onDraft={session.setDraft}

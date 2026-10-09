@@ -508,3 +508,23 @@
     padding-top: 24px;
   }
 }
+
+/* --- 对话页：聊天区铺满工作区，不再是一张居中卡片 --- */
+.workspace-chat main {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.workspace-chat .workspace-footer {
+  margin: 0;
+  padding: 12px 24px;
+}
+/* React wraps the pages in a keyed div; it must stretch too, or the chat cannot
+   fill the workspace height. */
+.workspace-chat main > div {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}

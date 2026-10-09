@@ -43,10 +43,11 @@ export function ChatHeader({
 
   return (
     <header className="chat-head">
-      <h1 className="chat-head-title" tabIndex={-1}>
-        {title}
-      </h1>
-      <div className="chat-head-menu" ref={box}>
+      <div className="chat-head-inner">
+        <h1 className="chat-head-title" tabIndex={-1}>
+          {title}
+        </h1>
+        <div className="chat-head-menu" ref={box}>
         <button
           type="button"
           className="icon-button"
@@ -107,6 +108,7 @@ export function ChatHeader({
             </p>
           </div>
         )}
+        </div>
       </div>
     </header>
   );

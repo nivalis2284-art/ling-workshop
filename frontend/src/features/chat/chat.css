@@ -251,6 +251,9 @@
 }
 .chat-message {
   position: relative;
+  /* Hugs its text instead of always filling the row; long replies still wrap
+     at max-width. */
+  width: fit-content;
   max-width: 90%;
   padding: 12px 16px;
   border-radius: 14px;

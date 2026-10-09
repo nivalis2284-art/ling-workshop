@@ -8,6 +8,21 @@
 
 开发工作树 H:/文档/LingNexus/Ling/.worktrees/m0-continuity，feature/m0-continuity。主目录 H:/文档/LingNexus/Ling的main已快进到同一源码，工作区干净。工作树保留.venv/node_modules/.tools和测试产物供后续开发，均不进入Git；根目录交付dist安装包/说明。
 
+## 人设透明化与可编辑（2026-10-09）
+
+身份审阅页重排为三层：**系统指令 / 当前身份 / 待审批**，下接版本记录。用户要求"不要黑盒"。
+
+- **系统指令改为可编辑清单**：原先写死在 `context/builder.py` 的 5 条开场白搬进清单，存在 `settings` 表（每个体一个键 `owner.instructions:<agent_id>`，值为 JSON 数组，无需新迁移）。未自定义时用代码里的 `DEFAULT_RULES`，行为与升级前一致；可增删改，也可一键恢复默认。缺省为 5 条而非 6 条，是把原第一句整句保留成一条所致。
+- **条目带类别与依据**：新增 `GET /agents/{id}/entries`，经 `self_entry_origins → proposals.kind` 反查每条属于哪一类，并附带来源。
+- **新增删除**：`changes.remove` 生成"不含该条"的新版本（reason `owner_remove:<key>`），旧版本与 `self_revision_origins` 保持完整，仍可回退。
+- **新增类别 `custom`**：只允许所有者使用（`OWNER_ONLY_KINDS`）；`learning/schema.py` 的 `Change.kind` 仍是 6 个 Literal，自动整理永远写不进这一类。
+- **修掉吞名字的缺陷**：`identityFormatting.ts` 原先把认不得的键名一律显示成"自我认识条目"，现在改为"预设中文名 → 去掉前缀的自定义名 → 原样显示键名"。
+- **前端**：新增 `SystemInstructions`、`CurrentIdentity`、`PendingReview`、`EntryForm`；删除被替换的 `IdentityEditor`。两栏为默认折叠的七行清单。
+
+验证：后端新增 `tests/test_identity_page.py` 14 项全过；改动相关回归 321 通过 1 跳过。前端新增 `src/test/IdentityPage.test.tsx` 9 项，全套 131 通过 0 失败（**注意需 Node 24**：Node 22 下 `ChatStream`/`ManagementPanels` 的 Blob 断言会失败，与本次改动无关，已用 stash 复现确认）。Ruff、Pyright、前端 typecheck 与构建均通过。
+
+真实实例走查 17/17：默认指令可见 → 加/改/删指令 → 加条目（关系）→ 类别与依据正确 → 自由命名条目 → 删除并确认旧版本仍在 → 过期版本号被 409 拦下 → 候选待审阅并批准 → 恢复默认指令。另用真实 Chromium 打开界面，确认三块渲染、分组可展开、就地加改删可用。走查写入的测试条目已全部清除，当前条目为空、指令为默认。
+
 ## 源码运行入口（2026-10-09）
 
 工作目录根 **start.bat** 是唯一的本地运行入口，替代早先的准备环境/启动/停止/开发模式四个脚本与运行说明.md。它自动判断并补全环境与界面构建，然后启动本机后台并打开浏览器；停止走托盘退出。批处理为 GBK 编码并固定 CRLF（cmd 解析 UTF-8 批处理会错行）。.gitattributes 对 *.bat/*.cmd 固定 eol=crlf。

@@ -46,6 +46,29 @@ export interface IdentityState {
   revision: number;
   entries: Record<string, string>;
 }
+export interface PersonaEntry {
+  key: string;
+  text: string;
+  kind: string;
+  origin: { proposal_id: string; kind: string; sources: SourceRef[] } | null;
+}
+export interface Instructions {
+  agent_id: string;
+  rules: string[];
+  defaults: string[];
+  customized: boolean;
+}
+export interface EntryInput {
+  kind: string;
+  key: string;
+  text: string;
+  expected_revision: number;
+  request_id: string;
+}
+export interface EntryWrite {
+  state: IdentityState;
+  entries: PersonaEntry[];
+}
 export interface Proposal {
   id: string;
   key: string;
@@ -80,6 +103,8 @@ export interface IdentityBundle {
   state: IdentityState;
   proposals: Proposal[];
   revisions: Revision[];
+  entries: PersonaEntry[];
+  instructions: Instructions;
 }
 export interface ModelCapabilities {
   streaming: boolean;

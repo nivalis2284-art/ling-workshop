@@ -10,6 +10,8 @@ function reasonLabel(reason?: string) {
   if (reason === "initialize") return "初始状态";
   if (reason?.startsWith("owner_rollback:"))
     return "恢复自版本 " + reason.slice("owner_rollback:".length);
+  if (reason?.startsWith("owner_remove:"))
+    return "你删掉了「" + identityEntryLabel(reason.slice("owner_remove:".length)) + "」";
   if (reason?.startsWith("source_corrected:")) return "来源纠正后更新";
   return "身份内容更新";
 }

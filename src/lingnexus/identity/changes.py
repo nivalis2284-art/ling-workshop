@@ -4,7 +4,7 @@ from typing import Literal
 
 from lingnexus.common.errors import Conflict, NotFound, RevisionConflict, SourceInvalid
 from lingnexus.common.types import SourceRef, new_id, utc_now
-from lingnexus.identity.policy import PROTECTED_KINDS, may_apply_automatically, validate_experience
+from lingnexus.identity.policy import ALL_KINDS, may_apply_automatically, validate_experience
 from lingnexus.identity.revisions import capture_origins
 
 
@@ -40,12 +40,7 @@ class Changes:
         base_revision: int,
         request_id: str,
     ) -> dict:
-        if (
-            kind not in PROTECTED_KINDS | {"habit"}
-            or not key.strip()
-            or not text.strip()
-            or not request_id
-        ):
+        if kind not in ALL_KINDS or not key.strip() or not text.strip() or not request_id:
             raise ValueError("候选类型、内容和请求编号必须有效")
         if key.startswith(("owner.", "permissions.", "system.")):
             raise ValueError("自我变化不能修改系统或所有者权限")
@@ -151,6 +146,31 @@ class Changes:
                 "INSERT INTO decisions VALUES (?,?,?,?,?)",
                 (new_id(), item["id"], "apply", actor, utc_now()),
             )
+
+    def remove(self, agent_id: str, *, key: str, expected_revision: int) -> dict:
+        """Owner deletion: a new revision omits the entry, every older one stays intact."""
+        with self.database.transaction() as db:
+            state = self.current(agent_id)
+            if state.revision != expected_revision:
+                raise RevisionConflict("当前版本已变化")
+            if key not in state.entries:
+                raise NotFound("这项认识不存在")
+            entries = {k: v for k, v in state.entries.items() if k != key}
+            db.execute(
+                "INSERT INTO self_revisions VALUES (?,?,?,?,?)",
+                (
+                    agent_id,
+                    state.revision + 1,
+                    json.dumps(entries, ensure_ascii=False),
+                    "owner_remove:" + key,
+                    utc_now(),
+                ),
+            )
+            db.execute(
+                "DELETE FROM self_entry_origins WHERE agent_id=? AND entry_key=?", (agent_id, key)
+            )
+            capture_origins(db, agent_id, state.revision + 1)
+            return self.current(agent_id)
 
     def invalidate(self, ref: SourceRef) -> None:
         with self.database.transaction() as db:

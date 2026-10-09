@@ -27,13 +27,46 @@ class SourceCorrection(Input):
 class ProposalCreate(Input):
     agent_id: str
     kind: Literal[
-        "habit", "identity", "relationship", "value", "major_personality", "major_capability"
+        "habit",
+        "identity",
+        "relationship",
+        "value",
+        "major_personality",
+        "major_capability",
+        "custom",
     ]
     key: str
     text: str
     sources: list[SourceRef] = Field(min_length=1)
     base_revision: int = Field(ge=0)
     request_id: str = Field(min_length=1)
+
+
+class InstructionsUpdate(Input):
+    rules: list[str] = Field(max_length=50)
+
+
+class EntryCreate(Input):
+    """Owner-written entry: goes straight through propose + approve in one call."""
+
+    kind: Literal[
+        "habit",
+        "identity",
+        "relationship",
+        "value",
+        "major_personality",
+        "major_capability",
+        "custom",
+    ]
+    key: str = Field(min_length=1, max_length=160)
+    text: str = Field(min_length=1, max_length=6000)
+    expected_revision: int = Field(ge=0)
+    request_id: str = Field(min_length=1)
+
+
+class EntryRemove(Input):
+    key: str = Field(min_length=1, max_length=160)
+    expected_revision: int = Field(ge=0)
 
 
 class DecisionInput(Input):

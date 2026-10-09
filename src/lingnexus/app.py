@@ -6,6 +6,7 @@ from lingnexus.actions.service import Actions
 from lingnexus.activities import ActivityService
 from lingnexus.browser import BrowserService
 from lingnexus.configuration.credential_cache import CredentialCache
+from lingnexus.configuration.instructions import OwnerInstructions
 from lingnexus.configuration.profiles import Profiles
 from lingnexus.content.service import Attachments
 from lingnexus.context.builder import ContextBuilder
@@ -34,7 +35,8 @@ class Application:
         self.history.subscribe_corrections(self.memory.knowledge.invalidate)
         self.development = DevelopmentService(self.database, self.history)
         self.history.subscribe_corrections(self.development.invalidate)
-        self.context = ContextBuilder(self.database, self.identity, self.history)
+        self.instructions = OwnerInstructions(self.database)
+        self.context = ContextBuilder(self.database, self.identity, self.history, self.instructions)
         self.maintenance = MaintenanceService(self.database)
         self.profiles = Profiles(
             self.database,

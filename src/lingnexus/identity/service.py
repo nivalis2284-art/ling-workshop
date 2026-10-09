@@ -3,6 +3,7 @@ import json
 from lingnexus.common.errors import NotFound
 from lingnexus.common.types import SelfSnapshot, new_id, utc_now
 from lingnexus.identity.changes import Changes
+from lingnexus.identity.policy import guess_kind
 from lingnexus.identity.revisions import Revisions
 from lingnexus.storage.db import Database
 
@@ -14,6 +15,7 @@ class IdentityService:
         self.propose = self.changes.propose
         self.decide = self.changes.decide
         self.invalidate = self.changes.invalidate
+        self.remove = self.changes.remove
         self.list_proposals = self.changes.list
         self.revisions = Revisions(database, history, self.current)
         self.rollback = self.revisions.rollback
@@ -42,9 +44,44 @@ class IdentityService:
                 agent_id=agent_id, revision=row["revision"], entries=json.loads(row["entries"])
             )
 
+    def entries(self, agent_id: str) -> list[dict]:
+        """Every live entry together with the category and sources that produced it."""
+        with self.database.transaction() as db:
+            state = self.current(agent_id)
+            rows = db.execute(
+                "SELECT o.entry_key, p.kind, p.id AS proposal_id, s.source_id, s.source_revision "
+                "FROM self_entry_origins o "
+                "JOIN proposals p ON p.id=o.proposal_id "
+                "LEFT JOIN proposal_sources s ON s.proposal_id=p.id "
+                "WHERE o.agent_id=?",
+                (agent_id,),
+            ).fetchall()
+        origins: dict[str, dict] = {}
+        for row in rows:
+            origin = origins.setdefault(
+                row["entry_key"],
+                {"proposal_id": row["proposal_id"], "kind": row["kind"], "sources": []},
+            )
+            if row["source_id"] is not None:
+                origin["sources"].append(
+                    {"id": row["source_id"], "revision": row["source_revision"]}
+                )
+        return [
+            {
+                "key": key,
+                "text": text,
+                "kind": origins.get(key, {}).get("kind") or guess_kind(key),
+                "origin": origins.get(key),
+            }
+            for key, text in state.entries.items()
+        ]
+
     def list_agents(self) -> list[dict]:
         with self.database.transaction() as db:
-            return [dict(row) | {"name":self.name(row["id"]),"initial_name":row["name"]} for row in db.execute("SELECT * FROM agents ORDER BY created_at").fetchall()]
+            return [
+                dict(row) | {"name": self.name(row["id"]), "initial_name": row["name"]}
+                for row in db.execute("SELECT * FROM agents ORDER BY created_at").fetchall()
+            ]
 
     def name(self, agent_id: str) -> str:
         with self.database.transaction() as db:

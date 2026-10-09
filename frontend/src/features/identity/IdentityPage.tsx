@@ -4,15 +4,17 @@ import { ApiError, errorMessage } from "../../api/client";
 import type { LingApi } from "../../api/client";
 import type { Agent, Proposal, Revision } from "../../api/types";
 import { ConfirmDialog } from "../../shared/ConfirmDialog";
-import { EmptyState, ErrorNotice, Loading, PageHeader } from "../../shared/ui";
+import { ErrorNotice, Loading, PageHeader } from "../../shared/ui";
 import { useResource } from "../../shared/useResource";
 import {
   identityEntryLabel,
   identityEntryText,
 } from "../../shared/identityFormatting";
+import { CurrentIdentity } from "./CurrentIdentity";
+import { PendingReview } from "./PendingReview";
 import { ProposalCard } from "./ProposalCard";
 import { RevisionHistory } from "./RevisionHistory";
-import { IdentityEditor } from "./IdentityEditor";
+import { SystemInstructions } from "./SystemInstructions";
 
 export function IdentityPage({ api, agent }: { api: LingApi; agent: Agent }) {
   const load = useCallback(
@@ -48,11 +50,37 @@ export function IdentityPage({ api, agent }: { api: LingApi; agent: Agent }) {
       setBusy(false);
     }
   }
+
   function decide(proposal: Proposal, decision: "approve" | "reject") {
     if (resource.status !== "ready") return;
     void mutate(
       () => api.decide(proposal.id, decision, resource.data.state.revision),
       decision === "approve" ? "变化已生效。" : "已拒绝这项变化。",
+    );
+  }
+
+  const revision = resource.status === "ready" ? resource.data.state.revision : null;
+
+  function addEntry(kind: string, key: string, text: string) {
+    if (revision === null) return Promise.resolve();
+    return mutate(
+      () =>
+        api.addEntry(agent.id, {
+          kind,
+          key,
+          text,
+          expected_revision: revision,
+          request_id: crypto.randomUUID(),
+        }),
+      "已保存这条认识。",
+    );
+  }
+
+  function removeEntry(key: string) {
+    if (revision === null) return Promise.resolve();
+    return mutate(
+      () => api.removeEntry(agent.id, key, revision),
+      "已删除这条认识，旧版本仍然保留。",
     );
   }
 
@@ -64,13 +92,14 @@ export function IdentityPage({ api, agent }: { api: LingApi; agent: Agent }) {
     resource.data?.proposals.filter(
       (item) => item.status !== "awaiting_owner",
     ) ?? [];
+
   return (
     <div className="page">
       <PageHeader
         eyebrow="理解自己，也由你把关"
         title="身份与变化"
         description={
-          "查看" + agent.name + "当前的理解，并审阅每一项有来源的变化。"
+          "这里能看到和改动" + agent.name + "的全部人设。没有藏在程序里的部分。"
         }
         action={
           <button
@@ -99,58 +128,39 @@ export function IdentityPage({ api, agent }: { api: LingApi; agent: Agent }) {
       )}
       {resource.status === "ready" && (
         <>
-          <section className="panel section-panel" aria-label="当前身份">
-            <div className="section-heading">
-              <h2>当前身份</h2>
-              <span className="pill">
-                当前版本 · {resource.data.state.revision}
-              </span>
-            </div>
-            {Object.keys(resource.data.state.entries).length === 0 ? (
-              <EmptyState title="还在认识自己的起点">
-                当前没有已生效的身份内容。经过审阅的变化会在这里积累。
-              </EmptyState>
-            ) : (
-              <dl className="entry-list">
-                {Object.entries(resource.data.state.entries).map(
-                  ([key, text]) => (
-                    <div key={key}>
-                      <dt>{identityEntryLabel(key)}</dt>
-                      <dd>{identityEntryText(key, text)}</dd>
-                    </div>
-                  ),
-                )}
-              </dl>
-            )}
-          </section>
-          <section aria-labelledby="pending-title">
-            <div className="section-heading outside">
-              <h2 id="pending-title">
-                等待你的审阅 <span className="count">{pending.length}</span>
-              </h2>
-              <span className="metadata">先看依据，再做决定</span>
-            </div>
-            {pending.length === 0 ? (
-              <div className="panel">
-                <EmptyState title="暂时没有待审阅的变化">
-                  新的候选会出现在这里，等待你的判断。
-                </EmptyState>
-              </div>
-            ) : (
-              <div className="stack">
-                {pending.map((proposal) => (
-                  <ProposalCard
-                    key={proposal.id}
-                    api={api}
-                    proposal={proposal}
-                    state={resource.data.state}
-                    busy={busy}
-                    decide={decide}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
+          <SystemInstructions
+            agentName={agent.name}
+            instructions={resource.data.instructions}
+            busy={busy}
+            save={(rules) =>
+              mutate(
+                () => api.saveInstructions(agent.id, rules),
+                "系统指令已更新。",
+              )
+            }
+            reset={() =>
+              mutate(
+                () => api.resetInstructions(agent.id),
+                "已恢复程序自带的指令。",
+              )
+            }
+          />
+          <CurrentIdentity
+            api={api}
+            entries={resource.data.entries}
+            revision={resource.data.state.revision}
+            busy={busy}
+            add={addEntry}
+            edit={addEntry}
+            remove={removeEntry}
+          />
+          <PendingReview
+            api={api}
+            proposals={pending}
+            state={resource.data.state}
+            busy={busy}
+            decide={decide}
+          />
           {handled.length > 0 && (
             <details className="panel handled">
               <summary>其他候选与审阅结果 · {handled.length} 项</summary>
@@ -174,7 +184,6 @@ export function IdentityPage({ api, agent }: { api: LingApi; agent: Agent }) {
             busy={busy}
             restore={setTarget}
           />
-          <IdentityEditor api={api} agentId={agent.id} revision={resource.data.state.revision} refresh={resource.refresh}/>
           {target && (
             <ConfirmDialog
               title={"恢复到版本 " + target.revision}

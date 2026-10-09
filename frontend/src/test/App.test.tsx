@@ -74,6 +74,27 @@ function backend(
       }
       if (url.pathname.endsWith("/state"))
         return json({ agent_id: agent.id, revision, entries });
+      if (url.pathname.endsWith("/entries"))
+        return json({
+          agent_id: agent.id,
+          entries: Object.entries(entries).map(([key, text]) => ({
+            key,
+            text,
+            kind: "identity",
+            origin: {
+              proposal_id: proposal.id,
+              kind: "identity",
+              sources: [ref],
+            },
+          })),
+        });
+      if (url.pathname.endsWith("/instructions"))
+        return json({
+          agent_id: agent.id,
+          rules: ["始终使用中文回复"],
+          defaults: ["始终使用中文回复"],
+          customized: false,
+        });
       if (url.pathname.endsWith("/proposals"))
         return json([{ ...proposal, status }]);
       if (url.pathname.endsWith("/revisions"))

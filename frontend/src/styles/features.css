@@ -707,3 +707,149 @@
     gap: 10px;
   }
 }
+
+/* --- 身份页：系统指令清单与折叠的部分清单 --- */
+.rule-list {
+  list-style: none;
+  margin: 22px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.rule-list.plain {
+  margin-top: 14px;
+}
+.rule-list > li {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+  background: #f6f7f1;
+  border-radius: 9px;
+  padding: 14px 16px;
+}
+.rule-list.plain > li {
+  background: transparent;
+  padding: 4px 0;
+}
+.rule-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  flex: 1;
+  min-width: 0;
+}
+.row-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.row-actions .button {
+  padding: 4px 11px;
+  font-size: 12px;
+}
+.rule-editor,
+.entry-editor {
+  background: #f7f7f2;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin-top: 12px;
+  width: 100%;
+}
+.rule-editor label,
+.entry-editor label {
+  margin-bottom: 14px;
+}
+.field-hint {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 20px 0 0;
+  line-height: 1.8;
+}
+.field-error {
+  color: #a04a3c;
+  font-size: 12px;
+  margin: 0 0 12px;
+}
+.bucket-list {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.bucket {
+  border-bottom: 1px solid var(--line);
+}
+.bucket > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 15px 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.bucket > summary:hover {
+  color: var(--green);
+}
+.bucket-name {
+  font-weight: 500;
+}
+.bucket-count {
+  color: var(--muted);
+  font-size: 12px;
+}
+.bucket-count.warm {
+  color: #9a6b28;
+}
+.bucket-body {
+  padding: 4px 0 20px 18px;
+}
+.persona-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.entry-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+  background: #f6f7f1;
+  border-radius: 9px;
+  padding: 15px 18px;
+}
+.entry-main {
+  flex: 1;
+  min-width: 0;
+}
+.entry-name {
+  margin: 0 0 6px;
+  font-size: 11px;
+  color: #7d8a74;
+  overflow-wrap: anywhere;
+}
+.entry-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.9;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.entry-origin {
+  margin-top: 8px;
+}
+.entry-origin > summary {
+  font-size: 11px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.entry-origin .sources {
+  margin-top: 12px;
+}
+.bucket-body .button-row {
+  margin-top: 14px;
+}

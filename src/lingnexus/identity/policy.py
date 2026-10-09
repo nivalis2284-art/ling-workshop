@@ -21,6 +21,30 @@ def validate_experience(history, agent_id, refs):
 
 PROTECTED_KINDS = {"identity", "relationship", "value", "major_personality", "major_capability"}
 
+# The model may never propose these; only the owner-facing API accepts them.
+# "custom" exists so the owner can file an entry without forcing it into a trait bucket.
+OWNER_ONLY_KINDS = {"custom"}
+
+ALL_KINDS = PROTECTED_KINDS | {"habit"} | OWNER_ONLY_KINDS
+
+# An entry keeps its category in the proposal that created it. Entries with no
+# surviving origin fall back to the naming convention, then to "custom".
+KIND_PREFIXES = (
+    ("identity.", "identity"),
+    ("personality.", "major_personality"),
+    ("communication.", "habit"),
+    ("relationship.", "relationship"),
+    ("values.", "value"),
+    ("capability.", "major_capability"),
+)
+
+
+def guess_kind(key: str) -> str:
+    for prefix, kind in KIND_PREFIXES:
+        if key.startswith(prefix):
+            return kind
+    return "custom"
+
 
 def may_apply_automatically(kind: str, key: str, text: str) -> bool:
     return kind == "habit" and text in SAFE_HABITS.get(key, frozenset())

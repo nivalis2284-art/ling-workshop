@@ -9,9 +9,13 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationBranch,
+  EntryInput,
+  EntryWrite,
   Episode,
   IdentityBundle,
   IdentityState,
+  Instructions,
+  PersonaEntry,
   Proposal,
   Revision,
   Source,
@@ -163,13 +167,48 @@ export class LingApi {
     id: string,
     signal?: AbortSignal,
   ): Promise<IdentityBundle> => {
-    const [state, proposals, revisions] = await Promise.all([
-      this.state(id, signal),
-      this.proposals(id, signal),
-      this.revisions(id, signal),
-    ]);
-    return { state, proposals, revisions };
+    const [state, proposals, revisions, entries, instructions] =
+      await Promise.all([
+        this.state(id, signal),
+        this.proposals(id, signal),
+        this.revisions(id, signal),
+        this.entries(id, signal),
+        this.instructions(id, signal),
+      ]);
+    return { state, proposals, revisions, entries, instructions };
   };
+  entries = async (id: string, signal?: AbortSignal) => {
+    const payload = await this.request<{
+      agent_id: string;
+      entries: PersonaEntry[];
+    }>("/agents/" + encodeURIComponent(id) + "/entries", { signal });
+    return payload.entries;
+  };
+  instructions = (id: string, signal?: AbortSignal) =>
+    this.request<Instructions>(
+      "/agents/" + encodeURIComponent(id) + "/instructions",
+      { signal },
+    );
+  saveInstructions = (id: string, rules: string[]) =>
+    this.request<Instructions>(
+      "/agents/" + encodeURIComponent(id) + "/instructions",
+      { method: "PUT", body: JSON.stringify({ rules }) },
+    );
+  resetInstructions = (id: string) =>
+    this.post<Instructions>(
+      "/agents/" + encodeURIComponent(id) + "/instructions/reset",
+      {},
+    );
+  addEntry = (id: string, input: EntryInput) =>
+    this.post<EntryWrite>(
+      "/agents/" + encodeURIComponent(id) + "/entries",
+      input,
+    );
+  removeEntry = (id: string, key: string, expectedRevision: number) =>
+    this.post<EntryWrite>(
+      "/agents/" + encodeURIComponent(id) + "/entries/remove",
+      { key, expected_revision: expectedRevision },
+    );
   decide = (
     id: string,
     decision: "approve" | "reject",

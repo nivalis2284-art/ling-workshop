@@ -117,6 +117,9 @@ export function ConversationPicker({
             </select>
           </div>
         )}
+        <span className="metadata chat-toolbar-hint">
+          切页会断开连接，生成会继续。返回后自动接续。
+        </span>
       </div>
       {selected?.scope.startsWith("scene:") && (
         <p className="metadata chat-scope">场景交流 · {selected.title}</p>

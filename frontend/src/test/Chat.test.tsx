@@ -229,9 +229,20 @@ async function openChat() {
   const view = render(<App initialToken="test-owner" />);
   await user.click(await screen.findByRole("button", { name: /^对话$/ }));
   await waitFor(() =>
-    expect(screen.getByLabelText("对话模型")).toHaveValue("primary-profile"),
+    expect(
+      screen.getByRole("button", { name: "对话模型与思考强度" }),
+    ).toHaveTextContent("主用连接"),
   );
   return { user, ...view };
+}
+
+/** The model picker now lives in a popup at the composer's bottom-right. */
+async function chooseModel(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string,
+) {
+  await user.click(screen.getByRole("button", { name: "对话模型与思考强度" }));
+  await user.click(screen.getByRole("radio", { name }));
 }
 
 async function send(user: ReturnType<typeof userEvent.setup>, text = "你好") {
@@ -288,7 +299,7 @@ test("chat starts empty, selects the primary profile, and displays actual stream
   expect(
     screen.queryByRole("button", { name: "停止生成" }),
   ).not.toBeInTheDocument();
-  await user.selectOptions(screen.getByLabelText("对话模型"), "other-profile");
+  await chooseModel(user, "另一连接");
   await send(user, "换个连接");
   expect(
     server.requests.filter((request) => request.path === "/api/chat/stream")[1]

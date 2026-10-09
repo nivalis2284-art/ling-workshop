@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
-import { RefreshCw } from "lucide-react";
 import type { LingApi } from "../../api/client";
 import type { Agent, Conversation } from "../../api/types";
 import { useResource } from "../../shared/useResource";
 import { ErrorNotice, Loading, PageHeader } from "../../shared/ui";
 import { ChatComposer } from "./ChatComposer";
+import { ChatControls } from "./ChatControls";
 import { ChatTranscript } from "./ChatTranscript";
 import { ConversationPicker } from "./ConversationPicker";
 import { ChatSession, isPending } from "./session";
@@ -166,61 +166,6 @@ export function ChatPage({
             retry={() => void conversations.refresh()}
           />
         )}
-        <div className="chat-toolbar">
-          <div className="chat-model-field">
-            <label htmlFor="chat-profile">对话模型</label>
-            <select
-              id="chat-profile"
-              value={profileId}
-              disabled={
-                pending || models.status !== "ready" || !profiles.length
-              }
-              onChange={(event) => session.setProfile(event.target.value)}
-            >
-              <option value="" disabled>
-                选择模型连接
-              </option>
-              {profiles.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.name}
-                  {models.status === "ready" &&
-                  item.id === models.data.selection.primary
-                    ? " · 主用"
-                    : ""}
-                </option>
-              ))}
-            </select>
-          </div>
-          {!!effortLevels.length && (
-            <div className="chat-effort-field">
-              <label htmlFor="chat-effort">思考强度</label>
-              <select
-                id="chat-effort"
-                value={effort}
-                disabled={locked}
-                onChange={(event) => session.setEffort(event.target.value)}
-              >
-                <option value="">模型默认</option>
-                {effortLevels.map((level) => (
-                  <option key={level} value={level}>
-                    {level}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
-          <button
-            className="icon-button"
-            aria-label="刷新对话模型"
-            disabled={pending || models.status === "loading"}
-            onClick={() => void models.refresh()}
-          >
-            <RefreshCw size={16} aria-hidden="true" />
-          </button>
-          <span className="metadata">
-            切页会断开连接，生成会继续。返回后自动接续。
-          </span>
-        </div>
         {models.status === "loading" && <Loading label="正在读取对话模型…" />}
         {models.status === "error" && (
           <ErrorNotice
@@ -235,7 +180,7 @@ export function ChatPage({
         )}
         {models.status === "ready" && !!profiles.length && !profileId && (
           <p className="notice">
-            尚未选择主用模型，请在上方选择本次对话使用的连接。
+            尚未选择主用模型，请在下方输入框右下角选择本次对话使用的连接。
           </p>
         )}
         {profile && !profile.credentials_available && (
@@ -357,6 +302,22 @@ export function ChatPage({
           canStop={!!last?.runId}
           cancelling={!!last?.cancelling}
           onStop={() => void session.stop()}
+          controls={
+            <ChatControls
+              profiles={profiles}
+              profileId={profileId}
+              onProfile={session.setProfile}
+              effortLevels={effortLevels}
+              effort={effort}
+              onEffort={session.setEffort}
+              disabled={
+                pending || models.status !== "ready" || !profiles.length
+              }
+              locked={locked}
+              loading={models.status === "loading"}
+              onRefresh={() => void models.refresh()}
+            />
+          }
         />
       </section>
     </div>

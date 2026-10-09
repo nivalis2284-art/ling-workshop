@@ -8,6 +8,17 @@
 
 开发工作树 H:/文档/LingNexus/Ling/.worktrees/m0-continuity，feature/m0-continuity。主目录 H:/文档/LingNexus/Ling的main已快进到同一源码，工作区干净。工作树保留.venv/node_modules/.tools和测试产物供后续开发，均不进入Git；根目录交付dist安装包/说明。
 
+## 对话页前端调整（2026-10-09）
+
+用户要求参照 Codex：把模型选择与思考强度移出顶部工具栏，放到输入框右下角。
+
+- 新增 `ChatControls.tsx`：胶囊按钮显示「模型名 · 强度」，点开向上弹出面板，内含模型列表（选中打勾，带刷新按钮）与思考强度档位；点击外部或 Esc 收起，选模型后自动收起。旧的 `#chat-profile` / `#chat-effort` 两个 `<select>` 已移除。
+- `ChatComposer` 新增 `controls` 插槽，与发送/停止按钮同排在 `.chat-composer-buttons`；`.chat-composer-actions` 左侧保留提示文字。
+- 顶部工具栏只剩「保存的对话 / 新建对话 / 对话分支」；「切页会断开连接」的提示并入该工具栏并单独占一行（删除了旧 `.chat-toolbar > .metadata { flex: 1 1 200px }`，否则会把它拽回同一行）。
+- **对齐修复**：`.chat-toolbar` 原为 `align-items: center`，而字段列（标签+控件）约 64 高、按钮仅 42、图标 36，居中后短控件飘在半空。改为 `align-items: flex-end`，浏览器实测三者底边分别为 461/461/461。
+- 提示文案修正：未选主模型时原提示写「请在上方选择」，已改为「请在下方输入框右下角选择」。
+- 测试：新增 `src/test/ChatControls.test.tsx` 7 项；Chat / test_chat_attachments / test_chat_conversations 里共 9 处旧 `selectOptions(getByLabelText(...))` 改为「点开胶囊再点选项」。前端 138 项全过，typecheck 与 build 通过。真实 Chromium 复核：胶囊、弹层、列表勾选、强度档位与整体对齐均正常。
+
 ## 人设透明化与可编辑（2026-10-09）
 
 身份审阅页重排为三层：**系统指令 / 当前身份 / 待审批**，下接版本记录。用户要求"不要黑盒"。

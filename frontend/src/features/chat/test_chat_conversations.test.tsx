@@ -10,6 +10,23 @@ import type {
   SavedModel,
 } from "../../api/types";
 
+/** The model picker now lives in a popup at the composer's bottom-right. */
+async function chooseModel(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string,
+) {
+  await user.click(screen.getByRole("button", { name: "对话模型与思考强度" }));
+  await user.click(screen.getByRole("radio", { name }));
+}
+
+async function chooseEffort(
+  user: ReturnType<typeof userEvent.setup>,
+  label: string,
+) {
+  await user.click(screen.getByRole("button", { name: "对话模型与思考强度" }));
+  await user.click(screen.getByRole("radio", { name: label }));
+}
+
 const profile: SavedModel = {
   id: "primary",
   name: "主用模型",
@@ -339,7 +356,7 @@ test("regenerate reuses exact parent user text and reads the committed replaceme
   open();
   server.paths.a1 = [node("u1", "user", "  原问题\n", null), original[1]];
   await screen.findByText("原回复");
-  await user.selectOptions(screen.getByLabelText("思考强度"), "high");
+  await chooseEffort(user, "high");
   await user.click(screen.getByRole("button", { name: "重新生成" }));
   const body = server.requests.find((r) => r.path === "/api/chat/stream")!.body;
   expect(body).toEqual({
@@ -467,8 +484,12 @@ test.each(["natural", "scene"])(
       expect(screen.getByText(/我们在虚构的海岛上探索/)).toBeVisible();
       expect(screen.queryByText(/背景描述不会注入/)).not.toBeInTheDocument();
     }
-    await user.selectOptions(screen.getByLabelText("对话模型"), "backup");
-    expect(screen.queryByLabelText("思考强度")).not.toBeInTheDocument();
+    await chooseModel(user, "备用模型");
+    await user.click(
+      screen.getByRole("button", { name: "对话模型与思考强度" }),
+    );
+    expect(screen.queryByText("思考强度")).not.toBeInTheDocument();
+    await user.keyboard("{Escape}");
     await user.type(screen.getByLabelText("消息"), "只有当前输入");
     await user.click(screen.getByRole("button", { name: "发送消息" }));
     expect(

@@ -12,6 +12,7 @@ export function ChatComposer({
   cancelling,
   onStop,
   attachments,
+  controls,
 }: {
   draft: string;
   onDraft: (value: string) => void;
@@ -22,6 +23,7 @@ export function ChatComposer({
   cancelling: boolean;
   onStop: () => void;
   attachments?: ReactNode;
+  controls?: ReactNode;
 }) {
   const composing = useRef(false);
   return (
@@ -64,26 +66,29 @@ export function ChatComposer({
         <p id="chat-composer-help" className="metadata">
           文字与所选附件 · Enter 发送 · Shift + Enter 换行
         </p>
-        {pending ? (
-          <button
-            type="button"
-            className="button secondary"
-            disabled={!canStop || cancelling}
-            onClick={onStop}
-          >
-            <Square size={15} aria-hidden="true" />
-            {cancelling ? "正在停止…" : "停止生成"}
-          </button>
-        ) : (
-          <button
-            type="submit"
-            className="button primary"
-            disabled={disabled || !draft.trim()}
-          >
-            <Send size={16} aria-hidden="true" />
-            发送消息
-          </button>
-        )}
+        <div className="chat-composer-buttons">
+          {controls}
+          {pending ? (
+            <button
+              type="button"
+              className="button secondary"
+              disabled={!canStop || cancelling}
+              onClick={onStop}
+            >
+              <Square size={15} aria-hidden="true" />
+              {cancelling ? "正在停止…" : "停止生成"}
+            </button>
+          ) : (
+            <button
+              type="submit"
+              className="button primary"
+              disabled={disabled || !draft.trim()}
+            >
+              <Send size={16} aria-hidden="true" />
+              发送消息
+            </button>
+          )}
+        </div>
       </div>
       {pending && !canStop && (
         <p className="metadata">

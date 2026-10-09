@@ -7,6 +7,15 @@ import { ModelEditor } from "../settings/ModelEditor";
 import { ChatPage } from "./ChatPage";
 import { ChatSessions } from "./session";
 
+/** The model picker now lives in a popup at the composer's bottom-right. */
+async function chooseModel(
+  user: ReturnType<typeof userEvent.setup>,
+  name: string,
+) {
+  await user.click(screen.getByRole("button", { name: "对话模型与思考强度" }));
+  await user.click(screen.getByRole("radio", { name }));
+}
+
 const file = (
   id: string,
   original_name: string,
@@ -322,16 +331,16 @@ test("images and scanned PDFs require explicit declared capabilities while extra
   await user.click(screen.getByRole("checkbox", { name: "选择 图片.png" }));
   expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
   expect(screen.getByText(/当前模型未声明图片能力/)).toBeVisible();
-  await user.selectOptions(screen.getByLabelText("对话模型"), "image-model");
+  await chooseModel(user, "图片模型");
   expect(screen.getByRole("button", { name: "发送消息" })).toBeEnabled();
   await user.click(screen.getByRole("checkbox", { name: "选择 扫描.pdf" }));
   expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
   expect(screen.getByText(/当前模型未声明 PDF 能力/)).toBeVisible();
-  await user.selectOptions(screen.getByLabelText("对话模型"), "pdf-model");
+  await chooseModel(user, "PDF 模型");
   expect(screen.getByRole("button", { name: "发送消息" })).toBeEnabled();
   await user.click(screen.getByRole("checkbox", { name: "选择 图片.png" }));
   await user.click(screen.getByRole("checkbox", { name: "选择 扫描.pdf" }));
-  await user.selectOptions(screen.getByLabelText("对话模型"), "text");
+  await chooseModel(user, "文字模型");
   await user.click(screen.getByRole("checkbox", { name: "选择 文字.pdf" }));
   await user.click(screen.getByRole("button", { name: "发送消息" }));
   expect(
@@ -468,7 +477,7 @@ test("a PDF declaration on a Chat Completions profile cannot enable native scann
   open();
   await picker(user);
   await user.type(screen.getByLabelText("消息"), "读取扫描内容");
-  await user.selectOptions(screen.getByLabelText("对话模型"), "chat-pdf");
+  await chooseModel(user, "Chat 接口");
   await user.click(screen.getByRole("checkbox", { name: "选择 扫描.pdf" }));
   expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
   expect(screen.getByText(/当前接口不支持扫描 PDF/)).toBeVisible();

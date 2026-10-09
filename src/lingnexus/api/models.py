@@ -20,6 +20,16 @@ class ModelSelection(Input):
     fallback: str | None = None
 
 
+@router.get("/credentials/cache")
+def cache_status(request: Request):
+    return request.app.state.services.profiles.cache_status()
+
+
+@router.delete("/credentials/cache")
+def clear_cache(request: Request):
+    return request.app.state.services.profiles.clear_cached_credentials()
+
+
 @router.get("")
 def profiles(request: Request):
     return request.app.state.services.profiles.list()

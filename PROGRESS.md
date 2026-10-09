@@ -8,7 +8,15 @@
 
 开发工作树 H:/文档/LingNexus/Ling/.worktrees/m0-continuity，feature/m0-continuity。主目录 H:/文档/LingNexus/Ling的main已快进到同一源码，工作区干净。工作树保留.venv/node_modules/.tools和测试产物供后续开发，均不进入Git；根目录交付dist安装包/说明。
 
-## 最终验收
+## 0.1.1 更新（最新）
+
+用户要求日常模型密钥改为可清理本地缓存、同时保存多个提供商、EXE头像/网页叶状图标。已实现Windows DPAPI加密文件cache/model-credentials.bin、owner-only清除文件与内存、端点绑定/回滚保护、多提供商独立凭据；备份导出不包含缓存。旧仅内存日常策略已过期，但不主动保存此前对话中的测试密钥。
+
+新版0.1.1后端定向320pass，前端123pass，Ruff/Pyright/build通过。最终exe三个启动周期的真实Chrome验证：两个提供商重启自动恢复、清除文件内存、再重启不恢复、配置主备保留、favicon可用，无页面错误，无真实模型调用。图标7种尺寸/7资源。详见docs/验证/2026-10-09-0.1.1缓存与图标.md。
+
+新版安装包dist/LingNexus-0.1.1-Setup.exe，51614083bytes，SHA2565d73008fc76a6369e969799d1094d8bc8cd3e7a7866bc210f8f86312c9b42b3a。没有停止或覆盖用户运行中的旧版。
+
+## 0.1.0 首版验收（历史）
 
 - 全量pytest session26542已结束：1305pass/6skip/0fail，1054.78s。实际Docker三镜像optin已启用；跳过1automaticbackup+3workspace+2restore，均Windowssymlink权限。XML .artifacts/final-tests.xml。不要无理由重跑付费或全部测试。
 - Frontend21文件121pass，productionbuild/typecheck成功。Ruff src/tests/scripts全通过，Pyright0错误0警告，gitstageddiffcheck通过。
@@ -22,7 +30,7 @@
 
 ## 交付
 
-主目录dist/LingNexus-0.1.0-Setup.exe，51,111,734bytes，SHA25658a25ae5faecc762b11eeb06be140f6f03c9aa7484dc1d859ff135c29789f036。未做发布者签名。不保存日常用户模型凭据，退出后重新提供。
+主目录dist/LingNexus-0.1.0-Setup.exe，51,111,734bytes，SHA25658a25ae5faecc762b11eeb06be140f6f03c9aa7484dc1d859ff135c29789f036。未做发布者签名。0.1.0仅内存凭据策略已被0.1.1可清理加密缓存替代。
 
 所有工作代理已关闭。报告代理先前提交01e9983仅新增评估报告；主代理统一提交完整工程，不推送远端。整合后main与feature代码一致，保留worktree不强删环境。
 

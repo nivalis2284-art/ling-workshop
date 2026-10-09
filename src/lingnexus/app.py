@@ -5,6 +5,7 @@ from pathlib import Path
 from lingnexus.actions.service import Actions
 from lingnexus.activities import ActivityService
 from lingnexus.browser import BrowserService
+from lingnexus.configuration.credential_cache import CredentialCache
 from lingnexus.configuration.profiles import Profiles
 from lingnexus.content.service import Attachments
 from lingnexus.context.builder import ContextBuilder
@@ -23,7 +24,7 @@ from lingnexus.storage.db import Database
 
 
 class Application:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, credential_cache: bool = False):
         self.database = Database(path)
         self.history = HistoryService(self.database)
         self.identity = IdentityService(self.database, self.history)
@@ -35,7 +36,12 @@ class Application:
         self.history.subscribe_corrections(self.development.invalidate)
         self.context = ContextBuilder(self.database, self.identity, self.history)
         self.maintenance = MaintenanceService(self.database)
-        self.profiles = Profiles(self.database)
+        self.profiles = Profiles(
+            self.database,
+            cache=CredentialCache(self.database.path.parent / "cache/model-credentials.bin")
+            if credential_cache
+            else None,
+        )
         self.attachments = Attachments(self.database)
         self.conversations = Conversations(self.database, self.history)
         self.segments = Segments(self)
@@ -52,5 +58,5 @@ class Application:
         return self.identity.create(name)
 
     def close(self) -> None:
-        # Database connections are scoped to calls; runtime credentials end here.
+        # Release process-memory keys; the optional user-encrypted cache survives shutdown.
         self.profiles.clear_credentials()

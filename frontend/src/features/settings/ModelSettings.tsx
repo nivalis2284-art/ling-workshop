@@ -6,6 +6,7 @@ import { useResource } from "../../shared/useResource";
 import { ErrorNotice, Loading } from "../../shared/ui";
 import { ModelEditor } from "./ModelEditor";
 import { ModelSelectionForm } from "./ModelSelectionForm";
+import { CredentialCachePanel } from "./CredentialCachePanel";
 
 export function ModelSettings({ api }: { api: LingApi }) {
   const load = useCallback(
@@ -35,7 +36,7 @@ export function ModelSettings({ api }: { api: LingApi }) {
         </button>
       </div>
       <p className="muted">
-        配置会保存在本地，密钥仅保留在服务的本次运行中。聊天界面仍在开发；凭据已提供不代表连接已验证。
+        可以同时保存多个提供商和模型连接，每个连接分别填写接口类型、服务地址与密钥。保存后选择主用与备用，或按需切换；凭据已提供不代表连接已验证。
       </p>
       {message && (
         <p className="notice success" role="status">
@@ -64,8 +65,11 @@ export function ModelSettings({ api }: { api: LingApi }) {
                     <p>
                       {profile.profile.model} ·{" "}
                       {profile.credentials_available
-                        ? "本次运行已提供凭据"
-                        : "本次运行未提供凭据"}
+                        ? "密钥可用"
+                        : "需要填写密钥"}
+                    </p>
+                    <p className="metadata break-anywhere">
+                      {profile.profile.base_url}
                     </p>
                   </div>
                   <button
@@ -108,6 +112,13 @@ export function ModelSettings({ api }: { api: LingApi }) {
               setMessage(
                 "模型配置已保存，密钥输入已清空。请按需选择主用与备用模型。",
               );
+              await resource.refresh();
+            }}
+          />
+          <CredentialCachePanel
+            api={api}
+            onCleared={async () => {
+              setEditing(undefined);
               await resource.refresh();
             }}
           />

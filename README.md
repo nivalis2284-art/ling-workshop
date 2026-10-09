@@ -6,11 +6,11 @@ LingNexus 是由所有者掌握发展方向的长期个人 AI 系统。当前首
 
 ## 安装与日常使用
 
-本次交付安装包在 dist/LingNexus-0.1.0-Setup.exe；构建原件在工作树 packaging/installer。安装器按当前 Windows 用户安装，无需管理员权限，默认不自启。最终验证结果以 [交付验收记录](docs/验证/2026-10-09-首版交付验收.md) 为准。
+本次交付安装包在 dist/LingNexus-0.1.1-Setup.exe；构建原件在工作树 packaging/installer。安装器按当前 Windows 用户安装，无需管理员权限，默认不自启。首版验证见 [交付验收记录](docs/验证/2026-10-09-首版交付验收.md)，本次更新见 [0.1.1更新记录](docs/验证/2026-10-09-0.1.1缓存与图标.md)。
 
 启动后打开本机图形页面，并在通知区域显示托盘图标。关闭页面后后台继续运行，从托盘选择退出才能停止整个程序。默认资料目录是 %LOCALAPPDATA%/LingNexus，程序目录与资料目录分开。
 
-首次使用先创建灵，再在设置添加模型连接并选主模型。支持 Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三种原生端点，能力按渠道实际支持设置。密钥仅留在本次后台内存，退出后需要重新填写，前端不读取已有密钥。
+首次使用先创建灵，再在设置添加模型连接并选主模型。支持 Anthropic Messages、OpenAI Chat Completions、OpenAI Responses 三种原生端点，能力按渠道实际支持设置。模型连接允许同时保存多个提供商，各自配置协议、地址和密钥。密钥保存到当前 Windows 用户加密的本地缓存，重启自动读取；可在设置清除缓存，前端不读取已有密钥。
 
 详细步骤、编程所需 Docker 环境、审批、备份与限制见 [使用说明](docs/使用说明.md)。
 

@@ -67,7 +67,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(server: FastAPI):
-        server.state.services = Application(directory / "ling.db")
+        server.state.services = Application(
+            directory / "ling.db", credential_cache=sys.platform == "win32"
+        )
         chrome = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
         server.state.browser = await BrowserService(
             server.state.services.database,

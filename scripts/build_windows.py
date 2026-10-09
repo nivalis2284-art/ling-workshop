@@ -270,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
                 "import sys; sys.path.insert(0,'src'); "
                 "from lingnexus.desktop.tray import icon_image; "
                 "icon_image().save('packaging/windows/LingNexus.ico',"
-                "sizes=[(16,16),(32,32),(48,48),(64,64)])"
+                "sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])"
             )
             run([python, "-c", icon_code])
             run(

@@ -1,6 +1,7 @@
 """The Windows tray is the launcher UI; browser windows do not own its lifetime."""
 
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -8,14 +9,10 @@ if TYPE_CHECKING:
 
 
 def icon_image():
-    from PIL import Image, ImageDraw
+    from PIL import Image
 
-    image = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((2, 2, 61, 61), radius=15, fill="#182825")
-    draw.line((20, 17, 20, 46, 45, 46), fill="#a9d4bd", width=7)
-    draw.ellipse((39, 15, 48, 24), fill="#a9d4bd")
-    return image
+    with Image.open(Path(__file__).parent / "assets/app-icon.png") as picture:
+        return picture.convert("RGBA")
 
 
 class WindowsTray:

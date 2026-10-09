@@ -53,11 +53,11 @@ test("模型密钥仅提交到本地服务，保存后清空，选择模型不�
     screen.getByLabelText("服务地址"),
     "https://models.example.invalid/v1",
   );
-  const keyInput = screen.getByLabelText("本次运行的模型密钥");
+  const keyInput = screen.getByLabelText("模型密钥");
   await user.type(keyInput, "test-only-model-credential");
   await user.click(screen.getByRole("button", { name: "保存模型配置" }));
   await waitFor(() =>
-    expect(screen.getByLabelText("本次运行的模型密钥")).toHaveValue(""),
+    expect(screen.getByLabelText("模型密钥")).toHaveValue(""),
   );
   const save = requests.find((request) => request.method === "POST");
   expect(save?.body).toMatchObject({

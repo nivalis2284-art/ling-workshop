@@ -161,7 +161,7 @@ test("clone is deliberate, preserves config, and requires a separately entered m
   });
   const original = structuredClone(item);
   const { user, requests, saved } = setup(item);
-  const key = screen.getByLabelText("本次运行的模型密钥");
+  const key = screen.getByLabelText("模型密钥");
   expect(key).toHaveValue("");
   await user.type(key, "fixture-edit-key-discard-on-clone");
   await user.click(screen.getByRole("button", { name: "另存为新预设" }));

@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import time
+import tomllib
 import winreg
 from pathlib import Path
 
@@ -111,7 +112,9 @@ def main():
     assert not INSTALL.exists(), "Use a fresh disposable install folder"
     assert (DATA / "ling.db").is_file(), "Prepare synthetic fixture before install"
     startup = registry(RUN_KEY, "LingNexus")
-    installer = ROOT / "packaging/installer/LingNexus-0.1.0-Setup.exe"
+    with (ROOT / "pyproject.toml").open("rb") as file:
+        version = tomllib.load(file)["project"]["version"]
+    installer = ROOT / "packaging/installer" / f"LingNexus-{version}-Setup.exe"
     install_args = [
         installer,
         "/VERYSILENT",

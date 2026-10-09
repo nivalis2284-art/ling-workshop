@@ -1,17 +1,19 @@
-"""Persist non-secret model profiles; runtime credentials deliberately stay in memory."""
+"""Non-secret profiles and endpoint-bound credentials with an optional user cache."""
 
 import json
 from threading import RLock
 
 from lingnexus.common.errors import NotFound, PermissionDenied
 from lingnexus.common.types import new_id
+from lingnexus.configuration.credential_cache import CredentialCache
 from lingnexus.models import ModelProfile, RuntimeCredentials
 
 
 class Profiles:
-    def __init__(self, database):
+    def __init__(self, database, *, cache: CredentialCache | None = None):
         self.database = database
-        self._keys: dict[str, tuple[str, str]] = {}
+        self.cache = cache
+        self._keys: dict[str, tuple[str, str]] = cache.load() if cache else {}
         self._lock = RLock()
 
     def save(
@@ -38,14 +40,20 @@ class Profiles:
                 (pid, name, profile.model_dump_json()),
             )
             # Bind each runtime key to its configured endpoint, never to a reusable ID alone.
-            if api_key is not None:
+            if api_key is not None or (
+                pid in self._keys and self._keys[pid][0] != profile.base_url
+            ):
 
                 def publish_key() -> None:
                     with self._lock:
+                        next_keys = self._keys.copy()
                         if api_key:
-                            self._keys[pid] = (profile.base_url, api_key)
+                            next_keys[pid] = (profile.base_url, api_key)
                         else:
-                            self._keys.pop(pid, None)
+                            next_keys.pop(pid, None)
+                        if self.cache:
+                            self.cache.save(next_keys)
+                        self._keys = next_keys
 
                 self.database.after_commit(publish_key)
         return self.get(pid)
@@ -106,3 +114,18 @@ class Profiles:
     def clear_credentials(self) -> None:
         with self._lock:
             self._keys.clear()
+
+    def cache_status(self) -> dict:
+        with self.database.transaction(), self._lock:
+            return {
+                "enabled": self.cache is not None,
+                "cached_profiles": sum(item["credentials_available"] for item in self.list()),
+                "error": self.cache.error if self.cache else None,
+            }
+
+    def clear_cached_credentials(self) -> dict:
+        with self.database.transaction(), self._lock:
+            if self.cache:
+                self.cache.clear()
+            self._keys.clear()
+            return self.cache_status()

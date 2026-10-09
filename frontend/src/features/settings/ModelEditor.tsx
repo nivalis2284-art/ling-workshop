@@ -174,7 +174,7 @@ export function ModelEditor({
             <input
               value={name}
               onChange={(event) => setName(event.target.value)}
-              placeholder="给这个连接起个容易辨认的名字"
+              placeholder="例如 Anthropic 官方 · 主模型，或第三方渠道 · 备用"
               required
               maxLength={100}
             />
@@ -232,7 +232,7 @@ export function ModelEditor({
           </label>
         </div>
         <label>
-          本次运行的模型密钥
+          模型密钥
           <input
             type="password"
             value={key}
@@ -244,13 +244,14 @@ export function ModelEditor({
               cloning
                 ? "请单独输入新预设的密钥"
                 : existing?.credentials_available
-                  ? "留空可保留本次运行已有的密钥"
+                  ? "留空可保留已缓存的密钥"
                   : "可选，调用需要凭据的服务时填写"
             }
           />
         </label>
         <p id="model-key-help" className="field-help">
-          密钥仅在本地服务的内存中使用，保存成功后输入框会清空。服务重启后需要重新提供；修改服务地址时也请重新提供密钥。
+          密钥保存到当前 Windows
+          用户加密的本地缓存，保存成功后输入框会清空，重启后自动读取。可在下方清除密钥缓存；修改服务地址时请重新提供密钥。
           {cloning && "新预设需要单独提交密钥，不会读取或复制原连接的凭据。"}
         </p>
         <details className="model-capabilities">

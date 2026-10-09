@@ -19,3 +19,5 @@ node_modules/
 .tools/
 packaging/installer/
 packaging/smoke-*/
+**/cache/model-credentials.bin
+**/cache/credentials-*.tmp

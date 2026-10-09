@@ -12,6 +12,7 @@ analysis = Analysis(
     binaries=[],
     datas=[
         (str(frontend), "frontend"),
+        (str(root / "src/lingnexus/desktop/assets/app-icon.png"), "lingnexus/desktop/assets"),
         (str(root / "src" / "lingnexus" / "storage" / "migrations" / "*.sql"),
          "lingnexus/storage/migrations"),
     ],

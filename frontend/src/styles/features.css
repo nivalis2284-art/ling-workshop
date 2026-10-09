@@ -763,6 +763,24 @@
 .entry-editor label {
   margin-bottom: 14px;
 }
+.rule-editor textarea,
+.entry-editor textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+  padding: 12px 14px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.7;
+  border: 1px solid #d7dfd3;
+  border-radius: 8px;
+  background: #fffefb;
+  color: var(--ink);
+}
+.rule-editor textarea::placeholder,
+.entry-editor textarea::placeholder {
+  color: #9aa79a;
+}
 .field-hint {
   color: var(--muted);
   font-size: 12px;

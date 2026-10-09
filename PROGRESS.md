@@ -18,6 +18,7 @@
 - **新增类别 `custom`**：只允许所有者使用（`OWNER_ONLY_KINDS`）；`learning/schema.py` 的 `Change.kind` 仍是 6 个 Literal，自动整理永远写不进这一类。
 - **修掉吞名字的缺陷**：`identityFormatting.ts` 原先把认不得的键名一律显示成"自我认识条目"，现在改为"预设中文名 → 去掉前缀的自定义名 → 原样显示键名"。
 - **前端**：新增 `SystemInstructions`、`CurrentIdentity`、`PendingReview`、`EntryForm`；删除被替换的 `IdentityEditor`。两栏为默认折叠的七行清单。
+- **补样式（用户指出）**：本项目的多行输入框由各页面自管样式（见 `.permission-settings textarea` 等），新组件初版漏写，textarea 露出浏览器默认外观。已在 `features.css` 补 `.rule-editor/.entry-editor textarea`，与设置页写法一致；真实浏览器复核已正常。
 
 验证：后端新增 `tests/test_identity_page.py` 14 项全过；改动相关回归 321 通过 1 跳过。前端新增 `src/test/IdentityPage.test.tsx` 9 项，全套 131 通过 0 失败（**注意需 Node 24**：Node 22 下 `ChatStream`/`ManagementPanels` 的 Blob 断言会失败，与本次改动无关，已用 stash 复现确认）。Ruff、Pyright、前端 typecheck 与构建均通过。
 

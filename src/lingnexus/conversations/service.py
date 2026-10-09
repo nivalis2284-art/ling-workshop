@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 
 from lingnexus.common.errors import Conflict, NotFound, PermissionDenied, RevisionConflict
 from lingnexus.common.types import SourceRef, new_id, utc_now

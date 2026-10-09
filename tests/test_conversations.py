@@ -65,7 +65,7 @@ def _turn(app, convo_id, text, request_id):
 
 def test_delete_turn_removes_round_and_retires_derived_memory(app, agent_id):
     convo = app.conversations.create(agent_id, "日常交流")
-    first, first_reply = _turn(app, convo["id"], "你好", "u1")
+    _, first_reply = _turn(app, convo["id"], "你好", "u1")
     second, _ = _turn(app, convo["id"], "喜欢咖啡吗", "u2")
     memory = app.memory.knowledge.save(
         agent_id, "用户喜欢咖啡", [second["source"]], kind="preference", request_id="pref"
@@ -103,7 +103,7 @@ def test_delete_multiple_nonadjacent_turns_relinks_chain(app, agent_id):
 
 def test_delete_turn_drops_old_branches_below_it(app, agent_id):
     convo = app.conversations.create(agent_id, "分支删除")
-    u1, _ = _turn(app, convo["id"], "一", "u1")
+    _turn(app, convo["id"], "一", "u1")
     u2, a2 = _turn(app, convo["id"], "二", "u2")
     _turn(app, convo["id"], "三", "u3")
     alt = app.conversations.edit_user(convo["id"], u2["id"], "二改", request_id="edit2")

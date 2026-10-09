@@ -329,17 +329,6 @@ export class LingApi {
       "/agents/" + encodeURIComponent(agentId) + "/conversations",
       { signal },
     );
-  createConversation = (
-    agentId: string,
-    title: string,
-    scene?: string,
-    background?: string,
-  ) =>
-    this.post<Conversation>("/conversations", {
-      agent_id: agentId,
-      title,
-      ...(scene ? { scene, background: background ?? "" } : {}),
-    });
   conversationMessages = (id: string, signal?: AbortSignal) =>
     this.request<ConversationMessage[]>(
       "/conversations/" + encodeURIComponent(id) + "/messages",

@@ -55,16 +55,6 @@ def test_stale_answer_cannot_attach_after_edit(app, agent_id):
         )
 
 
-def test_scene_source_does_not_become_real_memory(app, agent_id):
-    convo = app.conversations.create(agent_id, "幻想", scene="island")
-    user = app.conversations.append_user(convo["id"], "住在浮空岛", request_id="island")
-    assert app.history.read(user["source"])["scope"] == "scene:island"
-    with pytest.raises(SourceInvalid):
-        app.memory.knowledge.save(
-            agent_id, "住在浮空岛", [user["source"]], kind="fact", request_id="fake-real"
-        )
-
-
 def _turn(app, convo_id, text, request_id):
     user = app.conversations.append_user(convo_id, text, request_id=request_id)
     answer = app.conversations.append_assistant(

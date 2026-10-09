@@ -1,123 +1,192 @@
 import { expect, test, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Shell } from "../app/Shell";
-import { ChatHistory } from "../features/chat/ChatHistory";
-import type { ConversationList } from "../features/chat/useConversations";
-import type { Conversation } from "../api/types";
+import { App } from "../app/App";
+import type { SavedModel, ConversationMessage } from "../api/types";
 
-const agent = { id: "ling", name: "灵" };
+const profile: SavedModel = {
+  id: "primary-profile",
+  name: "主用连接",
+  credentials_available: true,
+  profile: {
+    api_family: "openai_chat_completions",
+    model: "chat-model",
+    base_url: "https://example.invalid/v1",
+    capabilities: {
+      streaming: true,
+      tools: true,
+      thinking: true,
+      effort_levels: [],
+    },
+  },
+};
 
-function conversation(id: string, title: string, scene = false): Conversation {
+function node(
+  id: string,
+  role: "user" | "assistant",
+  text: string,
+  parent: string | null,
+): ConversationMessage {
   return {
     id,
-    agent_id: "ling",
-    title,
-    scope: scene ? "scene:island" : "real",
-    head_id: null,
+    role,
+    text,
+    parent_id: parent,
+    source: { id: "src-" + id, revision: 1 },
   };
 }
 
-function list(overrides: Partial<ConversationList> = {}): ConversationList {
-  return {
-    list: [conversation("a", "日常记录"), conversation("b", "海岛故事", true)],
-    selectedId: "a",
-    choose: vi.fn(),
-    adopt: vi.fn(),
-    creating: false,
-    setCreating: vi.fn(),
-    loading: false,
-    error: "",
-    refresh: vi.fn(),
-    ...overrides,
+/** Two persisted rounds, so a deletion always leaves something to compare with. */
+function backend() {
+  const requests: {
+    path: string;
+    method: string;
+    body: Record<string, unknown> | null;
+  }[] = [];
+  const json = (data: unknown, status = 200) =>
+    new Response(JSON.stringify(data), { status });
+  let messages: ConversationMessage[] = [
+    node("u1", "user", "第一个问题", null),
+    node("a1", "assistant", "第一条回复", "u1"),
+    node("u2", "user", "第二个问题", "a1"),
+    node("a2", "assistant", "第二条回复", "u2"),
+  ];
+  const conversation = {
+    id: "conversation-1",
+    agent_id: "ling-1",
+    title: "交流",
+    scope: "real",
+    head_id: "a2",
   };
+  vi.stubGlobal("fetch", async (path: string, init: RequestInit) => {
+    const method = init.method ?? "GET";
+    requests.push({
+      path,
+      method,
+      body: init.body ? JSON.parse(String(init.body)) : null,
+    });
+    if (path === "/api/agents") return json([{ id: "ling-1", name: "灵" }]);
+    if (method === "GET" && path.endsWith("/conversations"))
+      return json([conversation]);
+    if (path === "/api/conversations/conversation-1/messages")
+      return json(messages);
+    if (path === "/api/conversations/conversation-1/branches")
+      return json(messages.length ? [{ ...messages.at(-1), selected: true }] : []);
+    if (path === "/api/conversations/conversation-1/delete-turns") {
+      const anchors = (
+        JSON.parse(String(init.body)) as { anchors: string[] }
+      ).anchors;
+      const removed = new Set<string>();
+      let dropping = false;
+      for (const item of messages) {
+        if (item.role === "user") dropping = anchors.includes(item.id);
+        if (dropping) removed.add(item.id);
+      }
+      messages = messages.filter((item) => !removed.has(item.id));
+      return json(conversation);
+    }
+    if (path.endsWith("/attachments")) return json([]);
+    if (path === "/api/models") return json([profile]);
+    if (path === "/api/models/selection")
+      return json({ primary: profile.id, fallback: null });
+    if (path.endsWith("/state"))
+      return json({ agent_id: "ling-1", revision: 0, entries: {} });
+    if (path.endsWith("/proposals") || path.endsWith("/revisions"))
+      return json([]);
+    if (path.includes("/episodes?")) return json([]);
+    if (path.endsWith("/segments")) return json([]);
+    throw new Error("Unexpected endpoint: " + path);
+  });
+  return { requests };
 }
 
-test("对话列表列在侧栏里，当前那条被标出来", () => {
-  render(
-    <ChatHistory
-      conversations={list()}
-      currentId="a"
-      disabled={false}
-      onSelect={() => {}}
-      onNew={() => {}}
-    />,
-  );
-  expect(screen.getByRole("button", { current: true })).toHaveTextContent(
-    "日常记录",
-  );
-  expect(screen.getByRole("button", { name: /^海岛故事/ })).toHaveTextContent(
-    "场景",
-  );
+async function openChat() {
+  render(<App initialToken="test-owner" />);
+  await userEvent.click(await screen.findByRole("button", { name: "对话" }));
+  await screen.findByText("第一条回复");
+}
+
+test("the sidebar no longer lists chats and offers no way to create one", async () => {
+  backend();
+  await openChat();
+  expect(
+    screen.queryByRole("button", { name: "新聊天" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByRole("navigation", { name: "主要导航" })).toBeVisible();
+  expect(
+    within(screen.getByRole("navigation", { name: "主要导航" })).queryByText(
+      "最近",
+    ),
+  ).not.toBeInTheDocument();
 });
 
-test("点另一条对话会切换，「新聊天」会请求新建", async () => {
-  const onSelect = vi.fn();
-  const onNew = vi.fn();
-  render(
-    <ChatHistory
-      conversations={list()}
-      currentId="a"
-      disabled={false}
-      onSelect={onSelect}
-      onNew={onNew}
-    />,
+test("deleting one round asks first and then drops it with its reply", async () => {
+  const server = backend();
+  await openChat();
+  const mine = within(screen.getByRole("log")).getAllByRole("article", {
+    name: "你的消息",
+  });
+  expect(mine).toHaveLength(2);
+  await userEvent.click(
+    within(mine[0]).getByRole("button", { name: "删除这一轮" }),
   );
-  const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: /^海岛故事/ }));
-  expect(onSelect).toHaveBeenCalledWith("b");
-  await user.click(screen.getByRole("button", { name: "新聊天" }));
-  expect(onNew).toHaveBeenCalled();
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByText(/无法撤销/)).toBeVisible();
+  await userEvent.click(
+    within(dialog).getByRole("button", { name: "确认删除" }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByText("第一个问题")).not.toBeInTheDocument(),
+  );
+  expect(screen.queryByText("第一条回复")).not.toBeInTheDocument();
+  expect(screen.getByText("第二个问题")).toBeVisible();
+  const request = server.requests.find((value) =>
+    value.path.endsWith("/delete-turns"),
+  )!;
+  expect(request.method).toBe("POST");
+  expect(request.body).toEqual({ anchors: ["u1"] });
 });
 
-test("没有对话时给出可读的空状态而不是一片空白", () => {
-  render(
-    <ChatHistory
-      conversations={list({ list: [], selectedId: undefined })}
-      currentId=""
-      disabled={false}
-      onSelect={() => {}}
-      onNew={() => {}}
-    />,
+test("cancelling the confirmation keeps the round", async () => {
+  const server = backend();
+  await openChat();
+  const mine = within(screen.getByRole("log")).getAllByRole("article", {
+    name: "你的消息",
+  });
+  await userEvent.click(within(mine[0]).getByRole("button", { name: "删除这一轮" }));
+  await userEvent.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "取消",
+    }),
   );
-  expect(screen.getByText(/还没有对话/)).toBeInTheDocument();
+  expect(screen.getByText("第一个问题")).toBeVisible();
+  expect(
+    server.requests.some((value) => value.path.endsWith("/delete-turns")),
+  ).toBe(false);
 });
 
-test("读取失败时提供重新加载", async () => {
-  const refresh = vi.fn();
-  render(
-    <ChatHistory
-      conversations={list({ list: [], error: "读取失败", refresh })}
-      currentId=""
-      disabled={false}
-      onSelect={() => {}}
-      onNew={() => {}}
-    />,
+test("batch deletion removes several rounds in one request", async () => {
+  const server = backend();
+  await openChat();
+  await userEvent.click(screen.getByRole("button", { name: "对话选项" }));
+  await userEvent.click(screen.getByRole("button", { name: "批量删除" }));
+  const boxes = await screen.findAllByRole("checkbox");
+  expect(boxes).toHaveLength(2);
+  expect(screen.getByRole("button", { name: "删除所选" })).toBeDisabled();
+  await userEvent.click(boxes[0]);
+  await userEvent.click(boxes[1]);
+  expect(screen.getByText("已选 2 轮")).toBeVisible();
+  await userEvent.click(screen.getByRole("button", { name: "删除所选" }));
+  await userEvent.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "确认删除",
+    }),
   );
-  await userEvent.click(screen.getByRole("button", { name: "重新加载" }));
-  expect(refresh).toHaveBeenCalled();
-});
-
-test("侧栏可以收起并记住状态", async () => {
-  localStorage.clear();
-  render(
-    <Shell
-      agents={[agent]}
-      agent={agent}
-      page="chat"
-      onNavigate={() => {}}
-      onSelectAgent={() => {}}
-    >
-      <p>内容</p>
-    </Shell>,
+  await waitFor(() =>
+    expect(screen.queryByText("第二个问题")).not.toBeInTheDocument(),
   );
-  const user = userEvent.setup();
-  await user.click(screen.getByRole("button", { name: "收起侧栏" }));
-  expect(document.querySelector(".app-shell")).toHaveClass("collapsed");
-  expect(screen.getByRole("button", { name: "展开侧栏" })).toBeInTheDocument();
-  expect(localStorage.getItem("lingnexus.shell.collapsed")).toBe("1");
-  await user.click(screen.getByRole("button", { name: "展开侧栏" }));
-  expect(document.querySelector(".app-shell")).not.toHaveClass("collapsed");
-  expect(localStorage.getItem("lingnexus.shell.collapsed")).toBe("0");
-  localStorage.clear();
+  expect(screen.getByText(/从一条消息开始/)).toBeVisible();
+  expect(
+    server.requests.filter((value) => value.path.endsWith("/delete-turns")),
+  ).toHaveLength(1);
 });

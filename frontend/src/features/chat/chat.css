@@ -37,77 +37,6 @@
   margin: 10px 0;
 }
 
-/* --- 侧栏里的对话列表 --- */
-.chat-history {
-  margin-top: 20px;
-}
-.chat-history-new {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  padding: 9px 12px;
-  margin-bottom: 14px;
-  background: #315e4b;
-  color: #fff;
-  border: 0;
-  border-radius: 9px;
-  font-size: 13px;
-  font-weight: 500;
-}
-.chat-history-new:hover:not(:disabled) {
-  background: #29503f;
-}
-.chat-history-note {
-  color: #798774;
-  font-size: 11px;
-  line-height: 1.7;
-  margin: 0 8px 8px;
-}
-.chat-history-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 2px;
-}
-.chat-history-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 10px;
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  font-size: 12.5px;
-  color: #5b6a58;
-  text-align: left;
-}
-.chat-history-item:hover:not(:disabled) {
-  background: #e6ebdf;
-}
-.chat-history-item.active {
-  background: #dfe8d8;
-  color: #345a3c;
-  font-weight: 600;
-}
-.chat-history-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.chat-history-tag {
-  margin-left: auto;
-  flex-shrink: 0;
-  font-size: 9px;
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: #e8ecdf;
-  color: #74806b;
-}
-
 /* --- 顶部：对话名与 ⋯ 菜单 --- */
 .chat-head {
   border-bottom: 1px solid var(--line);
@@ -182,43 +111,6 @@
 .chat-segments .section-panel {
   border: 1px solid var(--line);
   margin: 0;
-}
-.chat-scene-note {
-  padding: 0 0 12px;
-}
-.chat-scene-note .metadata {
-  margin: 0;
-}
-.chat-new-conversation {
-  padding: 18px 20px;
-  margin-bottom: 14px;
-  display: grid;
-  gap: 10px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-}
-.chat-new-conversation input,
-.chat-new-conversation textarea {
-  width: 100%;
-}
-.chat-new-conversation textarea {
-  min-height: 110px;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--paper);
-  color: var(--ink);
-  font: inherit;
-  line-height: 1.8;
-  resize: vertical;
-}
-.chat-scene-background {
-  margin: 8px 0 0;
-  font-size: 13px;
-}
-.chat-new-conversation button[type="submit"] {
-  justify-self: start;
 }
 .chat-message + .chat-message,
 .chat-message + .chat-turn {
@@ -517,12 +409,6 @@
   .chat-transcript,
   .chat-head {
     padding: 14px 16px;
-  }
-  .chat-new-conversation {
-    padding: 18px 16px;
-  }
-  .chat-scene-background {
-    margin: 12px 16px;
   }
   .chat-toolbar > .metadata {
     flex-basis: 100%;

@@ -19,7 +19,6 @@ export function Shell({
   page,
   onNavigate,
   onSelectAgent,
-  conversationNav,
   children,
 }: {
   agents: Agent[];
@@ -27,7 +26,6 @@ export function Shell({
   page: PageId;
   onNavigate: (page: PageId) => void;
   onSelectAgent: (id: string) => void;
-  conversationNav?: ReactNode;
   children: ReactNode;
 }) {
   const main = useRef<HTMLElement>(null);
@@ -143,7 +141,6 @@ export function Shell({
             </>
           )}
         </nav>
-        {conversationNav}
         <div className="sidebar-bottom">
           <div className="local-note">
             <LockKeyhole size={15} aria-hidden="true" />

@@ -123,7 +123,7 @@ def test_default_is_persistent_and_replay_does_not_resolve_current_selection(app
 
 
 @pytest.mark.parametrize("family", FAMILIES)
-def test_new_real_and_scene_conversations_preserve_current_personality(app, agent_id, family):
+def test_new_real_conversation_preserves_current_personality(app, agent_id, family):
     configure(app, family)
     evidence = app.history.add(
         agent_id, "Growth evidence", kind="user", scope="real", request_id="growth"
@@ -140,16 +140,14 @@ def test_new_real_and_scene_conversations_preserve_current_personality(app, agen
     app.identity.decide(proposal["id"], "approve", expected_revision=0)
     snapshot = app.identity.current(agent_id)
     real = app.conversations.create(agent_id, "Real")["id"]
-    scene = app.conversations.create(agent_id, "Fiction", scene="island")["id"]
     calls = []
 
     async def scenario():
         async with model_runtime(app, calls, family=family) as runtime:
-            for cid, scope in [(real, "real"), (scene, "scene:island")]:
-                run = await complete(runtime, turn(agent_id, cid, "Hello", cid))
-                assert run["context_sources"] == [run["user_source"]]
-                for field in ("user_source", "assistant_source"):
-                    assert app.history.read(SourceRef(**run[field]))["scope"] == scope
+            run = await complete(runtime, turn(agent_id, real, "Hello", real))
+            assert run["context_sources"] == [run["user_source"]]
+            for field in ("user_source", "assistant_source"):
+                assert app.history.read(SourceRef(**run[field]))["scope"] == "real"
             assert app.identity.current(agent_id) == snapshot
 
     asyncio.run(scenario())
@@ -158,9 +156,8 @@ def test_new_real_and_scene_conversations_preserve_current_personality(app, agen
         for body in calls
     ]
     assert all("Patient and curious" in text for text in instructions)
-    assert "scene:island" not in instructions[0]
-    assert "scene:island" in instructions[1]
-    assert "虚构" in instructions[1] and "现实" in instructions[1]
+    assert "real" in instructions[0]
+    assert "虚构" not in instructions[0]
     assert "Growth evidence" not in json.dumps(calls)
 
 

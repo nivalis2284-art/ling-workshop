@@ -1,13 +1,13 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import type { LingApi } from "../../api/client";
-import { ChatHistory } from "./ChatHistory";
 import { ChatPage } from "./ChatPage";
 import { ChatSessions } from "./session";
 import { useConversations } from "./useConversations";
 
 /**
- * Mirrors how App wires the sidebar list and the chat page together, so tests that
- * exercise the conversation controls do not have to mount the whole shell.
+ * Mounts the chat page on its own. There is one conversation per individual, so
+ * the only thing the page still needs is the conversation list it uses to adopt
+ * the backend's default after the first send.
  */
 export function ChatHarness({
   api,
@@ -25,29 +25,13 @@ export function ChatHarness({
     agentId,
     session.getSnapshot().conversationId,
   );
-  const [newChatOpen, setNewChatOpen] = useState(false);
-  const currentId = conversations.selectedId ?? conversations.list[0]?.id ?? "";
   return (
-    <>
-      <ChatHistory
-        conversations={conversations}
-        currentId={currentId}
-        disabled={conversations.creating}
-        onSelect={(id) => {
-          conversations.choose(id);
-          setNewChatOpen(false);
-        }}
-        onNew={() => setNewChatOpen(true)}
-      />
-      <ChatPage
-        api={api}
-        agent={{ id: agentId, name }}
-        session={session}
-        conversations={conversations}
-        newChatOpen={newChatOpen}
-        onCloseNewChat={() => setNewChatOpen(false)}
-        openSettings={() => {}}
-      />
-    </>
+    <ChatPage
+      api={api}
+      agent={{ id: agentId, name }}
+      session={session}
+      conversations={conversations}
+      openSettings={() => {}}
+    />
   );
 }

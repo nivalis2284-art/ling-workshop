@@ -8,6 +8,18 @@
 
 开发工作树 H:/文档/LingNexus/Ling/.worktrees/m0-continuity，feature/m0-continuity。主目录 H:/文档/LingNexus/Ling的main已快进到同一源码，工作区干净。工作树保留.venv/node_modules/.tools和测试产物供后续开发，均不进入Git；根目录交付dist安装包/说明。
 
+## 只留一段对话，移除场景交流（2026-10-09，用户要求）
+
+用户拍板：不再需要"新建对话"和"场景交流"，多会话管理以后再说。
+
+- **前端**：删除 `ChatHistory.tsx`（侧栏对话列表）、`NewConversation.tsx`（创建表单）；`Shell` 去掉 `conversationNav` 插槽；`client.createConversation` 删除；场景说明区（`chat-scene-note`/`chat-scene-background`）删除；相关死样式清理（`chat.css` + `layout.css` 的 `.chat-history*`/`.chat-scene*`/`.chat-new-conversation`）。
+- **保留**：`useConversations` 仍负责找到当前对话并在首次发送后采纳后端默认；后端 `POST /conversations` 接口保留（`default_real` 自动建"日常交流"依赖它）。
+- **后端**：`create()` 只收 `agent_id`+`title`，scope 恒为 `real`（`background` 列保留在表里，`NOT NULL DEFAULT ''`，插入省略即可）；`for_chat` 只放行 real；`payload.build_payload` 删掉 `_scene_background` 注入与虚构场景措辞，只如实标注当前情境。
+- **中途返工**：我最初在 `build_payload` 里对非 real 直接抛错，结果挂了 `tests/test_evaluation_contract.py`——离线自检脚本会按用例各自的情境渲染（U04 是场景情境，用来验证"虚构不被当成现实经历"）。那道防线是多余的（`for_chat` 已经只放行 real），去掉后改为如实标注情境。**改共用底层函数前，先 grep 谁在调用它。
+- **护栏保留（重要取舍）**：历史层/学习层的 scope 隔离（`test_context`/`test_evolution`/`test_learning`/`test_memory_maintenance`/`test_evaluation_contract` 里那些 scene 来源用例）**没删**——它们防的是"场景记录溜进现实记忆"，是安全属性，不是功能面。功能面（创建场景对话、聊天注入场景背景）已移除。
+- **测试**：删除 `tests/test_scene_background.py`（整文件测被移除的注入）；改写 `test_new_real_and_scene_...` → 只测现实交流保留人格；移除附件里的中文场景背景用例；前端删除"创建自然/场景对话"两个用例，"对话切换"类用例改用 sessionStorage 记忆键驱动（列表 UI 已不存在）。
+- 验证：前端 145 项、后端受影响 148 项全过；真实浏览器核对侧栏无列表、无新建入口、无场景字段，⋯ 菜单只剩批量删除/分段/模型设置。
+
 ## 删除一轮对话（2026-10-09，用户要求）
 
 用户要的不是"删整个对话"，而是**删一轮**（你说的话＋灵的回复），且**删掉后必须从后续发给模型的请求里消失**。

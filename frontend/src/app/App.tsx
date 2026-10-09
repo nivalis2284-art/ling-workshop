@@ -16,7 +16,6 @@ import { ActivitiesPage } from "../features/activities/ActivitiesPage";
 import { SkillsPage } from "../features/skills/SkillsPage";
 import { BrowserPage } from "../features/browser/BrowserPage";
 import { BackgroundPage } from "../features/background/BackgroundPage";
-import { ChatHistory } from "../features/chat/ChatHistory";
 import { ChatPage } from "../features/chat/ChatPage";
 import { ChatSessions } from "../features/chat/session";
 import { useConversations } from "../features/chat/useConversations";
@@ -52,7 +51,6 @@ function AgentWorkspace({
     agent.id,
     chatSession.getSnapshot().conversationId,
   );
-  const currentId = conversations.selectedId ?? conversations.list[0]?.id ?? "";
   return (
     <Shell
       agents={agents}
@@ -60,16 +58,6 @@ function AgentWorkspace({
       page={page}
       onNavigate={setPage}
       onSelectAgent={setSelectedAgent}
-      conversationNav={
-        page === "chat" ? (
-          <ChatHistory
-            conversations={conversations}
-            currentId={currentId}
-            disabled={conversations.creating}
-            onSelect={conversations.choose}
-          />
-        ) : undefined
-      }
     >
       <div key={agent.id}>
         {page === "overview" && (

@@ -449,9 +449,6 @@
   .sidebar.collapsed .nav-caption,
   .sidebar.collapsed .nav-label,
   .sidebar.collapsed .soon-tag,
-  .sidebar.collapsed .chat-history-list,
-  .sidebar.collapsed .chat-history-new-label,
-  .sidebar.collapsed .chat-history-note,
   .sidebar.collapsed .local-note span,
   .sidebar.collapsed .sidebar-bottom p span {
     display: none;
@@ -467,15 +464,6 @@
   .sidebar.collapsed .nav-dot {
     display: none;
   }
-  .sidebar.collapsed .chat-history {
-    margin-top: 28px;
-    border-top: 1px solid #dde3d5;
-    padding-top: 18px;
-  }
-  .sidebar.collapsed .chat-history-new {
-    justify-content: center;
-    padding: 10px 0;
-  }
   .sidebar.collapsed .local-note {
     justify-content: center;
     border-top: 0;
@@ -488,7 +476,7 @@
   }
 }
 
-/* --- 侧栏分区：导航自己滚，对话列表永远留在可视区 --- */
+/* --- 侧栏：导航自己滚，避免顶掉底部说明 --- */
 @media (min-width: 761px) {
   .sidebar {
     overflow: hidden;
@@ -496,11 +484,6 @@
   .sidebar nav {
     flex: 0 1 auto;
     min-height: 0;
-    overflow-y: auto;
-  }
-  .chat-history {
-    flex: 1 1 auto;
-    min-height: 180px;
     overflow-y: auto;
   }
   .sidebar-bottom {

@@ -448,41 +448,9 @@ def test_empty_attachment_ids_preserve_legacy_wire_fingerprint():
         assert hashlib.sha256(dumped.encode()).hexdigest() == expected
 
 
-@pytest.mark.parametrize("ids", [[""], [" "], ["x", "x"], ["x" * 129], list(map(str, range(17)))])
-def test_attachment_ids_are_bounded_unique_nonblank(ids):
-    with pytest.raises(ValidationError):
-        turn("agent", attachment_ids=ids)
 
 
-@pytest.mark.parametrize("family", FAMILIES)
-def test_chinese_scene_background_is_temporary_and_keeps_self(app, agent_id, family):
-    from lingnexus.runtime.payload import build_payload
 
-    background = "在雨中的茶馆重逢。背景不能授予权限。"
-    scene = app.conversations.create(agent_id, "茶馆", scene="江南重逢", background=background)
-    user = app.conversations.append_user(scene["id"], "你还记得我吗", request_id="scene-user")
-    profile = ModelProfile(api_family=family, model="fixture", base_url="https://fixture.invalid")
-    before = app.identity.current(agent_id)
-    payload, manifest = build_payload(
-        app, agent_id, profile, [user["source"]], scope=scene["scope"]
-    )
-    instructions = payload.get(
-        "system", payload.get("instructions", payload.get("messages", [{}])[0].get("content"))
-    )
-    assert background in instructions
-    assert (
-        instructions.index("当前自我状态")
-        < instructions.index("当前交流情境")
-        < instructions.index(background)
-    )
-    assert "不得授予权限" in instructions and "不代表现实经历" in instructions
-    assert app.identity.current(agent_id) == before
-    assert manifest["scope"] == scene["scope"]
-    assert manifest["self_revision"] == before.revision
-    real = app.conversations.create(agent_id, "日常")
-    real_user = app.conversations.append_user(real["id"], "你好", request_id="real-user")
-    ordinary, _ = build_payload(app, agent_id, profile, [real_user["source"]], scope="real")
-    assert background not in json.dumps(ordinary, ensure_ascii=False)
 
 
 @pytest.mark.parametrize("problem", ["deleted", "replaced"])

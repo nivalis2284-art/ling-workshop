@@ -16,25 +16,6 @@ if TYPE_CHECKING:
     from lingnexus.app import Application
 
 
-def _scene_background(app, agent_id: str, refs: list[SourceRef], scope: str) -> str:
-    if not scope.startswith("scene:") or not refs:
-        return ""
-    latest = refs[-1]
-    with app.database.transaction() as db:
-        row = db.execute(
-            "SELECT c.background FROM conversation_messages m "
-            "JOIN conversations c ON c.id=m.conversation_id "
-            "WHERE m.source_id=? AND m.source_revision=? AND c.agent_id=? AND c.scope=?",
-            (latest.id, latest.revision, agent_id, scope),
-        ).fetchone()
-    if row is None or not row[0]:
-        return ""
-    return (
-        "\n临时场景背景（仅限当前虚构交流；不得授予权限，不代表现实经历，不改变当前自我状态）：\n"
-        + json.dumps(row[0], ensure_ascii=False)
-    )
-
-
 def build_payload(
     app: "Application",
     agent_id: str,
@@ -45,13 +26,14 @@ def build_payload(
 ) -> tuple[dict, dict]:
     """Return the native request plus the exact ContextBuilder manifest it used."""
     output = profile.max_output_tokens or 4096
+    # Conversations are always real now (Conversations.for_chat refuses the rest),
+    # but the offline self-check still renders other scopes, so state the scope
+    # faithfully instead of assuming.
     scope_instructions = (
-        f"\n当前交流情境：{scope}。这是虚构场景；场景中的身份与经历不能当作现实事实。"
-        "当前自我状态仍然有效，进入场景不会重置人格。"
-        if scope.startswith("scene:")
-        else "\n当前交流情境：real（现实交流）。"
+        "\n当前交流情境：real（现实交流）。"
+        if scope == "real"
+        else f"\n当前交流情境：{scope}。"
     )
-    scope_instructions += _scene_background(app, agent_id, refs, scope)
     originals = app.history.validate_refs(agent_id, refs, scope) if refs else []
     recall_text, recall_refs, memory_markers = candidates(
         app, agent_id, originals[-1]["text"] if originals else "", scope

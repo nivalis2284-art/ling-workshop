@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { LingApi } from "../../api/client";
-import type { Agent, Conversation } from "../../api/types";
+import type { Agent } from "../../api/types";
 import { useResource } from "../../shared/useResource";
 import { ErrorNotice, Loading } from "../../shared/ui";
 import { ChatAttachments, attachmentProblem } from "./ChatAttachments";
@@ -8,7 +8,6 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatControls } from "./ChatControls";
 import { ChatHeader } from "./ChatHeader";
 import { ChatTranscript } from "./ChatTranscript";
-import { NewConversation } from "./NewConversation";
 import { SegmentPanel } from "./SegmentPanel";
 import { ChatSession, isPending } from "./session";
 import type { ConversationList } from "./useConversations";
@@ -147,20 +146,6 @@ export function ChatPage({
               messages={state.messages}
               disabled={locked}
             />
-          </div>
-        )}
-        {selected?.scope.startsWith("scene:") && (
-          <div className="chat-scene-note">
-            <p className="metadata">场景交流 · {selected.title}</p>
-            {selected.background && (
-              <details className="chat-scene-background">
-                <summary>查看场景背景</summary>
-                <p className="preserve-text">{selected.background}</p>
-                <p className="metadata">
-                  这是创建时保存的初始设定，可在后续对话中说明新的设定。
-                </p>
-              </details>
-            )}
           </div>
         )}
         {models.status === "loading" && <Loading label="正在读取对话模型…" />}

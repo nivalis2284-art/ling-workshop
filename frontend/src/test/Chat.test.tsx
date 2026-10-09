@@ -167,6 +167,19 @@ function backend(
         },
       );
     }
+    if (path.endsWith("/delete-turns")) {
+      const body = JSON.parse(String(init.body));
+      const anchors = new Set<string>(body.anchors ?? []);
+      const removed = new Set<string>();
+      let dropping = false;
+      for (const message of messages) {
+        if (message.role === "user") dropping = anchors.has(message.id);
+        if (dropping) removed.add(message.id);
+      }
+      for (let index = messages.length - 1; index >= 0; index -= 1)
+        if (removed.has(messages[index].id)) messages.splice(index, 1);
+      return json(conversation());
+    }
     throw new Error("Unexpected endpoint: " + path);
   });
   return {
@@ -623,4 +636,96 @@ test("server interruption is terminal with Chinese recovery guidance and never d
   expect(Object.values(sessionStorage).join(" ")).not.toContain(
     "fixture-provider-private-detail",
   );
+});
+
+/** A live turn renders without actions, so wait until the round is committed. */
+async function savedRound(
+  server: ReturnType<typeof backend>,
+  text = "你好！我是灵。",
+) {
+  await server.emit("started", { run_id: "run-1" }, 1);
+  await server.emit("text", { text }, 2);
+  await server.emit(
+    "complete",
+    {
+      status: "completed",
+      assistant_source: { id: "assistant-source", revision: 1 },
+    },
+    3,
+  );
+  await waitFor(
+    () => expect(screen.getByRole("button", { name: "删除这一轮" })).toBeVisible(),
+    { timeout: 4000 },
+  );
+}
+
+test("deleting a turn removes it from the transcript and drops it from later requests", async () => {
+  const server = backend();
+  const { user } = await openChat();
+  await send(user, "你好");
+  const start = server.requests.find(
+    (request) => request.path === "/api/chat/stream",
+  )!;
+  await savedRound(server);
+  expect(screen.getByText("你好！我是灵。")).toBeVisible();
+  await user.click(screen.getByRole("button", { name: "删除这一轮" }));
+  const dialog = await screen.findByRole("dialog");
+  await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  const request = server.requests.find((value) =>
+    value.path.endsWith("/delete-turns"),
+  )!;
+  expect(request.body).toEqual({ anchors: ["user-" + start.body!.request_id] });
+  await waitFor(() =>
+    expect(screen.queryByText("你好！我是灵。")).not.toBeInTheDocument(),
+  );
+  expect(
+    screen.queryByRole("button", { name: "删除这一轮" }),
+  ).not.toBeInTheDocument();
+});
+
+test("cancelling the confirmation keeps the turn and sends nothing", async () => {
+  const server = backend();
+  const { user } = await openChat();
+  await send(user, "你好");
+  await savedRound(server);
+  await screen.findByText("你好！我是灵。");
+  await user.click(screen.getByRole("button", { name: "删除这一轮" }));
+  await user.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "取消",
+    }),
+  );
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  expect(screen.getByText("你好！我是灵。")).toBeVisible();
+  expect(
+    server.requests.some((value) => value.path.endsWith("/delete-turns")),
+  ).toBe(false);
+});
+
+test("batch deletion offers a checkbox only for the owner's messages", async () => {
+  const server = backend();
+  const { user } = await openChat();
+  await send(user, "你好");
+  await savedRound(server);
+  await screen.findByText("你好！我是灵。");
+  await user.click(screen.getByRole("button", { name: "对话选项" }));
+  await user.click(screen.getByRole("button", { name: "批量删除" }));
+  const boxes = await screen.findAllByRole("checkbox");
+  expect(boxes).toHaveLength(1);
+  await user.click(boxes[0]);
+  await user.click(screen.getByRole("button", { name: "删除所选" }));
+  await user.click(
+    within(await screen.findByRole("dialog")).getByRole("button", {
+      name: "确认删除",
+    }),
+  );
+  await waitFor(() =>
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+  );
+  expect(
+    server.requests.some((value) => value.path.endsWith("/delete-turns")),
+  ).toBe(true);
 });

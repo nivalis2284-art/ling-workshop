@@ -277,9 +277,6 @@ test("upload uses authenticated multipart, blocks send until accepted, and selec
     new File(["# fixture"], "上传.md", { type: "text/markdown" }),
   );
   expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
-  // Uploading no longer locks the conversation list: the upload belongs to this
-  // conversation and is still selected when you come back to it.
-  expect(screen.getByRole("button", { name: /^交流/ })).toBeEnabled();
   expect(
     server.requests.some((value) => value.path === "/api/chat/stream"),
   ).toBe(false);

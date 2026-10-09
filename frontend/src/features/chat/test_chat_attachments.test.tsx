@@ -4,8 +4,7 @@ import { expect, test, vi } from "vitest";
 import { LingApi } from "../../api/client";
 import type { Attachment, SavedModel } from "../../api/types";
 import { ModelEditor } from "../settings/ModelEditor";
-import { ChatPage } from "./ChatPage";
-import { ChatSessions } from "./session";
+import { ChatHarness } from "./testHarness";
 
 /** The model picker now lives in a popup at the composer's bottom-right. */
 async function chooseModel(
@@ -217,18 +216,11 @@ function backend(
 }
 function open() {
   const api = new LingApi("attachment-owner", () => {});
-  return render(
-    <ChatPage
-      api={api}
-      agent={{ id: "ling", name: "灵" }}
-      session={new ChatSessions(api).forAgent("ling")}
-      openSettings={() => {}}
-    />,
-  );
+  return render(<ChatHarness api={api} />);
 }
 async function picker(user: ReturnType<typeof userEvent.setup>) {
   await screen.findByText("原回复");
-  await user.click(screen.getByText(/^附件/));
+  await user.click(screen.getByRole("button", { name: "添加附件" }));
   await screen.findByRole("checkbox", { name: "选择 说明.docx" });
 }
 async function send(user: ReturnType<typeof userEvent.setup>) {
@@ -285,7 +277,9 @@ test("upload uses authenticated multipart, blocks send until accepted, and selec
     new File(["# fixture"], "上传.md", { type: "text/markdown" }),
   );
   expect(screen.getByRole("button", { name: "发送消息" })).toBeDisabled();
-  expect(screen.getByLabelText("保存的对话")).toBeDisabled();
+  // Uploading no longer locks the conversation list: the upload belongs to this
+  // conversation and is still selected when you come back to it.
+  expect(screen.getByRole("button", { name: /^交流/ })).toBeEnabled();
   expect(
     server.requests.some((value) => value.path === "/api/chat/stream"),
   ).toBe(false);

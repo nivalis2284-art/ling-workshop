@@ -67,6 +67,7 @@ export function ChatAttachments({
   uploading,
   uploadError,
   problem,
+  open,
 }: {
   attachments: Attachment[];
   selected: string[];
@@ -79,83 +80,83 @@ export function ChatAttachments({
   uploading: boolean;
   uploadError?: string;
   problem?: string;
+  open: boolean;
 }) {
   return (
     <div className="chat-attachment-picker">
-      <details>
-        <summary>
-          附件{selected.length ? "（已选 " + selected.length + "）" : ""}
-        </summary>
-        <p className="metadata">
-          选择已保存的文件，或上传后随这条消息发送。文档文字会自动提取；图片和扫描
-          PDF 需要模型支持。
-        </p>
-        <div className="chat-attachment-tools">
-          <label htmlFor="chat-upload">上传聊天附件</label>
-          <input
-            id="chat-upload"
-            type="file"
-            accept=".txt,.md,.csv,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp"
-            disabled={disabled || uploading}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = "";
-              if (file) upload(file);
-            }}
-          />
-          <button
-            type="button"
-            className="text-button"
-            disabled={disabled || loading || uploading}
-            onClick={refresh}
-          >
-            刷新附件
-          </button>
+      {open && (
+        <div className="chat-attachment-panel">
+          <p className="metadata">
+            选择已保存的文件，或上传后随这条消息发送。文档文字会自动提取；图片和扫描
+            PDF 需要模型支持。
+          </p>
+          <div className="chat-attachment-tools">
+            <label htmlFor="chat-upload">上传聊天附件</label>
+            <input
+              id="chat-upload"
+              type="file"
+              accept=".txt,.md,.csv,.docx,.xlsx,.pdf,.png,.jpg,.jpeg,.webp"
+              disabled={disabled || uploading}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = "";
+                if (file) upload(file);
+              }}
+            />
+            <button
+              type="button"
+              className="text-button"
+              disabled={disabled || loading || uploading}
+              onClick={refresh}
+            >
+              刷新附件
+            </button>
+          </div>
+          {loading && <Loading label="正在读取附件…" />}
+          {uploading && <Loading label="正在上传并读取文件…" />}
+          {error && <ErrorNotice message={error} />}
+          {uploadError && <ErrorNotice message={uploadError} />}
+          {!attachments.length && !loading && !error && (
+            <p className="metadata">还没有保存的附件，可以先上传文件。</p>
+          )}
+          <div className="chat-attachment-list" aria-label="可选附件">
+            {attachments.map((attachment) => (
+              <div className="chat-attachment-option" key={attachment.id}>
+                <label>
+                  <input
+                    type="checkbox"
+                    aria-label={"选择 " + attachment.original_name}
+                    disabled={disabled || uploading}
+                    checked={selected.includes(attachment.id)}
+                    onChange={(event) =>
+                      onSelect(
+                        event.target.checked
+                          ? [...selected, attachment.id]
+                          : selected.filter((id) => id !== attachment.id),
+                      )
+                    }
+                  />
+                  <span>{attachment.original_name}</span>
+                  <span className="metadata">
+                    {attachment.status === "partial"
+                      ? "部分提取"
+                      : attachment.status === "needs_vision"
+                        ? "需要视觉读取"
+                        : "已提取文字"}
+                  </span>
+                </label>
+                {attachment.warnings.length > 0 && (
+                  <ul className="chat-attachment-warnings metadata">
+                    {attachment.warnings.map((warning, index) => (
+                      <li key={index}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
-        {loading && <Loading label="正在读取附件…" />}
-        {uploading && <Loading label="正在上传并读取文件…" />}
-        {error && <ErrorNotice message={error} />}
-        {uploadError && <ErrorNotice message={uploadError} />}
-        {!attachments.length && !loading && !error && (
-          <p className="metadata">还没有保存的附件，可以先上传文件。</p>
-        )}
-        <div className="chat-attachment-list" aria-label="可选附件">
-          {attachments.map((attachment) => (
-            <div className="chat-attachment-option" key={attachment.id}>
-              <label>
-                <input
-                  type="checkbox"
-                  aria-label={"选择 " + attachment.original_name}
-                  disabled={disabled || uploading}
-                  checked={selected.includes(attachment.id)}
-                  onChange={(event) =>
-                    onSelect(
-                      event.target.checked
-                        ? [...selected, attachment.id]
-                        : selected.filter((id) => id !== attachment.id),
-                    )
-                  }
-                />
-                <span>{attachment.original_name}</span>
-                <span className="metadata">
-                  {attachment.status === "partial"
-                    ? "部分提取"
-                    : attachment.status === "needs_vision"
-                      ? "需要视觉读取"
-                      : "已提取文字"}
-                </span>
-              </label>
-              {attachment.warnings.length > 0 && (
-                <ul className="chat-attachment-warnings metadata">
-                  {attachment.warnings.map((warning, index) => (
-                    <li key={index}>{warning}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          ))}
-        </div>
-      </details>
+      )}
       {selected.length > 0 && (
         <>
           <AttachmentNames ids={selected} attachments={attachments} />

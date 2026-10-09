@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { LingApi } from "../api/client";
 import { forgetOwnerSession } from "../api/session";
+import type { Agent } from "../api/types";
 import { useResource } from "../shared/useResource";
 import { ErrorNotice, Loading, Mark } from "../shared/ui";
 import { Connect } from "../features/onboarding/Connect";
@@ -15,10 +16,102 @@ import { ActivitiesPage } from "../features/activities/ActivitiesPage";
 import { SkillsPage } from "../features/skills/SkillsPage";
 import { BrowserPage } from "../features/browser/BrowserPage";
 import { BackgroundPage } from "../features/background/BackgroundPage";
+import { ChatHistory } from "../features/chat/ChatHistory";
 import { ChatPage } from "../features/chat/ChatPage";
 import { ChatSessions } from "../features/chat/session";
+import { useConversations } from "../features/chat/useConversations";
 import { Shell } from "./Shell";
 import type { PageId } from "./navigation";
+
+/**
+ * One workspace per individual. Keyed by agent id so switching individuals resets
+ * the conversation selection instead of carrying it across.
+ */
+function AgentWorkspace({
+  api,
+  chats,
+  agents,
+  agent,
+  page,
+  setPage,
+  setSelectedAgent,
+  disconnect,
+}: {
+  api: LingApi;
+  chats: ChatSessions;
+  agents: Agent[];
+  agent: Agent;
+  page: PageId;
+  setPage: (page: PageId) => void;
+  setSelectedAgent: (id: string) => void;
+  disconnect: () => void;
+}) {
+  const chatSession = chats.forAgent(agent.id);
+  const conversations = useConversations(
+    api,
+    agent.id,
+    chatSession.getSnapshot().conversationId,
+  );
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const currentId = conversations.selectedId ?? conversations.list[0]?.id ?? "";
+  return (
+    <Shell
+      agents={agents}
+      agent={agent}
+      page={page}
+      onNavigate={setPage}
+      onSelectAgent={setSelectedAgent}
+      conversationNav={
+        page === "chat" ? (
+          <ChatHistory
+            conversations={conversations}
+            currentId={currentId}
+            disabled={conversations.creating}
+            onSelect={(id) => {
+              conversations.choose(id);
+              setNewChatOpen(false);
+            }}
+            onNew={() => setNewChatOpen(true)}
+          />
+        ) : undefined
+      }
+    >
+      <div key={agent.id}>
+        {page === "overview" && (
+          <OverviewPage api={api} agent={agent} navigate={setPage} />
+        )}
+        {page === "identity" && <IdentityPage api={api} agent={agent} />}
+        {page === "chat" && (
+          <ChatPage
+            api={api}
+            agent={agent}
+            session={chatSession}
+            conversations={conversations}
+            newChatOpen={newChatOpen}
+            onCloseNewChat={() => setNewChatOpen(false)}
+            openSettings={() => setPage("settings")}
+          />
+        )}
+        {page === "memory" && <MemoryPage api={api} agent={agent} />}
+        {page === "content" && <ContentPage api={api} agent={agent} />}
+        {page === "tasks" && (
+          <TasksPage
+            api={api}
+            agent={agent}
+            openBrowser={() => setPage("browser")}
+          />
+        )}
+        {page === "activities" && <ActivitiesPage api={api} agent={agent} />}
+        {page === "skills" && <SkillsPage api={api} agent={agent} />}
+        {page === "browser" && <BrowserPage api={api} agent={agent} />}
+        {page === "background" && <BackgroundPage api={api} agent={agent} />}
+        {page === "settings" && (
+          <SettingsPage api={api} agent={agent} disconnect={disconnect} />
+        )}
+      </div>
+    </Shell>
+  );
+}
 
 function ConnectedApp({
   api,
@@ -67,44 +160,17 @@ function ConnectedApp({
   const agent =
     resource.data.find((item) => item.id === selectedId) ?? resource.data[0];
   return (
-    <Shell
+    <AgentWorkspace
+      key={agent.id}
+      api={api}
+      chats={chats}
       agents={resource.data}
       agent={agent}
       page={page}
-      onNavigate={setPage}
-      onSelectAgent={setSelectedId}
-    >
-      <div key={agent.id}>
-        {page === "overview" && (
-          <OverviewPage api={api} agent={agent} navigate={setPage} />
-        )}
-        {page === "identity" && <IdentityPage api={api} agent={agent} />}
-        {page === "chat" && (
-          <ChatPage
-            api={api}
-            agent={agent}
-            session={chats.forAgent(agent.id)}
-            openSettings={() => setPage("settings")}
-          />
-        )}
-        {page === "memory" && <MemoryPage api={api} agent={agent} />}
-        {page === "content" && <ContentPage api={api} agent={agent} />}
-        {page === "tasks" && (
-          <TasksPage
-            api={api}
-            agent={agent}
-            openBrowser={() => setPage("browser")}
-          />
-        )}
-        {page === "activities" && <ActivitiesPage api={api} agent={agent} />}
-        {page === "skills" && <SkillsPage api={api} agent={agent} />}
-        {page === "browser" && <BrowserPage api={api} agent={agent} />}
-        {page === "background" && <BackgroundPage api={api} agent={agent} />}
-        {page === "settings" && (
-          <SettingsPage api={api} agent={agent} disconnect={disconnect} />
-        )}
-      </div>
-    </Shell>
+      setPage={setPage}
+      setSelectedAgent={setSelectedId}
+      disconnect={disconnect}
+    />
   );
 }
 

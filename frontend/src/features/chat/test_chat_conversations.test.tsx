@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
-import { ChatPage } from "./ChatPage";
+import { ChatHarness } from "./testHarness";
 import { ChatSessions } from "./session";
 import { LingApi } from "../../api/client";
 import type {
@@ -269,16 +269,27 @@ function open() {
   const api = new LingApi("owner-fixture", () => {});
   const sessions = new ChatSessions(api);
   return {
-    ...render(
-      <ChatPage
-        api={api}
-        agent={{ id: "ling", name: "灵" }}
-        session={sessions.forAgent("ling")}
-        openSettings={() => {}}
-      />,
-    ),
+    ...render(<ChatHarness api={api} />),
     sessions,
   };
+}
+
+/** The conversation list lives in the sidebar now; the current one carries aria-current. */
+const currentConversation = () => screen.getByRole("button", { current: true });
+
+async function switchTo(
+  user: ReturnType<typeof userEvent.setup>,
+  title: string,
+) {
+  // Scene conversations append a 「场景」 tag to the button's name.
+  await user.click(
+    screen.getByRole("button", { name: new RegExp("^" + title) }),
+  );
+}
+
+/** Branch switching moved behind the conversation's ⋯ menu. */
+async function openChatMenu(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: "对话选项" }));
 }
 
 test("backend transcripts survive fresh browser storage and conversations of the same agent stay isolated", async () => {
@@ -286,17 +297,17 @@ test("backend transcripts survive fresh browser storage and conversations of the
   const user = userEvent.setup();
   const view = open();
   expect(await screen.findByText("原回复")).toBeVisible();
-  expect(screen.getByLabelText("保存的对话")).toHaveValue("c1");
+  expect(currentConversation()).toHaveTextContent("日常记录");
   expect(screen.queryByText(/当前浏览器会话/)).not.toBeInTheDocument();
   expect(view.sessions.forAgent("ling", "c1")).not.toBe(
     view.sessions.forAgent("ling", "c2"),
   );
   await user.type(screen.getByLabelText("消息"), "日常草稿");
-  await user.selectOptions(screen.getByLabelText("保存的对话"), "c2");
+  await switchTo(user, "海岛故事");
   expect(await screen.findByText("岛上的问题")).toBeVisible();
   expect(screen.queryByText("原回复")).not.toBeInTheDocument();
   expect(screen.getByLabelText("消息")).toHaveValue("");
-  await user.selectOptions(screen.getByLabelText("保存的对话"), "c1");
+  await switchTo(user, "日常记录");
   expect(await screen.findByText("原回复")).toBeVisible();
   expect(screen.getByLabelText("消息")).toHaveValue("日常草稿");
   view.unmount();
@@ -334,8 +345,10 @@ test("editing a user creates a branch, old branch selection restores source IDs,
     content: "修改的问题",
     request_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
   });
+  await openChatMenu(user);
   expect(screen.getByLabelText("对话分支")).toHaveValue("edited");
   await user.selectOptions(screen.getByLabelText("对话分支"), "a1");
+  await user.keyboard("{Escape}");
   expect(await screen.findByText("原回复")).toBeVisible();
   expect(server.requests.find((r) => r.path.endsWith("/head"))?.body).toEqual({
     message_id: "a1",
@@ -370,7 +383,9 @@ test("regenerate reuses exact parent user text and reads the committed replaceme
   });
   expect(screen.getByRole("button", { name: "重新生成" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "编辑消息" })).toBeDisabled();
-  expect(screen.getByLabelText("保存的对话")).toBeDisabled();
+  // Switching conversations while a reply is being generated stays available: the
+  // run keeps going and its transcript resumes when you come back.
+  expect(screen.getByRole("button", { name: "日常记录" })).toBeEnabled();
   await server.emit("started", { conversation_id: "c1" }, 1);
   await server.emit("text", { text: "新回复" }, 2);
   const replacement = node("a-new", "assistant", "后端确认的新回复", "u1");
@@ -393,6 +408,7 @@ test("regenerate reuses exact parent user text and reads the committed replaceme
     "data-source-id",
     "source-a-new",
   );
+  await openChatMenu(user);
   expect(screen.getByLabelText("对话分支")).toHaveValue("a-new");
 });
 
@@ -449,7 +465,7 @@ test.each(["natural", "scene"])(
     const server = backend({ empty: true });
     const user = userEvent.setup();
     open();
-    await user.click(await screen.findByRole("button", { name: "新建对话" }));
+    await user.click(await screen.findByRole("button", { name: "新聊天" }));
     await user.type(screen.getByLabelText("对话名称"), "新交流");
     if (kind === "scene") {
       await user.selectOptions(screen.getByLabelText("对话类型"), "scene");
@@ -465,7 +481,7 @@ test.each(["natural", "scene"])(
     }
     await user.click(screen.getByRole("button", { name: "创建对话" }));
     await waitFor(() =>
-      expect(screen.getByLabelText("保存的对话")).toHaveValue("created"),
+      expect(currentConversation()).toHaveTextContent("新交流"),
     );
     expect(
       server.requests.find((r) => r.path === "/api/conversations")!.body,
@@ -524,9 +540,9 @@ test("late messages from the previously selected conversation cannot appear in t
   const user = userEvent.setup();
   open();
   await waitFor(() =>
-    expect(screen.getByLabelText("保存的对话")).toHaveValue("c1"),
+    expect(currentConversation()).toHaveTextContent("日常记录"),
   );
-  await user.selectOptions(screen.getByLabelText("保存的对话"), "c2");
+  await switchTo(user, "海岛故事");
   expect(await screen.findByText("岛上的问题")).toBeVisible();
   await act(async () => {
     server.releaseMessages!();

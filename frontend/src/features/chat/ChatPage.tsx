@@ -2,67 +2,49 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import type { LingApi } from "../../api/client";
 import type { Agent, Conversation } from "../../api/types";
 import { useResource } from "../../shared/useResource";
-import { ErrorNotice, Loading, PageHeader } from "../../shared/ui";
+import { ErrorNotice, Loading } from "../../shared/ui";
+import { ChatAttachments, attachmentProblem } from "./ChatAttachments";
 import { ChatComposer } from "./ChatComposer";
 import { ChatControls } from "./ChatControls";
+import { ChatHeader } from "./ChatHeader";
 import { ChatTranscript } from "./ChatTranscript";
-import { ConversationPicker } from "./ConversationPicker";
-import { ChatSession, isPending } from "./session";
-import { ChatAttachments, attachmentProblem } from "./ChatAttachments";
-import { useChatAttachments } from "./useChatAttachments";
+import { NewConversation } from "./NewConversation";
 import { SegmentPanel } from "./SegmentPanel";
+import { ChatSession, isPending } from "./session";
+import type { ConversationList } from "./useConversations";
+import { useChatAttachments } from "./useChatAttachments";
 import "./chat.css";
 
 export function ChatPage({
   api,
   agent,
   session: agentSession,
+  conversations,
+  newChatOpen,
+  onCloseNewChat,
   openSettings,
 }: {
   api: LingApi;
   agent: Agent;
   session: ChatSession;
+  conversations: ConversationList;
+  newChatOpen: boolean;
+  onCloseNewChat: () => void;
   openSettings: () => void;
 }) {
-  const choiceKey = "lingnexus.chat.v1.choice." + agent.id;
-  const [selectedId, setSelectedId] = useState<string | undefined>(() => {
-    try {
-      return (
-        sessionStorage.getItem(choiceKey) ??
-        agentSession.getSnapshot().conversationId
-      );
-    } catch {
-      return agentSession.getSnapshot().conversationId;
-    }
-  });
-  const [created, setCreated] = useState<Conversation>();
-  const [creating, setCreating] = useState(false);
-  const loadConversations = useCallback(
-    (signal: AbortSignal) => api.conversations(agent.id, signal),
-    [api, agent.id],
-  );
-  const conversations = useResource(loadConversations);
-  const saved = conversations.status === "ready" ? conversations.data : [];
-  const list =
-    created && !saved.some((value) => value.id === created.id)
-      ? [created, ...saved]
-      : saved;
+  const [segmentsOpen, setSegmentsOpen] = useState(false);
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const list = conversations.list;
   const unresolved =
     isPending(agentSession.getSnapshot().turns.at(-1)) &&
     !agentSession.getSnapshot().conversationId;
-  const conversationId = unresolved ? undefined : (selectedId ?? list[0]?.id);
+  const conversationId = unresolved
+    ? undefined
+    : (conversations.selectedId ?? list[0]?.id);
   const session = conversationId
     ? agentSession.forConversation(conversationId)
     : agentSession;
   const state = useSyncExternalStore(session.subscribe, session.getSnapshot);
-  const choose = (id: string) => {
-    setSelectedId(id);
-    try {
-      sessionStorage.setItem(choiceKey, id);
-    } catch {
-      /* Selection still works in memory. */
-    }
-  };
   const load = useCallback(
     async (signal: AbortSignal) => {
       const [profiles, selection] = await Promise.all([
@@ -78,22 +60,21 @@ export function ChatPage({
   useEffect(() => {
     // An ID-less initial send adopts the backend's persistent default without
     // changing its request fingerprint or replacing its active subscriber.
-    if (state.conversationId && state.conversationId !== selectedId) {
-      setSelectedId(state.conversationId);
-      try {
-        sessionStorage.setItem(choiceKey, state.conversationId);
-      } catch {
-        /* Optional storage. */
-      }
-      if (!list.some((value) => value.id === state.conversationId))
+    if (
+      state.conversationId &&
+      state.conversationId !== conversations.selectedId
+    ) {
+      conversations.choose(state.conversationId);
+      if (!list.some((value) => value.id === state.conversationId)) {
         void conversations.refresh();
+      }
     }
   }, [
     state.conversationId,
-    selectedId,
-    choiceKey,
-    list,
+    conversations.selectedId,
+    conversations.choose,
     conversations.refresh,
+    list,
   ]);
   const last = state.turns.at(-1);
   const pending = isPending(last);
@@ -107,6 +88,7 @@ export function ChatPage({
   const profile = profiles.find((item) => item.id === profileId);
   const effortLevels = profile?.profile.capabilities.effort_levels ?? [];
   const effort = effortLevels.includes(state.effort) ? state.effort : "";
+  const selected = list.find((value) => value.id === conversationId);
   const attachments = useChatAttachments(api, agent.id, session, [
     ...state.attachmentIds,
     ...state.messages.flatMap((message) => message.attachment_ids ?? []),
@@ -120,50 +102,61 @@ export function ChatPage({
   );
   const historyUnavailable =
     !!state.conversationId && state.historyStatus !== "ready";
-  const locked = pending || state.busy || creating || attachments.uploading;
-  const disabled =
-    locked || historyUnavailable || conversations.status !== "ready";
+  const locked =
+    pending || state.busy || conversations.creating || attachments.uploading;
+  const disabled = locked || historyUnavailable || conversations.loading;
   const send = () => session.send(state.draft, profileId, effort);
   return (
     <div className="page chat-page">
-      <PageHeader
-        eyebrow="对话"
-        title={"与" + agent.name + "对话"}
-        description="说说此刻的想法，让对话慢慢展开。"
-        action={
-          <button className="button secondary" onClick={openSettings}>
-            模型设置
-          </button>
-        }
-      />
-      {state.conversationId && <SegmentPanel key={state.conversationId} api={api} conversationId={state.conversationId} messages={state.messages} disabled={locked}/>}
       <section className="panel chat-panel" aria-label="聊天">
-        <ConversationPicker
-          api={api}
-          agentId={agent.id}
-          conversations={list}
-          conversationId={conversationId ?? ""}
+        <ChatHeader
+          title={selected?.title ?? "新对话"}
           branches={state.branches}
-          disabled={locked}
-          loading={conversations.status !== "ready"}
-          onSelect={choose}
           onBranch={(id) => {
             if (!disabled) void session.selectBranch(id);
           }}
-          onCreated={(value) => {
-            setCreated(value);
-            choose(value.id);
-            void conversations.refresh();
-          }}
-          onCreating={setCreating}
+          segmentsOpen={segmentsOpen}
+          onToggleSegments={() => setSegmentsOpen(!segmentsOpen)}
+          onOpenSettings={openSettings}
+          disabled={locked}
         />
-        {conversations.status === "loading" && (
-          <Loading label="正在读取保存的对话…" />
+        {segmentsOpen && state.conversationId && (
+          <div className="chat-segments">
+            <SegmentPanel
+              key={state.conversationId}
+              api={api}
+              conversationId={state.conversationId}
+              messages={state.messages}
+              disabled={locked}
+            />
+          </div>
         )}
-        {conversations.status === "error" && (
-          <ErrorNotice
-            message={conversations.error}
-            retry={() => void conversations.refresh()}
+        {selected?.scope.startsWith("scene:") && (
+          <div className="chat-scene-note">
+            <p className="metadata">场景交流 · {selected.title}</p>
+            {selected.background && (
+              <details className="chat-scene-background">
+                <summary>查看场景背景</summary>
+                <p className="preserve-text">{selected.background}</p>
+                <p className="metadata">
+                  这是创建时保存的初始设定，可在后续对话中说明新的设定。
+                </p>
+              </details>
+            )}
+          </div>
+        )}
+        {newChatOpen && (
+          <NewConversation
+            api={api}
+            agentId={agent.id}
+            disabled={locked}
+            onCreated={(value: Conversation) => {
+              onCloseNewChat();
+              conversations.adopt(value);
+              void conversations.refresh();
+            }}
+            onCancel={onCloseNewChat}
+            onCreating={conversations.setCreating}
           />
         )}
         {models.status === "loading" && <Loading label="正在读取对话模型…" />}
@@ -281,8 +274,11 @@ export function ChatPage({
             disabled ||
             !!attachmentIssue
           }
+          attachmentsOpen={attachmentsOpen}
+          onToggleAttachments={() => setAttachmentsOpen(!attachmentsOpen)}
           attachments={
             <ChatAttachments
+              open={attachmentsOpen}
               attachments={attachments.items}
               selected={state.attachmentIds}
               onSelect={session.setAttachments}

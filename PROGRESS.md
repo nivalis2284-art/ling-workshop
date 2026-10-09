@@ -8,6 +8,20 @@
 
 开发工作树 H:/文档/LingNexus/Ling/.worktrees/m0-continuity，feature/m0-continuity。主目录 H:/文档/LingNexus/Ling的main已快进到同一源码，工作区干净。工作树保留.venv/node_modules/.tools和测试产物供后续开发，均不进入Git；根目录交付dist安装包/说明。
 
+## 对话页改版：回归正常聊天界面（2026-10-09）
+
+用户反馈"操作逻辑反人类、看不懂"，要求参照 ChatGPT 重排。
+
+- **对话列表进侧栏**：新增 `ChatHistory` 与 `useConversations`，列在导航下方；`Shell` 新增 `conversationNav` 插槽。列表与「新聊天」替代了原来的「保存的对话 / 新建对话」下拉框。
+- **侧栏可折叠**：`Shell` 新增折叠开关，状态存 `localStorage`；收起后成图标栏（保留品牌、导航图标、新聊天按钮）。折叠样式写在 `@media (min-width: 761px)` 内，手机端侧栏本来就是横条，不受影响。
+- **侧栏分区滚动**：导航（`flex: 0 1 auto` + 自身滚动）与对话列表（`flex: 1 1 auto; min-height: 180px`）各自滚动，保证对话列表永远在可视区。原先整条侧栏一个滚动条，11 个导航项会把对话列表挤到 881 像素处。
+- **顶部收敛**：页头大标题与工具条删除，换成一行「对话名 + ⋯」（`ChatHeader`）。分支切换、交流主题与分段、模型设置、切页提示全部收进 ⋯。
+- **消息操作改为悬停出现**：`.chat-message-actions` 默认 `opacity: 0`，`hover` / `focus-within` 时显示；`@media (hover: none)` 下常显。键盘与读屏仍可达（元素留在 DOM 里）。
+- **输入框重做**：`.chat-composer-box` 圆角外壳 + 内部 textarea；左侧 `＋` 控制附件面板（`ChatAttachments` 从 `<details>` 改为受控 `open`），右侧模型胶囊 + 圆形发送按钮；「消息」标签改为 `aria-label`，原来的 `<label>` 删除。
+- 组件增删：新增 `ChatHeader` / `ChatHistory` / `NewConversation` / `useConversations`；删除被取代的 `ConversationPicker`。`App` 拆出按 agent.id 加 key 的 `AgentWorkspace`，使切换个体时对话选择自动重置。
+- 行为变化（有意）：正在生成或上传附件时**允许切换对话**——运行在后台继续，回来即接续（与"切页不中断生成"一致）。原先这两个控件在这两种状态下是禁用的。相应更新了 `test_chat_conversations` / `test_chat_attachments` 里的断言并写明理由。
+- 验证：前端 **143 项全过**（新增 `ChatSidebar.test.tsx` 5 项），typecheck 与 build 通过。真实 Chromium 复核：侧栏列表、折叠、⋯ 菜单、＋ 附件面板均正常；实测消息操作按钮悬停前 `opacity: 0`、悬停后 `1`。
+
 ## 对话页前端调整（2026-10-09）
 
 用户要求参照 Codex：把模型选择与思考强度移出顶部工具栏，放到输入框右下角。

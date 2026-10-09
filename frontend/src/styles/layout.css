@@ -15,12 +15,19 @@
   flex-direction: column;
   overflow-y: auto;
 }
+.sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 20px;
+}
 .brand {
   display: flex;
   gap: 11px;
   align-items: center;
   padding: 0 7px;
-  margin-bottom: 38px;
+  margin-bottom: 0;
 }
 .brand strong,
 .welcome-brand strong {
@@ -64,11 +71,11 @@
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 15px 12px;
+  padding: 13px 12px;
   background: #fafbf6;
   border: 1px solid #e1e6d9;
   border-radius: 12px;
-  margin-bottom: 30px;
+  margin-bottom: 20px;
 }
 .agent-card > div {
   min-width: 0;
@@ -115,14 +122,14 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 13px 14px;
+  padding: 10px 13px;
   border: 0;
   border-radius: 8px;
   background: transparent;
   font-size: 13px;
   color: #647361;
   text-align: left;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 .nav-item:hover:not(.upcoming) {
   background: #e6ebdf;
@@ -414,5 +421,90 @@
   .workspace-footer span {
     max-width: 165px;
     text-align: right;
+  }
+}
+
+/* --- 侧栏折叠：窄屏不折叠，手机下侧栏本来就是横条 --- */
+.sidebar-toggle {
+  flex-shrink: 0;
+}
+@media (min-width: 761px) {
+  .app-shell.collapsed {
+    grid-template-columns: 76px minmax(0, 1fr);
+  }
+  .sidebar.collapsed {
+    padding: 32px 12px 20px;
+  }
+  .sidebar.collapsed .sidebar-head {
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+  .sidebar.collapsed .brand {
+    padding: 0;
+  }
+  .sidebar.collapsed .brand > div,
+  .sidebar.collapsed .agent-card > div,
+  .sidebar.collapsed .agent-select,
+  .sidebar.collapsed .nav-caption,
+  .sidebar.collapsed .nav-label,
+  .sidebar.collapsed .soon-tag,
+  .sidebar.collapsed .chat-history-list,
+  .sidebar.collapsed .chat-history-new-label,
+  .sidebar.collapsed .chat-history-note,
+  .sidebar.collapsed .local-note span,
+  .sidebar.collapsed .sidebar-bottom p span {
+    display: none;
+  }
+  .sidebar.collapsed .agent-card {
+    justify-content: center;
+    padding: 0 0 20px;
+  }
+  .sidebar.collapsed .nav-item {
+    justify-content: center;
+    padding: 11px 0;
+  }
+  .sidebar.collapsed .nav-dot {
+    display: none;
+  }
+  .sidebar.collapsed .chat-history {
+    margin-top: 28px;
+    border-top: 1px solid #dde3d5;
+    padding-top: 18px;
+  }
+  .sidebar.collapsed .chat-history-new {
+    justify-content: center;
+    padding: 10px 0;
+  }
+  .sidebar.collapsed .local-note {
+    justify-content: center;
+    border-top: 0;
+  }
+  .sidebar.collapsed .sidebar-bottom {
+    padding-left: 0;
+  }
+  .sidebar.collapsed .sidebar-bottom p {
+    justify-content: center;
+  }
+}
+
+/* --- 侧栏分区：导航自己滚，对话列表永远留在可视区 --- */
+@media (min-width: 761px) {
+  .sidebar {
+    overflow: hidden;
+  }
+  .sidebar nav {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .chat-history {
+    flex: 1 1 auto;
+    min-height: 180px;
+    overflow-y: auto;
+  }
+  .sidebar-bottom {
+    flex-shrink: 0;
+    padding-top: 24px;
   }
 }

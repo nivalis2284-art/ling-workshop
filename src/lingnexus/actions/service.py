@@ -141,18 +141,16 @@ class Actions:
         if name == "find_memories":
             return {
                 "episodes": self.app.memory.find_episodes(agent_id, args["query"])
-                + self.app.memory.find_episodes(agent_id, args["query"], scope="external")
             }
         if name == "find_knowledge":
             return {
                 "knowledge": self.app.memory.knowledge.search(agent_id, args["query"])
-                + self.app.memory.knowledge.search(agent_id, args["query"], scope="external")
             }
         if name == "read_source":
             ref = SourceRef(id=args["source_id"], revision=args["revision"])
             record = self.app.history.read(ref)
-            if record["agent_id"] != agent_id or record["scope"] not in {"real", "external"}:
-                raise PermissionDenied("来源不在当前个体的实际经历范围")
+            if record["agent_id"] != agent_id:
+                raise PermissionDenied("来源不在当前个体的经历范围")
             start, end = args["offset"], args["offset"] + args["limit"]
             return {
                 "source": ref.model_dump(),
@@ -160,7 +158,7 @@ class Actions:
                 "offset": start,
                 "has_more": end < len(record["text"]),
                 "kind": record["kind"],
-                "scope": record["scope"],
+                "scope": record.get("scope", ""),
             }
         if name == "read_episode":
             item = self.app.memory.read_episode(args["episode_id"])
@@ -188,7 +186,7 @@ class Actions:
                 intent["agent_id"],
                 evidence,
                 kind="tool",
-                scope="real",
+                scope="",
                 request_id="action:" + intent["id"],
             )
             db.execute(

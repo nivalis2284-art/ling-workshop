@@ -17,7 +17,7 @@ class Knowledge:
         *,
         kind: str,
         request_id: str,
-        scope: str = "real",
+        scope: str = "",
     ) -> str:
         if (
             kind not in {"fact", "preference", "experience", "hypothesis"}
@@ -37,7 +37,7 @@ class Knowledge:
                 if row["fingerprint"] != digest:
                     raise Conflict("知识请求编号冲突")
                 return row["id"]
-            self.history.validate_refs(agent_id, sources, scope)
+            self.history.validate_refs(agent_id, sources)
             kid = new_id()
             db.execute(
                 "INSERT INTO knowledge(id,agent_id,statement,kind,scope,status,request_id,fingerprint,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -62,20 +62,27 @@ class Knowledge:
                     (knowledge_id,),
                 )
             ]
-            self.history.validate_refs(row["agent_id"], refs, row["scope"])
+            self.history.validate_refs(row["agent_id"], refs)
             return dict(row) | {"sources": [r.model_dump() for r in refs]}
 
     def search(
-        self, agent_id: str, query: str, *, scope: str = "real", limit: int = 20, offset: int = 0
+        self, agent_id: str, query: str, *, scope: str | None = None, limit: int = 20, offset: int = 0
     ) -> list[dict]:
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("无效分页")
         literal = query.replace("!", "!!").replace("%", "!%").replace("_", "!_")
         with self.database.transaction() as db:
-            rows = db.execute(
-                "SELECT id FROM knowledge WHERE agent_id=? AND scope=? AND status='active' AND statement LIKE ? ESCAPE '!' ORDER BY created_at DESC,id LIMIT ? OFFSET ?",
-                (agent_id, scope, f"%{literal}%", limit, offset),
-            ).fetchall()
+            sql = "SELECT id FROM knowledge WHERE agent_id=? AND status='active'"
+            params: list = [agent_id]
+            if scope:
+                sql += " AND scope=?"
+                params.append(scope)
+            if query:
+                sql += " AND statement LIKE ? ESCAPE '!'"
+                params.append(f"%{literal}%")
+            sql += " ORDER BY created_at DESC,id LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            rows = db.execute(sql, params).fetchall()
             return [self.read(row[0]) for row in rows]
 
     def invalidate(self, ref: SourceRef) -> None:

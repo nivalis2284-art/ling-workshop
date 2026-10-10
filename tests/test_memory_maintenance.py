@@ -114,7 +114,7 @@ def test_archive_restore_delete_preserves_raw_history_and_audit(app, agent_id, m
 
 @pytest.mark.parametrize("kind", ["episodes", "knowledge"])
 @pytest.mark.parametrize(
-    "invalidate", ["correct_source", "hide_branch", "stale", "foreign", "scope", "missing"]
+    "invalidate", ["correct_source", "hide_branch", "stale", "foreign", "missing"]
 )
 def test_cannot_correct_or_restore_invalid_sources(app, agent_id, maintenance, kind, invalidate):
     item_id, ref = entry(app, agent_id, kind)
@@ -131,8 +131,6 @@ def test_cannot_correct_or_restore_invalid_sources(app, agent_id, maintenance, k
             elif invalidate == "foreign":
                 other = app.create_agent("另一个灵")
                 db.execute("UPDATE sources SET agent_id=? WHERE id=?", (other, ref.id))
-            elif invalidate == "scope":
-                db.execute("UPDATE sources SET scope='external' WHERE id=?", (ref.id,))
             else:
                 singular = "episode" if kind == "episodes" else "knowledge"
                 db.execute(f"DELETE FROM {singular}_sources WHERE {singular}_id=?", (item_id,))
@@ -157,19 +155,13 @@ def test_cannot_correct_or_restore_invalid_sources(app, agent_id, maintenance, k
         )
 
 
-def test_scope_and_status_are_explicit_and_query_is_literal(app, agent_id, maintenance):
-    real, _ = entry(app, agent_id, text="real 100%_value")
-    external, _ = entry(app, agent_id, scope="external", text="外部报告")
-    entry(app, agent_id, scope="scene:story", text="场景内容")
+def test_status_and_query_are_explicit_and_literal(app, agent_id, maintenance):
+    first, _ = entry(app, agent_id, text="first 100%_value")
+    second, _ = entry(app, agent_id, text="second 外部报告")
     entry(app, app.create_agent("另一个灵"), text="其他个体")
-    assert [r["id"] for r in maintenance.items(agent_id, kind="episodes")] == [real]
-    assert [r["id"] for r in maintenance.items(agent_id, kind="episodes", scope="external")] == [
-        external
-    ]
+    assert {r["id"] for r in maintenance.items(agent_id, kind="episodes")} == {first, second}
     assert len(maintenance.items(agent_id, kind="episodes", query="%_")) == 1
     assert maintenance.items(agent_id, kind="episodes", query="not%_") == []
-    with pytest.raises(ValueError):
-        maintenance.items(agent_id, kind="episodes", scope="scene:story")
 
 
 def test_running_recall_blocks_maintenance_without_changing_raw(app, agent_id, maintenance):
@@ -247,7 +239,7 @@ def test_api_owner_boundary_and_strict_revision(app, agent_id, maintenance, tmp_
     )
     assert (
         client.get(
-            f"/memory/{agent_id}/items?kind=episodes&scope=scene:story", headers=headers
+            f"/memory/{agent_id}/items?kind=episodes&status=invalid_status", headers=headers
         ).status_code
         == 422
     )

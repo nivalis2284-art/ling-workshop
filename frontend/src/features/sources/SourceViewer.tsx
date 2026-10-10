@@ -3,7 +3,7 @@ import { ArrowUpRight, FileText, X } from "lucide-react";
 import type { LingApi } from "../../api/client";
 import type { SourceRef } from "../../api/types";
 import { useResource } from "../../shared/useResource";
-import { ErrorNotice, formatDate, Loading, scopeLabel } from "../../shared/ui";
+import { ErrorNotice, formatDate, Loading } from "../../shared/ui";
 
 function SourceContent({
   api,
@@ -52,8 +52,7 @@ function SourceContent({
       {resource.status === "ready" && (
         <>
           <p className="metadata">
-            {kinds[resource.data.kind ?? ""] ?? "来源记录"} ·{" "}
-            {scopeLabel(resource.data.scope)}
+            {kinds[resource.data.kind ?? ""] ?? "来源记录"}
             {resource.data.recorded_at &&
               " · " + formatDate(resource.data.recorded_at)}
           </p>

@@ -28,7 +28,7 @@ SourceKind = Literal["user", "assistant", "observation", "tool", "system"]
 class SourceInput(Value):
     content: str = Field(min_length=1)
     kind: SourceKind
-    scope: str = Field(pattern=r"^(real|external|test|scene:[a-zA-Z0-9_-]+)$")
+    scope: str = Field(default="")
     request_id: str = Field(min_length=1)
 
 

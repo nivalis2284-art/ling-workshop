@@ -88,17 +88,9 @@ def test_pending_proposal_cannot_apply_after_source_correction(app, agent_id):
         app.identity.decide(item["id"], "approve", expected_revision=0)
 
 
-def test_scene_cannot_become_real_identity(app, agent_id):
-    ref = app.history.add(
-        agent_id, "我是龙", kind="user", scope="scene:fantasy", request_id="fantasy"
-    )
-    with pytest.raises(SourceInvalid):
-        proposal(app, agent_id, source=ref)
-
-
 def test_episode_summary_keeps_original_detail_and_invalidates_on_correction(app, agent_id):
     ref = app.history.add(
-        agent_id, "周五15:30去复查", kind="user", scope="real", request_id="appointment"
+        agent_id, "周五15:30去复查", kind="user", request_id="appointment"
     )
     episode = app.memory.save_episode(agent_id, "复查", "约定了复查", [ref], request_id="episode")
     assert "15:30" in app.memory.read_sources([ref])[0]["text"]
@@ -109,16 +101,17 @@ def test_episode_summary_keeps_original_detail_and_invalidates_on_correction(app
     assert app.memory.find_episodes(agent_id, "复查") == []
 
 
-def test_two_character_chinese_search_and_scope_filter(app, agent_id):
-    real = app.history.add(agent_id, "想喝咖啡", kind="user", scope="real", request_id="coffee")
-    fake = app.history.add(agent_id, "测试咖啡", kind="user", scope="test", request_id="fakecoffee")
-    eid = app.memory.save_episode(
-        agent_id, "午后咖啡", "想喝咖啡", [real], request_id="real-episode"
+def test_two_character_chinese_search(app, agent_id):
+    first = app.history.add(agent_id, "想喝咖啡", kind="user", request_id="coffee")
+    second = app.history.add(agent_id, "冰滴咖啡", kind="user", request_id="coldcoffee")
+    eid1 = app.memory.save_episode(
+        agent_id, "午后咖啡", "想喝咖啡", [first], request_id="coffee-episode-1"
     )
-    app.memory.save_episode(
-        agent_id, "测试咖啡", "测试", [fake], request_id="fake-episode", scope="test"
+    eid2 = app.memory.save_episode(
+        agent_id, "清晨咖啡", "冰滴咖啡", [second], request_id="coffee-episode-2"
     )
-    assert [row["id"] for row in app.memory.find_episodes(agent_id, "咖啡")] == [eid]
+    results = [row["id"] for row in app.memory.find_episodes(agent_id, "咖啡")]
+    assert eid1 in results and eid2 in results
 
 
 def test_episode_request_conflict_does_not_erase_prior_card(app, agent_id):

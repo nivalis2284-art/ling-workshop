@@ -502,61 +502,13 @@ def test_finite_history_omits_archived_attachment_without_reading_blob(app, agen
                 update={"context_window_tokens": 2200}
             )
             refs = [node["source"] for node in app.conversations.messages(cid)]
-            payload, manifest = build_payload(app, agent_id, profile, refs, scope="real")
+            payload, manifest = build_payload(app, agent_id, profile, refs)
             assert payload["messages"][-1]["content"] == "latest"
             assert manifest["attachments"] == []
             assert first["user_source"] | {"reason": "archived_history"} in manifest["omitted"]
             assert latest["source"].model_dump() in manifest["included"]
 
     asyncio.run(scenario())
-
-
-@pytest.mark.parametrize(
-    "kind,scope", [("user", "external"), ("observation", "test"), ("observation", "scene:fiction")]
-)
-def test_guarded_recall_rejects_unauthorized_source_scopes(app, agent_id, kind, scope):
-    from lingnexus.common.errors import SourceInvalid
-
-    configure(app, "openai_chat_completions")
-    bad = app.history.add(
-        agent_id, "bad recalled evidence", kind=kind, scope=scope, request_id="bad-evidence"
-    )
-    calls = []
-
-    async def scenario():
-        async with runtime_for(app, calls) as runtime:
-            run = runtime.submit(turn(agent_id))
-            run["context_sources"].append(bad.model_dump())
-            run["context_manifest"]["recall_sources"] = [bad.model_dump()]
-            with pytest.raises(SourceInvalid):
-                runtime.failover.validate_context(run)
-            runtime.cancel(run["id"])
-
-    asyncio.run(scenario())
-    assert calls == []
-
-
-def test_recall_manifest_cannot_relax_scope_of_conversation_user(app, agent_id):
-    from lingnexus.common.errors import SourceInvalid
-
-    configure(app, "openai_chat_completions")
-    calls = []
-
-    async def scenario():
-        async with runtime_for(app, calls) as runtime:
-            run = runtime.submit(turn(agent_id))
-            run["context_manifest"]["recall_sources"] = [run["user_source"]]
-            with app.database.transaction() as db:
-                db.execute(
-                    "UPDATE sources SET scope='external',kind='observation' WHERE id=?",
-                    (run["user_source"]["id"],),
-                )
-            with pytest.raises(SourceInvalid):
-                runtime.failover.validate_context(run)
-            runtime.cancel(run["id"])
-
-    asyncio.run(scenario())
-    assert calls == []
 
 
 def test_default_capabilities_require_explicit_booleans():

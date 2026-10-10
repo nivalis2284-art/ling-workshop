@@ -54,7 +54,7 @@ class ContextBuilder:
         agent_id: str,
         *,
         source_refs: list[SourceRef],
-        scope: str = "real",
+        scope: str = "",
         budget: BudgetPolicy | None = None,
     ) -> ContextPacket:
         budget = budget or BudgetPolicy()
@@ -78,7 +78,7 @@ class ContextBuilder:
             refs = list(dict.fromkeys((r.id, r.revision) for r in source_refs))
             if refs:
                 records = self.history.validate_refs(
-                    agent_id, [SourceRef(id=i, revision=r) for i, r in refs], scope
+                    agent_id, [SourceRef(id=i, revision=r) for i, r in refs]
                 )
                 for record in records:
                     size = self.counter.count(json.dumps(record, ensure_ascii=False))

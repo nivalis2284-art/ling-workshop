@@ -29,9 +29,7 @@ def validate_memory(app, agent_id, state):
     MemoryMaintenance(app).validate_markers(agent_id, state.get("memory_refs", []))
     refs = state.get("source_refs", [])
     if refs:
-        records = app.history.validate_refs(agent_id, [SourceRef(**r) for r in refs])
-        if any(r["scope"] not in {"real", "external"} for r in records):
-            raise SourceInvalid("Task sources are outside actual experience.")
+        app.history.validate_refs(agent_id, [SourceRef(**r) for r in refs])
 
 
 def capture_memory(app, agent_id, name, result):
@@ -281,9 +279,6 @@ class ToolExecutor:
                 skills = getattr(self.app, "skills", None)
                 checkpoint = self.store.load(tid)
                 refs = [SourceRef(**r) for r in self.store.evidence(tid)]
-                # Skills' current provenance contract is real scope. Tool observations
-                # retain explicit external scope/slices inside their original evidence.
-                refs = [r for r in refs if self.app.history.read(r)["scope"] == "real"]
                 if (
                     skills is None
                     or not refs
@@ -412,7 +407,7 @@ class ToolExecutor:
                         }
                     ),
                     kind="tool",
-                    scope="real",
+                    scope="",
                     request_id="task-step:" + step["id"],
                 )
                 result["source"] = ref.model_dump()

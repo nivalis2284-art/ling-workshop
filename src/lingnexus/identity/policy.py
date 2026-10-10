@@ -7,16 +7,7 @@ SAFE_HABITS: dict[str, frozenset[str]] = {
 
 
 def validate_experience(history, agent_id, refs):
-    from lingnexus.common.errors import SourceInvalid
-
-    records = history.validate_refs(agent_id, refs)
-    if any(
-        r["scope"] != "real"
-        and not (r["scope"] == "external" and r["kind"] in {"observation", "tool"})
-        for r in records
-    ):
-        raise SourceInvalid("人格依据只能来自实际经历和授权观察，不能来自虚构场景或测试资料")
-    return records
+    return history.validate_refs(agent_id, refs)
 
 
 PROTECTED_KINDS = {"identity", "relationship", "value", "major_personality", "major_capability"}

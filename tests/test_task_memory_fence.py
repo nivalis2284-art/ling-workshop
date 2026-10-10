@@ -649,10 +649,9 @@ def test_recovered_stale_action_retains_every_actual_returned_item_and_source(ap
             await settle(runtime, tid)
             assert_blocked(runtime, tid)
             state = runtime.store.load(tid)
-            assert state["memory_refs"] == [
-                {"kind": "knowledge", "id": real_id, "revision": 1},
-                {"kind": "knowledge", "id": external_id, "revision": 1},
-            ]
+            assert {"kind": "knowledge", "id": real_id, "revision": 1} in state["memory_refs"]
+            assert {"kind": "knowledge", "id": external_id, "revision": 1} in state["memory_refs"]
+            assert len(state["memory_refs"]) == 2
             assert real_ref.model_dump() in state["source_refs"]
             assert external_ref.model_dump() in state["source_refs"]
             await runtime.close()

@@ -8,7 +8,6 @@ import { Sources } from "../sources/SourceViewer";
 import {
   kindLabels,
   memoryApi,
-  scopeLabels,
   statusLabels,
   type MemoryAction,
   type MemoryItem,
@@ -126,7 +125,6 @@ function MemoryDetailContent({
         <ArrowLeft size={15} aria-hidden="true" /> 返回记忆列表
       </button>
       <div className="memory-tags">
-        <span className="pill">{scopeLabels[item.scope]}</span>
         <span className="pill">{statusLabels[item.status]}</span>
         {item.kind && (
           <span className="pill">{kindLabels[item.kind] ?? "知识记录"}</span>

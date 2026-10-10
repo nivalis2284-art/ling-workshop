@@ -13,18 +13,15 @@ import { useResource } from "../../shared/useResource";
 import { MemoryDetail } from "./MemoryDetail";
 import {
   memoryApi,
-  scopeLabels,
   statusLabels,
   type MemoryItem,
   type MemoryKind,
-  type MemoryScope,
   type MemoryStatus,
 } from "./api";
 import "./memory.css";
 
 function MemoryNotebook({ api, agent }: { api: LingApi; agent: Agent }) {
   const [kind, setKind] = useState<MemoryKind>("episodes");
-  const [scope, setScope] = useState<MemoryScope>("real");
   const [status, setStatus] = useState<MemoryStatus>("all");
   const [draft, setDraft] = useState("");
   const [query, setQuery] = useState("");
@@ -36,13 +33,12 @@ function MemoryNotebook({ api, agent }: { api: LingApi; agent: Agent }) {
       memoryApi(api).items(
         agent.id,
         kind,
-        scope,
         status,
         query,
         offset,
         signal,
       ),
-    [api, agent.id, kind, scope, status, query, offset],
+    [api, agent.id, kind, status, query, offset],
   );
   const resource = useResource(load);
   function reset() {
@@ -75,20 +71,6 @@ function MemoryNotebook({ api, agent }: { api: LingApi; agent: Agent }) {
           ))}
         </div>
         <label>
-          记忆范围
-          <select
-            aria-label="记忆范围"
-            value={scope}
-            onChange={(event) => {
-              reset();
-              setScope(event.target.value as MemoryScope);
-            }}
-          >
-            <option value="real">真实经历</option>
-            <option value="external">外部资料</option>
-          </select>
-        </label>
-        <label>
           记忆状态
           <select
             aria-label="记忆状态"
@@ -105,11 +87,6 @@ function MemoryNotebook({ api, agent }: { api: LingApi; agent: Agent }) {
           </select>
         </label>
       </div>
-      {scope === "external" && (
-        <p className="notice">
-          正在浏览外部资料中的认识；可沿来源核对，不等同于亲历事实。
-        </p>
-      )}
       <form
         className="search-form"
         role="search"
@@ -205,9 +182,6 @@ function MemoryNotebook({ api, agent }: { api: LingApi; agent: Agent }) {
                       </div>
                       <div className="memory-entry-body">
                         <div className="memory-tags">
-                          <span className="pill">
-                            {scopeLabels[item.scope]}
-                          </span>
                           <span className="pill">
                             {statusLabels[item.status]}
                           </span>

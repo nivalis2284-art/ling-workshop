@@ -53,7 +53,7 @@ def items(
     agent_id: str,
     request: Request,
     kind: Kind = "episodes",
-    scope: Literal["real", "external"] = "real",
+    scope: str | None = None,
     status: Literal["all", "active", "archived", "invalidated"] = "all",
     query: str = Query(default="", max_length=500),
     limit: int = Query(default=20, ge=1, le=100),

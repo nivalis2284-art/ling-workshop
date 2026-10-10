@@ -882,7 +882,7 @@ class GatedStream(httpx.AsyncByteStream):
 
 @pytest.mark.parametrize(
     "change",
-    ["prior_user", "prior_assistant", "current_user", "other_agent", "other_scope", "missing"],
+    ["prior_user", "prior_assistant", "current_user", "other_agent", "missing"],
 )
 def test_context_invalidated_during_generation_fails_without_assistant_source(
     app, agent_id, change
@@ -933,10 +933,6 @@ def test_context_invalidated_during_generation_fails_without_assistant_source(
                         if change == "other_agent":
                             db.execute(
                                 "UPDATE sources SET agent_id=? WHERE id=?", (other, prior_user.id)
-                            )
-                        elif change == "other_scope":
-                            db.execute(
-                                "UPDATE sources SET scope='test' WHERE id=?", (prior_user.id,)
                             )
                         else:
                             refs = [*run["context_sources"], {"id": "missing", "revision": 1}]

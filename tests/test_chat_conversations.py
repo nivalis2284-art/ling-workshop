@@ -92,7 +92,7 @@ def test_default_is_persistent_and_replay_does_not_resolve_current_selection(app
         async with model_runtime(app, calls) as runtime:
             first = await complete(runtime, value)
             cid = first["conversation_id"]
-            assert app.conversations.read(cid)["scope"] == "real"
+            assert app.conversations.read(cid)["scope"] == ""
             edited = app.conversations.edit_user(
                 cid, first["user_message_id"], "Edited", request_id="edit"
             )
@@ -147,7 +147,7 @@ def test_new_real_conversation_preserves_current_personality(app, agent_id, fami
             run = await complete(runtime, turn(agent_id, real, "Hello", real))
             assert run["context_sources"] == [run["user_source"]]
             for field in ("user_source", "assistant_source"):
-                assert app.history.read(SourceRef(**run[field]))["scope"] == "real"
+                assert app.history.read(SourceRef(**run[field]))["scope"] == ""
             assert app.identity.current(agent_id) == snapshot
 
     asyncio.run(scenario())
@@ -156,7 +156,8 @@ def test_new_real_conversation_preserves_current_personality(app, agent_id, fami
         for body in calls
     ]
     assert all("Patient and curious" in text for text in instructions)
-    assert "real" in instructions[0]
+    assert "当前交流情境" not in instructions[0]
+    assert "real" not in instructions[0]
     assert "虚构" not in instructions[0]
     assert "Growth evidence" not in json.dumps(calls)
 
@@ -327,16 +328,13 @@ def test_credentials_preflight_does_not_create_sources_messages_or_default(app, 
     assert calls == []
 
 
-@pytest.mark.parametrize("problem", ["other_agent", "missing", "scope"])
+@pytest.mark.parametrize("problem", ["other_agent", "missing"])
 def test_explicit_conversation_preflight_validates_ownership_and_scope(app, agent_id, problem):
     configure(app)
     other = app.create_agent("Other")
     cid = app.conversations.create(other if problem == "other_agent" else agent_id, "Target")["id"]
     if problem == "missing":
         cid = "missing"
-    elif problem == "scope":
-        with app.database.transaction() as db:
-            db.execute("UPDATE conversations SET scope='external' WHERE id=?", (cid,))
     calls = []
 
     async def scenario():

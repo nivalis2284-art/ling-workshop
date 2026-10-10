@@ -1,6 +1,6 @@
 import pytest
 
-from lingnexus.common.errors import ContextTooLarge, SourceInvalid
+from lingnexus.common.errors import ContextTooLarge
 
 
 def test_approved_growth_reaches_context_without_pending_claim(app, agent_id):
@@ -56,11 +56,3 @@ def test_long_evidence_is_omitted_with_readable_reference(app, agent_id):
     assert not result.evidence
     assert result.manifest["omitted"][0]["id"] == ref.id
     assert len(app.memory.read_sources([ref])[0]["text"]) > 2000
-
-
-def test_scene_and_test_records_do_not_enter_real_context(app, agent_id):
-    ref = app.history.add(
-        agent_id, "虚构身份", kind="user", scope="scene:story", request_id="scene"
-    )
-    with pytest.raises(SourceInvalid):
-        app.context.build(agent_id, source_refs=[ref])

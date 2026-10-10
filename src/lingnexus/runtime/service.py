@@ -177,7 +177,7 @@ class ChatRuntime:
             user_ref = user["source"]
             refs = [node["source"] for node in self.app.conversations.messages(conversation["id"])]
             payload, manifest = build_payload(
-                self.app, value.agent_id, profile, refs, scope=conversation["scope"]
+                self.app, value.agent_id, profile, refs
             )
             db.execute(
                 "INSERT INTO chat_runs(id,agent_id,request_id,fingerprint,profile_id,status,"

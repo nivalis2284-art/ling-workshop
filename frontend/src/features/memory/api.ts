@@ -2,7 +2,6 @@ import type { LingApi } from "../../api/client";
 import type { SourceRef } from "../../api/types";
 
 export type MemoryKind = "episodes" | "knowledge";
-export type MemoryScope = "real" | "external";
 export type MemoryStatus = "all" | "active" | "archived" | "invalidated";
 export type MemoryAction = "archive" | "restore" | "delete";
 export interface MemorySnapshot {
@@ -12,7 +11,7 @@ export interface MemorySnapshot {
   summary?: string;
   statement?: string;
   kind?: string;
-  scope: MemoryScope;
+  scope?: string;
   revision: number;
   status: Exclude<MemoryStatus, "all">;
   sources: SourceRef[];
@@ -35,7 +34,6 @@ export const statusLabels = {
   archived: "已归档",
   invalidated: "依据已失效",
 };
-export const scopeLabels = { real: "真实经历", external: "外部资料" };
 export const kindLabels: Record<string, string> = {
   fact: "事实记录",
   preference: "偏好",
@@ -49,20 +47,20 @@ export function memoryApi(api: LingApi) {
     items: (
       agent: string,
       kind: MemoryKind,
-      scope: MemoryScope,
       status: MemoryStatus,
       query: string,
       offset: number,
       signal: AbortSignal,
+      scope?: string,
     ) => {
       const params = new URLSearchParams({
         kind,
-        scope,
         status,
         query,
         offset: String(offset),
         limit: "20",
       });
+      if (scope) params.set("scope", scope);
       return api.call<MemoryItem[]>(
         "/memory/" + encodeURIComponent(agent) + "/items?" + params,
         { signal },

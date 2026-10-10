@@ -17,7 +17,7 @@ class Episodes:
         sources: list[SourceRef],
         *,
         request_id: str,
-        scope: str = "real",
+        scope: str = "",
     ) -> str:
         if not title.strip() or not summary.strip() or not request_id:
             raise ValueError("标题、摘要和请求编号不能为空")
@@ -34,7 +34,7 @@ class Episodes:
                 if existing["fingerprint"] != fingerprint:
                     raise Conflict("事件请求编号已用于不同内容")
                 return existing["id"]
-            self.history.validate_refs(agent_id, sources, scope)
+            self.history.validate_refs(agent_id, sources)
             eid = new_id()
             db.execute(
                 "INSERT INTO episodes VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -72,19 +72,20 @@ class Episodes:
                 )
             ]
             if active_only:
-                self.history.validate_refs(row["agent_id"], refs, row["scope"])
+                self.history.validate_refs(row["agent_id"], refs)
             return dict(row) | {"sources": [r.model_dump() for r in refs]}
 
     def find(
-        self, agent_id: str, query: str, *, scope: str = "real", limit: int = 20, offset: int = 0
+        self, agent_id: str, query: str, *, scope: str | None = None, limit: int = 20, offset: int = 0
     ) -> list[dict]:
         if not 1 <= limit <= 100 or offset < 0:
             raise ValueError("无效分页")
         with self.database.transaction() as db:
-            params: list = [agent_id, scope]
-            sql = (
-                "SELECT e.id FROM episodes e WHERE e.agent_id=? AND e.scope=? AND e.status='active'"
-            )
+            params: list = [agent_id]
+            sql = "SELECT e.id FROM episodes e WHERE e.agent_id=? AND e.status='active'"
+            if scope:
+                sql += " AND e.scope=?"
+                params.append(scope)
             if len(query.strip()) >= 3:
                 sql += " AND e.id IN (SELECT episode_id FROM episode_search WHERE episode_search MATCH ?)"
                 params.append('"' + query.replace('"', '""') + '"')

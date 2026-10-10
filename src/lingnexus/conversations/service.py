@@ -21,7 +21,7 @@ class Conversations:
             cid = new_id()
             db.execute(
                 "INSERT INTO conversations(id,agent_id,title,scope,head_id,created_at) VALUES (?,?,?,?,?,?)",
-                (cid, agent_id, title.strip(), "real", None, utc_now()),
+                (cid, agent_id, title.strip(), "", None, utc_now()),
             )
             return self.read(cid)
 
@@ -38,8 +38,6 @@ class Conversations:
         value = self.read(conversation_id)
         if value["agent_id"] != agent_id:
             raise PermissionDenied("交流属于其他个体")
-        if value["scope"] != "real":
-            raise PermissionDenied("该交流情境不支持聊天")
         return value
 
     def default_real(self, agent_id: str) -> dict:
@@ -48,10 +46,7 @@ class Conversations:
         with self.database.transaction() as db:
             row = db.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
             if row:
-                value = self.for_chat(agent_id, json.loads(row[0]))
-                if value["scope"] != "real":
-                    raise PermissionDenied("默认交流必须属于现实情境")
-                return value
+                return self.for_chat(agent_id, json.loads(row[0]))
             value = self.create(agent_id, "日常交流")
             db.execute("INSERT INTO settings VALUES (?,?)", (key, json.dumps(value["id"])))
             return value

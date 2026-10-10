@@ -15,9 +15,9 @@ def relevant_context(app, source: dict) -> tuple[list[dict], list[SourceRef]]:
     items, refs, seen = [], {}, set()
     terms = list(dict.fromkeys(re.findall(r"[\w]{3,16}", source["text"])))[:4]
     for term in terms:
-        found = app.memory.find_episodes(source["agent_id"], term, limit=2, scope=source["scope"])
+        found = app.memory.find_episodes(source["agent_id"], term, limit=2)
         found += app.memory.knowledge.search(
-            source["agent_id"], term, limit=2, scope=source["scope"]
+            source["agent_id"], term, limit=2
         )
         for item in found:
             if item["id"] in seen or len(item["sources"]) > 8:

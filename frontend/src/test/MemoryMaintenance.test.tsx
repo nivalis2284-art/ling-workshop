@@ -62,14 +62,12 @@ function backend(
         });
       if (url.pathname === "/api/memory/agent-private/items") {
         const kind = url.searchParams.get("kind");
-        const scope = url.searchParams.get("scope");
         const status = url.searchParams.get("status");
         return json(
           items
             .filter(
               (item) =>
                 (kind === "knowledge" ? !!item.statement : !!item.summary) &&
-                item.scope === scope &&
                 (status === "all" || status === item.status),
             )
             .map((item) =>
@@ -173,13 +171,11 @@ test("更正事件保留原文提示和历史，并采用新版本归档及恢�
   expect(document.body).not.toHaveTextContent("episode-private");
 });
 
-test("外部知识必须显式切换，更正后明确确认删除且不删除原始历史", async () => {
+test("知识格式切换，更正后明确确认删除且不删除原始历史", async () => {
   const server = backend();
   const user = open();
   await screen.findByRole("button", { name: "一起整理书桌" });
   await user.click(screen.getByRole("tab", { name: "知识" }));
-  expect(await screen.findByText("这里还没有记忆条目")).toBeInTheDocument();
-  await user.selectOptions(screen.getByLabelText("记忆范围"), "external");
   await user.click(
     await screen.findByRole("button", { name: "更喜欢安静阅读。" }),
   );
@@ -227,13 +223,6 @@ test("外部知识必须显式切换，更正后明确确认删除且不删除�
       },
     },
   ]);
-  expect(
-    server.requests
-      .filter((r) => r.url.pathname.includes("/items"))
-      .every((r) =>
-        ["real", "external"].includes(r.url.searchParams.get("scope") ?? ""),
-      ),
-  ).toBe(true);
   expect(
     server.requests.some((r) => r.url.pathname.startsWith("/api/sources/")),
   ).toBe(false);
@@ -286,7 +275,6 @@ test("删除响应在切换到知识笔记后到达，不覆盖新页面或显�
     }),
   );
   await user.click(screen.getByRole("tab", { name: "知识" }));
-  await user.selectOptions(screen.getByLabelText("记忆范围"), "external");
   await user.click(
     await screen.findByRole("button", { name: "更喜欢安静阅读。" }),
   );

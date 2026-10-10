@@ -16,7 +16,7 @@ class HistoryService:
         self._on_correct.append(callback)
 
     def add(
-        self, agent_id: str, content: str, *, kind: SourceKind, scope: str, request_id: str
+        self, agent_id: str, content: str, *, kind: SourceKind, scope: str = "", request_id: str
     ) -> SourceRef:
         value = SourceInput(content=content, kind=kind, scope=scope, request_id=request_id)
         fingerprint = hashlib.sha256(value.model_dump_json().encode()).hexdigest()
@@ -146,8 +146,6 @@ class HistoryService:
         rows = [self.read(ref) for ref in refs]
         if any(row["agent_id"] != agent_id for row in rows):
             raise SourceInvalid("来源属于其他个体")
-        if scope and any(row["scope"] != scope for row in rows):
-            raise SourceInvalid("来源情境不一致")
         return rows
 
     def count(self, agent_id: str) -> int:

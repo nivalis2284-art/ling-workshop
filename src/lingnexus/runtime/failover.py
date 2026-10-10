@@ -208,7 +208,7 @@ class ChatFailover:
                 recall_refs if key in recalled and key not in transcript else conversation_refs
             ).append(ref)
         if conversation_refs:
-            self.app.history.validate_refs(agent_id, conversation_refs, scope=conversation["scope"])
+            self.app.history.validate_refs(agent_id, conversation_refs)
         if recall_refs:
             validate_experience(self.app.history, agent_id, recall_refs)
 
@@ -257,7 +257,6 @@ class ChatFailover:
                     run["agent_id"],
                     profile,
                     refs,
-                    scope=conversation["scope"],
                 )
                 if manifest["self_revision"] != run["self_revision"]:
                     raise Conflict("The current self state changed.")

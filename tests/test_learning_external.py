@@ -60,7 +60,7 @@ def test_authorized_external_observation_can_form_world_knowledge_and_pending_gr
             assert (await worker.run_once(agent_id))["status"] == "done"
 
     asyncio.run(run())
-    assert app.memory.knowledge.search(agent_id, "版本", scope="external")[0]["sources"] == [
+    assert app.memory.knowledge.search(agent_id, "版本")[0]["sources"] == [
         source.model_dump()
     ]
     candidate = app.identity.list_proposals(agent_id)[0]

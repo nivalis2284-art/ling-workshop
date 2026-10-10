@@ -22,26 +22,18 @@ def build_payload(
     profile: ModelProfile,
     refs: list[SourceRef],
     *,
-    scope: str,
+    scope: str = "",
 ) -> tuple[dict, dict]:
     """Return the native request plus the exact ContextBuilder manifest it used."""
     output = profile.max_output_tokens or 4096
-    # Conversations are always real now (Conversations.for_chat refuses the rest),
-    # but the offline self-check still renders other scopes, so state the scope
-    # faithfully instead of assuming.
-    scope_instructions = (
-        "\n当前交流情境：real（现实交流）。"
-        if scope == "real"
-        else f"\n当前交流情境：{scope}。"
-    )
-    originals = app.history.validate_refs(agent_id, refs, scope) if refs else []
+    originals = app.history.validate_refs(agent_id, refs) if refs else []
     recall_text, recall_refs, memory_markers = candidates(
-        app, agent_id, originals[-1]["text"] if originals else "", scope
+        app, agent_id, originals[-1]["text"] if originals else ""
     )
     counter = app.context.counter
     limit = profile.context_window_tokens or 32768
-    core = app.context.build(agent_id, source_refs=[], scope=scope).instructions
-    available = limit - output - counter.count(core + scope_instructions) - 256
+    core = app.context.build(agent_id, source_refs=[]).instructions
+    available = limit - output - counter.count(core) - 256
     if available <= 0:
         raise ContextTooLarge("Required context exceeds this model's configured window.")
     current_size = counter.count(json.dumps(originals[-1],ensure_ascii=False)) if originals else 0
@@ -78,20 +70,18 @@ def build_payload(
     selected.reverse()
     if recall_refs:
         validate_experience(app.history, agent_id, recall_refs)
-    # Reserve the scope instruction cost before the context builder budgets sources.
     context = app.context.build(
         agent_id,
         source_refs=selected,
-        scope=scope,
         budget=BudgetPolicy(
             context_limit=limit,
             output_reserve=output,
-            tool_reserve=counter.count(scope_instructions + recall_text) + attachment_used + 256,
+            tool_reserve=counter.count(recall_text) + attachment_used + 256,
         ),
     )
     if context.manifest["omitted"]:
         raise ContextTooLarge("Full chat history exceeds the context budget; nothing was sent.")
-    instructions = context.instructions + scope_instructions
+    instructions = context.instructions
     messages = [
         {
             "role": r["kind"],
@@ -123,7 +113,7 @@ def build_payload(
         "estimated_input_tokens": (
             context.manifest["estimated_input_tokens"]
             + attachment_used
-            + counter.count(scope_instructions + recall_text)
+            + counter.count(recall_text)
         ),
         "source_counts": {
             "conversation": len(context.evidence),

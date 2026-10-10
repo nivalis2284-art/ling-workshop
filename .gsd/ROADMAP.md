@@ -1,10 +1,10 @@
 # ROADMAP.md
 
-> **Current Phase**: Phase 1
+> **Current Phase**: Phase 2
 > **Milestone**: v0.2.0 (系统瘦身与架构简化：彻底移除情境与解耦记忆级联)
 
 ## Must-Haves (from SPEC)
-- [ ] 彻底移除交流情境（Scope / Real）
+- [x] 彻底移除交流情境（Scope / Real）
 - [ ] 切断编辑与删除历史时的过度级联作废机制
 - [ ] 长期记忆与知识人工手动纠错优先
 - [ ] 前端界面冗余情境标签与选择器清空
@@ -15,7 +15,7 @@
 ## Phases
 
 ### Phase 1: 交流情境（Scope / Scene / Real）彻底除名与基准收敛
-**Status**: 🟡 In Progress (代码与迁移脚本已就绪，待正式验收与提交)
+**Status**: ✅ Complete
 **Objective**: 从 Prompt、会话管理、记忆检索及数据库中全面剥离情境属性，完成 025_drop_scope 迁移与前端死代码清理。
 **Requirements**: REQ-SCOPE-01, REQ-SCOPE-02, REQ-SCOPE-03, REQ-UI-01
 

@@ -299,7 +299,6 @@ def test_model_can_skip_and_source_filter_never_calls_model(app, agent_id):
     configure(app)
     add(app, agent_id, "hello")
     add(app, agent_id, kind="system", request_id="system")
-    add(app, agent_id, scope="scene:fiction", request_id="scene")
     calls = []
 
     def handler(request):
@@ -309,7 +308,7 @@ def test_model_can_skip_and_source_filter_never_calls_model(app, agent_id):
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             service = worker(app, client)
-            for _ in range(3):
+            for _ in range(2):
                 assert (await service.run_once())["status"] == "skipped"
             assert (await service.run_once())["status"] == "idle"
 

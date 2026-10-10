@@ -36,7 +36,7 @@ class MemoryMaintenance:
         if row["status"] == "invalidated":
             raise SourceInvalid("这条记忆的依据已失效，需要重新整理，不能直接更正或恢复")
         self.history.validate_refs(
-            row["agent_id"], [SourceRef(**ref) for ref in row["sources"]], row["scope"]
+            row["agent_id"], [SourceRef(**ref) for ref in row["sources"]]
         )
 
     def _present(self, db, kind, row):
@@ -88,7 +88,6 @@ class MemoryMaintenance:
                     row = self._snapshot(db, marker["kind"], marker["id"])
                     if (
                         row["agent_id"] != agent_id
-                        or row["scope"] not in {"real", "external"}
                         or row["revision"] != marker["revision"]
                         or row["status"] != "active"
                     ):
@@ -98,12 +97,11 @@ class MemoryMaintenance:
                     raise SourceInvalid("交流引用的记忆已更改或不可用，请重新生成回复") from error
 
     def items(
-        self, agent_id, *, kind="episodes", scope="real", status="all", query="", limit=20, offset=0
+        self, agent_id, *, kind="episodes", scope=None, status="all", query="", limit=20, offset=0
     ):
         table, _, _ = self._tables(kind)
         if (
-            scope not in {"real", "external"}
-            or status not in {"all", "active", "archived", "invalidated"}
+            status not in {"all", "active", "archived", "invalidated"}
             or not 1 <= limit <= 100
             or offset < 0
         ):
@@ -111,7 +109,10 @@ class MemoryMaintenance:
         with self.database.transaction() as db:
             if not db.execute("SELECT 1 FROM agents WHERE id=?", (agent_id,)).fetchone():
                 raise NotFound("个体不存在")
-            sql, params = f"SELECT id FROM {table} WHERE agent_id=? AND scope=?", [agent_id, scope]
+            sql, params = f"SELECT id FROM {table} WHERE agent_id=?", [agent_id]
+            if scope:
+                sql += " AND scope=?"
+                params.append(scope)
             if status != "all":
                 sql += " AND status=?"
                 params.append(status)

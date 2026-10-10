@@ -89,13 +89,3 @@ export function formatDate(value?: string) {
         timeStyle: "short",
       }).format(date);
 }
-
-export function scopeLabel(scope?: string) {
-  return scope === "real"
-    ? "真实经历"
-    : scope === "fiction"
-      ? "虚构情境"
-      : scope
-        ? "情境：" + scope
-        : "情境未提供";
-}

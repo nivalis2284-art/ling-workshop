@@ -139,7 +139,6 @@ function backend(
         );
       if (url.pathname === "/api/memory/ling-1/items") {
         expect(url.searchParams.get("kind")).toBe("episodes");
-        expect(url.searchParams.get("scope")).toBe("real");
         expect(url.searchParams.get("status")).toBe("all");
         return json(
           url.searchParams.get("query") === "不存在" ? [] : [episode],

@@ -73,13 +73,7 @@ class ConsolidationWorker:
                 except ValidationError:
                     raise LearningError("invalid_job") from None
                 source = self.app.history.validate_refs(job["agent_id"], [ref])[0]
-                external_observation = source["scope"] == "external" and source["kind"] in {
-                    "observation",
-                    "tool",
-                }
-                if (source["scope"] != "real" and not external_observation) or source[
-                    "kind"
-                ] not in ALLOWED_SOURCE_KINDS:
+                if source["kind"] not in ALLOWED_SOURCE_KINDS:
                     return self._jobs.finish(job_id, "skipped", "source_not_eligible")
                 try:
                     primary = self.app.profiles.selection()["primary"]
@@ -90,7 +84,7 @@ class ConsolidationWorker:
                     return self._jobs.finish(job_id, "blocked_credentials", "missing_credentials")
                 context, context_refs = relevant_context(self.app, source)
                 refs = list({(r.id, r.revision): r for r in [ref, *context_refs]}.values())
-                self.app.history.validate_refs(job["agent_id"], refs, scope=source["scope"])
+                self.app.history.validate_refs(job["agent_id"], refs)
                 base_revision = self.app.identity.current(job["agent_id"]).revision
                 payload = build_payload(profile, source, context)
                 self._jobs.begin_attempt(job_id, [r.model_dump() for r in refs])
@@ -109,7 +103,7 @@ class ConsolidationWorker:
                 source["kind"],
                 parsed,
                 usage,
-                scope=source["scope"],
+                scope="",
                 memory_markers=[item["memory_ref"] for item in context],
             )
         except asyncio.CancelledError:
@@ -179,14 +173,14 @@ class ConsolidationWorker:
         source_kind: str,
         result: ConsolidationResult,
         usage: dict,
-        scope: str = "real",
+        scope: str = "",
         memory_markers: list[dict] | None = None,
     ) -> dict:
         with self.app.database.transaction():
             # Both corrections and visibility changes invalidate the whole result.
             # Context evidence participates too, and all attached refs came from
             # the input snapshot, never model-supplied identifiers.
-            self.app.history.validate_refs(job["agent_id"], refs, scope=scope)
+            self.app.history.validate_refs(job["agent_id"], refs)
             MemoryMaintenance(self.app).validate_markers(job["agent_id"], memory_markers or [])
             if self.app.identity.current(job["agent_id"]).revision != base_revision:
                 return self._jobs.finish(job["id"], "stale", "self_changed", usage=usage)

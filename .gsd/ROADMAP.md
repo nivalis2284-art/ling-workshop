@@ -1,12 +1,12 @@
 # ROADMAP.md
 
-> **Current Phase**: Phase 2
+> **Current Phase**: Phase 3
 > **Milestone**: v0.2.0 (系统瘦身与架构简化：彻底移除情境与解耦记忆级联)
 
 ## Must-Haves (from SPEC)
 - [x] 彻底移除交流情境（Scope / Real）
-- [ ] 切断编辑与删除历史时的过度级联作废机制
-- [ ] 长期记忆与知识人工手动纠错优先
+- [x] 切断编辑与删除历史时的过度级联作废机制
+- [x] 长期记忆与知识人工手动纠错优先
 - [ ] 前端界面冗余情境标签与选择器清空
 - [ ] 全套自动化测试用例重构并通过
 
@@ -20,7 +20,7 @@
 **Requirements**: REQ-SCOPE-01, REQ-SCOPE-02, REQ-SCOPE-03, REQ-UI-01
 
 ### Phase 2: 切断编辑与删除时的过度级联作废机制
-**Status**: ⬜ Not Started
+**Status**: ✅ Complete
 **Objective**: 纯粹化上下文窗口维护逻辑，解除历史修改对派生记忆、知识与人格提案的级联失效广播，确立人工手动纠错优先原则。
 **Requirements**: REQ-CASCADE-01, REQ-CASCADE-02, REQ-CASCADE-03
 

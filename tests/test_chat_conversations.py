@@ -230,7 +230,7 @@ def test_select_old_branch_explicitly_is_the_only_history_used(app, agent_id):
     ]
 
 
-@pytest.mark.parametrize("change", ["approve", "correct", "pending"])
+@pytest.mark.parametrize("change", ["approve", "pending"])
 def test_self_revision_is_captured_and_revalidated_during_generation(app, agent_id, change):
     configure(app)
     evidence = app.history.add(

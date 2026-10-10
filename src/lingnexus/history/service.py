@@ -10,10 +10,6 @@ from lingnexus.storage.db import Database
 class HistoryService:
     def __init__(self, database: Database):
         self.database = database
-        self._on_correct: list[Callable[[SourceRef], None]] = []
-
-    def subscribe_corrections(self, callback: Callable[[SourceRef], None]) -> None:
-        self._on_correct.append(callback)
 
     def add(
         self, agent_id: str, content: str, *, kind: SourceKind, scope: str = "", request_id: str
@@ -97,8 +93,6 @@ class HistoryService:
             db.execute(
                 "UPDATE sources SET current_revision=? WHERE id=?", (updated.revision, ref.id)
             )
-            for callback in self._on_correct:
-                callback(ref)
             self._enqueue(db, original["agent_id"], updated, now)
             return updated
 
@@ -121,10 +115,7 @@ class HistoryService:
                 "INSERT INTO source_visibility VALUES (?,?,?) ON CONFLICT(source_id,source_revision) DO UPDATE SET active=excluded.active",
                 (ref.id, ref.revision, int(visible)),
             )
-            if not visible:
-                for callback in self._on_correct:
-                    callback(ref)
-            else:
+            if visible:
                 db.execute(
                     "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
                     (

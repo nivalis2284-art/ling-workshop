@@ -30,11 +30,7 @@ class Application:
         self.history = HistoryService(self.database)
         self.identity = IdentityService(self.database, self.history)
         self.memory = MemoryService(self.history)
-        self.history.subscribe_corrections(self.identity.invalidate)
-        self.history.subscribe_corrections(self.memory.invalidate)
-        self.history.subscribe_corrections(self.memory.knowledge.invalidate)
         self.development = DevelopmentService(self.database, self.history)
-        self.history.subscribe_corrections(self.development.invalidate)
         self.instructions = OwnerInstructions(self.database)
         self.context = ContextBuilder(self.database, self.identity, self.history, self.instructions)
         self.maintenance = MaintenanceService(self.database)
@@ -50,7 +46,6 @@ class Application:
         self.permissions = Permissions(self.database)
         self.actions = Actions(self)
         self.skills = Skills(self.database, self.history)
-        self.history.subscribe_corrections(self.skills.invalidate)
         self.activities = ActivityService(self)
         self.browser: BrowserService | None = None
         self.dependencies: DependencyService | None = None

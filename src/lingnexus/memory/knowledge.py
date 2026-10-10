@@ -62,7 +62,6 @@ class Knowledge:
                     (knowledge_id,),
                 )
             ]
-            self.history.validate_refs(row["agent_id"], refs)
             return dict(row) | {"sources": [r.model_dump() for r in refs]}
 
     def search(
@@ -85,9 +84,4 @@ class Knowledge:
             rows = db.execute(sql, params).fetchall()
             return [self.read(row[0]) for row in rows]
 
-    def invalidate(self, ref: SourceRef) -> None:
-        with self.database.transaction() as db:
-            db.execute(
-                "UPDATE knowledge SET status='invalidated' WHERE id IN (SELECT knowledge_id FROM knowledge_sources WHERE source_id=? AND source_revision=?)",
-                (ref.id, ref.revision),
-            )
+

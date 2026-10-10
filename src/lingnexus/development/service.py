@@ -85,10 +85,6 @@ class DevelopmentService:
             allowed, status = transitions[action]
             if value["revision"] != expected_revision or value["status"] not in allowed:
                 raise RevisionConflict("目标状态或版本已经改变")
-            if action == "activate":
-                self.history.validate_refs(
-                    value["agent_id"], [SourceRef(**r) for r in value["sources"]], "real"
-                )
             return self._write(
                 value, status=status, progress=value["progress"], reason="owner:" + action
             )
@@ -100,18 +96,3 @@ class DevelopmentService:
                 raise RevisionConflict("目标未启用或已被修改")
             return self._write(value, status="active", progress=progress, reason="progress")
 
-    def invalidate(self, ref: SourceRef) -> None:
-        with self.database.transaction() as db:
-            ids = db.execute(
-                "SELECT goal_id FROM goal_sources WHERE source_id=? AND source_revision=?",
-                (ref.id, ref.revision),
-            ).fetchall()
-            for row in ids:
-                goal = self.read(row[0])
-                if goal["status"] in {"active", "proposed", "paused"}:
-                    self._write(
-                        goal,
-                        status="needs_review",
-                        progress=goal["progress"],
-                        reason="source_corrected",
-                    )

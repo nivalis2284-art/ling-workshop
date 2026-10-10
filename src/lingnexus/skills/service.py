@@ -81,7 +81,6 @@ class Skills:
         for item in self.list(agent_id):
             if item["status"] != "active":
                 continue
-            self.history.validate_refs(agent_id, [SourceRef(**r) for r in item["sources"]], "real")
             result.append(item)
         return result
 
@@ -114,8 +113,6 @@ class Skills:
             if item["revision"] != expected_revision:
                 raise RevisionConflict("技能版本已经改变")
             refs = [SourceRef(**r) for r in item["sources"]]
-            if action == "activate":
-                self.history.validate_refs(item["agent_id"], refs, "real")
             return self._revision(
                 item,
                 item["instructions"],
@@ -152,19 +149,6 @@ class Skills:
                 )
             ]
 
-    def invalidate(self, ref: SourceRef) -> None:
-        with self.database.transaction():
-            with self.database.transaction() as db:
-                ids = [row[0] for row in db.execute("SELECT id FROM skills")]
-            for sid in ids:
-                item = self.read(sid)
-                if item["status"] != "stale" and ref.model_dump() in item["sources"]:
-                    self._revision(
-                        item,
-                        item["instructions"],
-                        "stale",
-                        [SourceRef(**r) for r in item["sources"]],
-                    )
 
     def restore(self, skill_id: str, *, target_revision: int, expected_revision: int) -> dict:
         with self.database.transaction() as db:
@@ -175,7 +159,6 @@ class Skills:
             if prior is None:
                 raise NotFound("指定技能版本不存在")
             refs = [SourceRef(**r) for r in json.loads(prior["sources"])]
-            self.history.validate_refs(current["agent_id"],refs,"real")
             if prior["status"] == "stale":
                 raise SourceInvalid("不能恢复已经失效的技能")
             return self._revision(current,prior["instructions"],prior["status"],refs)

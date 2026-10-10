@@ -35,9 +35,6 @@ class MemoryMaintenance:
     def _validate(self, row):
         if row["status"] == "invalidated":
             raise SourceInvalid("这条记忆的依据已失效，需要重新整理，不能直接更正或恢复")
-        self.history.validate_refs(
-            row["agent_id"], [SourceRef(**ref) for ref in row["sources"]]
-        )
 
     def _present(self, db, kind, row):
         try:

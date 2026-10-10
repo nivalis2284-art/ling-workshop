@@ -11,7 +11,6 @@ class MemoryService:
         self.save_episode = self.episodes.save
         self.read_episode = self.episodes.read
         self.find_episodes = self.episodes.find
-        self.invalidate = self.episodes.invalidate
         self.knowledge = Knowledge(history.database, history)
 
     def read_sources(self, refs: list[SourceRef]) -> list[dict]:

@@ -71,8 +71,6 @@ class Episodes:
                     (episode_id,),
                 )
             ]
-            if active_only:
-                self.history.validate_refs(row["agent_id"], refs)
             return dict(row) | {"sources": [r.model_dump() for r in refs]}
 
     def find(
@@ -97,9 +95,4 @@ class Episodes:
             params.extend([limit, offset])
             return [self.read(row[0]) for row in db.execute(sql, params).fetchall()]
 
-    def invalidate(self, ref: SourceRef) -> None:
-        with self.database.transaction() as db:
-            db.execute(
-                "UPDATE episodes SET status='invalidated' WHERE id IN (SELECT episode_id FROM episode_sources WHERE source_id=? AND source_revision=?)",
-                (ref.id, ref.revision),
-            )
+

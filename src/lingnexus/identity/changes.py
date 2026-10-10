@@ -102,9 +102,7 @@ class Changes:
                 raise Conflict("该候选已经处理")
             if item["status"] != "awaiting_owner":
                 raise Conflict("候选不处于等待审阅状态")
-            validate_experience(
-                self.history, item["agent_id"], [SourceRef(**r) for r in item["sources"]]
-            )
+
             state = self.current(item["agent_id"])
             if expected_revision != state.revision or (
                 decision == "approve" and item["base_revision"] != state.revision
@@ -172,41 +170,7 @@ class Changes:
             capture_origins(db, agent_id, state.revision + 1)
             return self.current(agent_id)
 
-    def invalidate(self, ref: SourceRef) -> None:
-        with self.database.transaction() as db:
-            affected = db.execute(
-                "SELECT p.id,p.agent_id FROM proposals p JOIN proposal_sources s ON s.proposal_id=p.id WHERE s.source_id=? AND s.source_revision=?",
-                (ref.id, ref.revision),
-            ).fetchall()
-            changed: dict[str, dict[str, str]] = {}
-            for row in affected:
-                origins = db.execute(
-                    "SELECT entry_key FROM self_entry_origins WHERE proposal_id=?", (row["id"],)
-                ).fetchall()
-                if origins:
-                    entries = changed.setdefault(
-                        row["agent_id"], dict(self.current(row["agent_id"]).entries)
-                    )
-                    for origin in origins:
-                        entries.pop(origin["entry_key"], None)
-                    db.execute("DELETE FROM self_entry_origins WHERE proposal_id=?", (row["id"],))
-                db.execute(
-                    "UPDATE proposals SET status='stale' WHERE id=? AND status!='rejected'",
-                    (row["id"],),
-                )
-            for agent_id, entries in changed.items():
-                state = self.current(agent_id)
-                db.execute(
-                    "INSERT INTO self_revisions VALUES (?,?,?,?,?)",
-                    (
-                        agent_id,
-                        state.revision + 1,
-                        json.dumps(entries, ensure_ascii=False),
-                        "source_corrected:" + ref.id,
-                        utc_now(),
-                    ),
-                )
-                capture_origins(db, agent_id, state.revision + 1)
+
 
     def list(self, agent_id: str) -> list[dict]:
         with self.database.transaction() as db:

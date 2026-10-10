@@ -14,7 +14,6 @@ class IdentityService:
         self.changes = Changes(database, history, self.current)
         self.propose = self.changes.propose
         self.decide = self.changes.decide
-        self.invalidate = self.changes.invalidate
         self.remove = self.changes.remove
         self.list_proposals = self.changes.list
         self.revisions = Revisions(database, history, self.current)

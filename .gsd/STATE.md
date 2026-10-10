@@ -22,3 +22,4 @@
 - `.gsd/SPEC.md` finalized with 5 core goals.
 - `.gsd/ROADMAP.md` established with 5 progressive phases.
 - `.gsd/REQUIREMENTS.md` mapped to SPEC.
+- Debug session DEBUG-001 completed: resolved 3 Ruff linter errors (F841, F401, C401), full checks & tests passing.

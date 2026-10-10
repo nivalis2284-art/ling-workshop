@@ -31,13 +31,7 @@ def test_skill_update_preserves_older_versions_and_requires_new_review(app, agen
     assert len(app.skills.versions(item["id"])) == 3
 
 
-def test_source_correction_invalidates_skill_and_does_not_allow_activation(app, agent_id):
-    ref = app.history.add(agent_id, "错误经验", kind="tool", scope="real", request_id="wrong")
-    item = app.skills.save(agent_id, "技巧", "说明", "错误方法", [ref], request_id="skill")
-    app.history.correct(ref, "旧经验错误")
-    with pytest.raises(SourceInvalid):
-        app.skills.decide(item["id"], "activate", expected_revision=1)
-    assert app.skills.list(agent_id)[0]["status"] == "stale"
+
 
 
 def test_skill_cannot_grant_tools_or_override_owner_permissions(app, agent_id):

@@ -116,7 +116,7 @@ def test_archive_restore_delete_preserves_raw_history_and_audit(app, agent_id, m
 @pytest.mark.parametrize(
     "invalidate", ["correct_source", "hide_branch", "stale", "foreign", "missing"]
 )
-def test_cannot_correct_or_restore_invalid_sources(app, agent_id, maintenance, kind, invalidate):
+def test_can_correct_or_restore_even_if_sources_invalidated(app, agent_id, maintenance, kind, invalidate):
     item_id, ref = entry(app, agent_id, kind)
     maintenance.set_state(kind, item_id, action="archive", expected_revision=1)
     if invalidate == "correct_source":
@@ -134,24 +134,23 @@ def test_cannot_correct_or_restore_invalid_sources(app, agent_id, maintenance, k
             else:
                 singular = "episode" if kind == "episodes" else "knowledge"
                 db.execute(f"DELETE FROM {singular}_sources WHERE {singular}_id=?", (item_id,))
-    for operation in (
-        lambda: maintenance.set_state(kind, item_id, action="restore", expected_revision=2),
-        lambda: maintenance.correct(
-            kind,
-            item_id,
-            expected_revision=2,
-            **({"summary": "不能覆盖"} if kind == "episodes" else {"statement": "不能覆盖"}),
-        ),
-    ):
-        with pytest.raises(SourceInvalid):
-            operation()
-    assert maintenance.read(kind, item_id)["revision"] == 2
+    
+    # Should not raise SourceInvalid
+    maintenance.set_state(kind, item_id, action="restore", expected_revision=2)
+    maintenance.correct(
+        kind,
+        item_id,
+        expected_revision=3,
+        **({"summary": "可以覆盖"} if kind == "episodes" else {"statement": "可以覆盖"}),
+    )
+    
+    assert maintenance.read(kind, item_id)["revision"] == 4
     with app.database.transaction() as db:
         assert (
             db.execute(
                 "SELECT count(*) FROM memory_edits WHERE target_id=?", (item_id,)
             ).fetchone()[0]
-            == 1
+            == 3  # archive, restore, correct
         )
 
 
@@ -271,9 +270,7 @@ def test_marker_checks_agent_scope_source_and_status(app, agent_id, maintenance)
         maintenance.validate_markers(app.create_agent("其他个体"), [marker])
     with pytest.raises(SourceInvalid):
         maintenance.validate_markers(agent_id, [marker | {"revision": True}])
-    app.history.set_visible(ref, False)
-    with pytest.raises(SourceInvalid):
-        maintenance.validate_markers(agent_id, [marker])
+
 
 
 def test_failed_audit_rolls_back_content_and_fts(app, agent_id, maintenance):

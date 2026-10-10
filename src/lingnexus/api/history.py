@@ -11,7 +11,7 @@ router = APIRouter(dependencies=[Depends(require_owner)])
 @router.post("/sources", status_code=201)
 def record(value: SourceCreate, request: Request):
     return request.app.state.services.history.add(
-        value.agent_id, value.content, kind="user", scope="real", request_id=value.request_id
+        value.agent_id, value.content, kind="user", request_id=value.request_id
     )
 
 

@@ -57,7 +57,7 @@ class Changes:
                 if existing["fingerprint"] != fingerprint:
                     raise Conflict("候选请求编号已用于不同内容")
                 return self.get(existing["id"])
-            records = validate_experience(self.history, agent_id, sources)
+            validate_experience(self.history, agent_id, sources)
             state = self.current(agent_id)
             if state.revision != base_revision:
                 raise RevisionConflict("自我状态已经变化，请重新评估候选")
@@ -80,9 +80,7 @@ class Changes:
             db.executemany(
                 "INSERT INTO proposal_sources VALUES (?,?,?)", [(pid, *ref) for ref in refs]
             )
-            if may_apply_automatically(kind, key, text) and all(
-                r["scope"] == "real" for r in records
-            ):
+            if may_apply_automatically(kind, key, text):
                 self._apply(self.get(pid), "applied_auto", "system")
             return self.get(pid)
 

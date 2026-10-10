@@ -54,7 +54,7 @@ npm --prefix frontend test
 npm --prefix frontend run build
 ~~~
 
-真实 Docker 用例需要预先准备镜像，并设置 LINGNEXUS_DOCKER_SMOKE_IMAGE=python:3.12-slim、LINGNEXUS_TASK_DOCKER_IMAGE=python:3.12-slim、LINGNEXUS_TASK_NODE_IMAGE=node:24-bookworm-slim。未设置时明确跳过。编程默认不联网，安装精确版本依赖需要单次任务审批。
+后端 `tests/` 是精简冒烟层（约 30 项、二十多秒）：持久化、上下文与召回、记忆人工纠错、级联废除、人格与技能、任务与学习主链路、API 安全边界。更深的专项检查按需临时编写；历史完整套件已退役（可从 git 历史取回）。编程默认不联网，安装精确版本依赖需要单次任务审批。
 
 Windows 打包在锁定环境运行：
 

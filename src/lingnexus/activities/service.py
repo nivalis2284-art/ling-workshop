@@ -511,7 +511,6 @@ class ActivityService:
                 agent_id,
                 _json({"kind": kind, "content": content, "event_id": eid}),
                 kind="tool",
-                scope="real",
                 request_id="activity-event:" + eid,
             )
             cursor = db.execute(
@@ -787,7 +786,6 @@ class ActivityService:
             item["agent_id"],
             _json(content),
             kind="observation",
-            scope="external" if item["kind"] == "web_watch" else "real",
             request_id="activity-evidence:" + eid,
         )
         db.execute(

@@ -238,7 +238,7 @@ def render(ds, profile, item, strategy, summary=""):
     history = [r for r in ds.raw if ds.app.history.read(r)["scope"] == item.scope]
     extra = current_context(ds, supplement_only=True) + "\n" + CONTRACT
     budgeted = profile.model_copy(update={"context_window_tokens": 16000 - ds.app.context.counter.count(extra)})
-    payload, manifest = build_payload(ds.app, ds.agent, budgeted, [*history, ref], scope=item.scope)
+    payload, manifest = build_payload(ds.app, ds.agent, budgeted, [*history, ref])
     if profile.api_family == APIFamily.ANTHROPIC_MESSAGES:
         payload["system"] += extra
     elif profile.api_family == APIFamily.OPENAI_RESPONSES:

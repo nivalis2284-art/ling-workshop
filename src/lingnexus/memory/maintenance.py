@@ -32,16 +32,20 @@ class MemoryMaintenance:
         ]
         return dict(row) | {"sources": refs}
 
-    def _validate(self, row):
-        if row["status"] == "invalidated":
-            raise SourceInvalid("这条记忆的依据已失效，需要重新整理，不能直接更正或恢复")
+    def _referenceable(self, row):
+        # Read paths only: may this memory still be cited? Owner edits
+        # (correct/restore) deliberately skip it so manual repair is never blocked.
+        self.history.validate_refs(row["agent_id"], [SourceRef(**ref) for ref in row["sources"]])
 
     def _present(self, db, kind, row):
-        try:
-            self._validate(row)
-            valid, reason = True, None
-        except (SourceInvalid, NotFound):
-            valid, reason = False, "来源已失效或不再属于当前情境，需要重新整理。"
+        valid, reason = True, None
+        if row["status"] == "invalidated":
+            valid, reason = False, "这条记忆曾被自动作废，可手动修正或恢复。"
+        else:
+            try:
+                self._referenceable(row)
+            except (SourceInvalid, NotFound):
+                valid, reason = False, "来源已失效，需要重新整理或手动修正。"
         corrections = [
             dict(r) | {"prior": json.loads(r["prior"]), "current": json.loads(r["current"])}
             for r in db.execute(
@@ -66,7 +70,7 @@ class MemoryMaintenance:
         """Capture under the same outer transaction as the recalled text."""
         with self.database.transaction() as db:
             row = self._snapshot(db, kind, item_id)
-            self._validate(row)
+            self._referenceable(row)
             if row["status"] != "active":
                 raise SourceInvalid("记忆已归档，不能用于当前交流")
             return {"kind": kind, "id": item_id, "revision": row["revision"]}
@@ -89,7 +93,7 @@ class MemoryMaintenance:
                         or row["status"] != "active"
                     ):
                         raise SourceInvalid("交流引用的记忆已更改，请重新生成回复")
-                    self._validate(row)
+                    self._referenceable(row)
                 except (NotFound, ValueError, TypeError, KeyError) as error:
                     raise SourceInvalid("交流引用的记忆已更改或不可用，请重新生成回复") from error
 
@@ -186,7 +190,6 @@ class MemoryMaintenance:
         with self.database.transaction() as db:
             prior = self._snapshot(db, kind, item_id)
             self._check_revision(prior, expected_revision)
-            self._validate(prior)
             self._check_running(db, prior)
             current = prior | changes | {"revision": prior["revision"] + 1}
             assignments = ",".join(f"{field}=?" for field in changes)
@@ -210,10 +213,8 @@ class MemoryMaintenance:
         with self.database.transaction() as db:
             prior = self._snapshot(db, kind, item_id)
             self._check_revision(prior, expected_revision)
-            if action == "restore":
-                self._validate(prior)
-                if prior["status"] != "archived":
-                    raise Conflict("只能恢复已归档的记忆")
+            if action == "restore" and prior["status"] not in {"archived", "invalidated"}:
+                raise Conflict("只能恢复已归档或已被自动作废的记忆")
             if action == "archive" and prior["status"] != "active":
                 raise Conflict("只能归档使用中的记忆；失效条目可以删除")
             self._check_running(db, prior)

@@ -2,11 +2,12 @@
 import json
 import re
 
+from lingnexus.common.errors import NotFound, SourceInvalid
 from lingnexus.common.types import SourceRef
 from lingnexus.memory.maintenance import MemoryMaintenance
 
 
-def candidates(app,agent_id:str,query:str,scope:str="")->tuple[str,list[SourceRef],list[dict]]:
+def candidates(app,agent_id:str,query:str)->tuple[str,list[SourceRef],list[dict]]:
     if not query.strip():return "",[],[]
     query=query.split(chr(10),1)[0][:300]
     phrases=re.findall(r"[A-Za-z0-9_]{3,30}|[\u4e00-\u9fff]{2,24}",query)
@@ -28,10 +29,15 @@ def candidates(app,agent_id:str,query:str,scope:str="")->tuple[str,list[SourceRe
         if len(records)>=4:break
         reference={key:item[key] for key in ("id","title","summary","statement","kind","sources") if key in item}
         originals=[]
-        for value in item["sources"][:3]:
-            ref=SourceRef(**value)
-            record=app.history.read(ref)
-            originals.append({"id":ref.id,"revision":ref.revision,"kind":record["kind"],"text":record["text"][:900]})
+        try:
+            for value in item["sources"][:3]:
+                ref=SourceRef(**value)
+                record=app.history.read(ref)
+                originals.append({"id":ref.id,"revision":ref.revision,"kind":record["kind"],"text":record["text"][:900]})
+        except (NotFound,SourceInvalid):
+            # A settled memory whose origins were withdrawn, corrected, or removed
+            # stops being cited here; the memory itself stays for owner upkeep.
+            continue
         reference["original_excerpt"]=originals
         size=len(json.dumps(reference,ensure_ascii=False).encode())
         if size>remaining:

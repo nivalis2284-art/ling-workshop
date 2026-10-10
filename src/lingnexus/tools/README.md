@@ -111,15 +111,17 @@ cleanup; success is never invented.
 
 ## Verification and limits
 
-Normal tests use synthetic pytest temporary directories. Docker contract tests
-replace only subprocess.Popen; real subprocess tests exercise capture and timeout
-using harmless Python fixtures. Windows junction tests are real. Symlink tests
-skip explicitly when Windows denies symlink creation. No test accesses user files.
+The smoke layer covers workspace tools with synthetic pytest temporary
+directories. The historical Docker contract/smoke tests (subprocess doubles,
+junction/symlink checks, live-image cases) were retired with the 2026-10-10
+acceptance layering and are recoverable from git history. No check accesses
+user files.
 
-The optional Docker smoke tests require an explicitly acquired, local Linux
-Python image with /bin/sh and ordinary core utilities, and no declared volumes.
-The parent authorizes acquisition separately. The tests and adapter never pull.
-The verified acquisition and ID pinning procedure is:
+When a Docker change needs deeper checks, re-create them ad hoc against an
+explicitly acquired, local Linux Python image with /bin/sh and ordinary core
+utilities and no declared volumes. The parent authorizes acquisition
+separately. The adapter never pulls images. The verified acquisition and ID
+pinning procedure is:
 
 ~~~powershell
 docker pull docker.io/library/python:3.12-slim
@@ -127,19 +129,18 @@ docker image inspect docker.io/library/python:3.12-slim --format '{{json .Id}} {
 $env:LINGNEXUS_DOCKER_SMOKE_IMAGE = docker image inspect docker.io/library/python:3.12-slim --format '{{.Id}}'
 ~~~
 
-Record the resolved ID and repository digest. The test fixture resolves the
-configured local reference to its immutable ID, and every execution uses that ID:
+Record the resolved ID and repository digest. A re-created fixture should
+resolve the configured local reference to its immutable ID, and every
+execution should use that ID:
 
 ~~~powershell
-$env:PYTHONDONTWRITEBYTECODE = '1'
-& .venv/Scripts/python.exe -B -m pytest -p no:cacheprovider tests/test_workspace_tools.py tests/test_docker_execution.py -q -rs
+& .venv/Scripts/python.exe -m pytest tests/ -q -rs
 ~~~
 
-Without that variable, all three Docker smoke tests are skipped. Every real
-container binds only its test's generated temporary worktree. The tests provision
-permissions on that fixture alone for UID 65534. No repository, user documents,
-API credentials, or Docker socket are bound or copied into the containers. A
-synthetic host-only environment marker is verified absent inside the container.
+A re-created fixture should bind only its generated temporary worktree,
+provision permissions for UID 65534 on that fixture alone, keep repositories,
+user documents, API credentials and the Docker socket out of containers, and
+verify a synthetic host-only environment marker absent inside the container.
 
 ### Recorded real verification: 2026-10-08
 

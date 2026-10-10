@@ -21,8 +21,6 @@ def build_payload(
     agent_id: str,
     profile: ModelProfile,
     refs: list[SourceRef],
-    *,
-    scope: str = "",
 ) -> tuple[dict, dict]:
     """Return the native request plus the exact ContextBuilder manifest it used."""
     output = profile.max_output_tokens or 4096

@@ -12,4 +12,4 @@
 | **REQ-CASCADE-02** | 解除级联作废：拔除 set_visible 对 episodes / knowledge / self 变更的级联失效广播 | SPEC Goal 2 | Implemented | Phase 2 |
 | **REQ-CASCADE-03** | 人工纠错优先：长期记忆与知识支持手动编辑与删除，算法不代劳连带破坏 | SPEC Goal 3 | Implemented | Phase 2 |
 | **REQ-EVOLVE-01** | 演化机制重构：移除人格策略中必须来自 real 的硬编码校验，准备定期反省架构 | SPEC Goal 3 | Pending | Phase 3 |
-| **REQ-TEST-01** | 测试重构与基准回归：清理假想防御测试，补充上下文精简断言，全量测试绿灯 | SPEC Goal 5 | Pending | Phase 5 |
+| **REQ-TEST-01** | 测试重构与基准回归：清理假想防御测试，补充上下文精简断言，全量测试绿灯 | SPEC Goal 5 | Superseded（历史套件退役为 34 项冒烟层，2026-10-10 所有者决定） | Phase 5 |

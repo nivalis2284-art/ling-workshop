@@ -71,7 +71,7 @@ class ModelInvestigator:
                 SourceRef(**e["source"]) for e in evidence.get("events", []) if e.get("source")
             ]
             if event_refs:
-                self.app.history.validate_refs(activity["agent_id"], event_refs, "real")
+                self.app.history.validate_refs(activity["agent_id"], event_refs)
             review.refs.extend(event_refs)
         except (PermissionDenied, NotFound, SourceInvalid, ValueError, TypeError):
             return None

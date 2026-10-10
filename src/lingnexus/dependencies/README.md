@@ -133,9 +133,9 @@ and `.home` as generated install data, alongside the already excluded
 `node_modules` and `.tmp`. They must never be applied back to the original
 project. The parent has supplied these task-runner/review changes separately.
 
-Unit/integration tests mock only Docker's external subprocess boundary; they
-never run pip/npm or install packages. A separate opt-in smoke test uses an
-already-local Python image and synthetic filesystem/environment checks only:
-set `LINGNEXUS_DOCKER_SMOKE_IMAGE=python:3.12-slim` and run
-`tests/test_docker_dependency_network.py -k optional_trusted_bridge`. It never
-pulls images, opens network connections, or downloads packages.
+Checks mock only Docker's external subprocess boundary; they never run pip/npm
+or install packages. The historical opt-in live smoke (already-local Python
+image, synthetic filesystem/environment checks) was retired with the 2026-10-10
+acceptance layering; re-create it ad hoc when the install network boundary
+changes. The adapter never pulls images, opens network connections, or
+downloads packages.

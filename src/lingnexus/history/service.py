@@ -1,6 +1,5 @@
 import hashlib
 import json
-from collections.abc import Callable
 
 from lingnexus.common.errors import Conflict, NotFound, SourceInvalid
 from lingnexus.common.types import SourceInput, SourceKind, SourceRef, new_id, utc_now
@@ -129,9 +128,7 @@ class HistoryService:
                     ),
                 )
 
-    def validate_refs(
-        self, agent_id: str, refs: list[SourceRef], scope: str | None = None
-    ) -> list[dict]:
+    def validate_refs(self, agent_id: str, refs: list[SourceRef]) -> list[dict]:
         if not refs:
             raise SourceInvalid("派生资料必须有来源")
         rows = [self.read(ref) for ref in refs]

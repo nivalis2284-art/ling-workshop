@@ -144,7 +144,7 @@ class AttentionReview:
         with self.app.database.transaction():
             query = self.activity["title"] + " " + " ".join(g["title"] for g in self.goals[:8])
             memories, self.refs, self.markers = candidates(
-                self.app, self.agent_id, query[:1024], "real"
+                self.app, self.agent_id, query[:1024]
             )
         bounded = [
             o
@@ -179,7 +179,6 @@ class AttentionReview:
                         {"attention_id": self.activity["id"], **observed}, ensure_ascii=False
                     ),
                     kind="observation",
-                    scope="external" if observed["kind"] == "web_watch" else "real",
                     request_id="attention-observation:" + new_id(),
                 )
             value = {"hash": observed["hash"], "observed_at": observed["observed_at"]}

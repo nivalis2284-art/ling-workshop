@@ -39,7 +39,7 @@
 
 | 软件包名 | 版本约束 (`pyproject.toml`) | 核心用途与执行命令 |
 | :--- | :--- | :--- |
-| `pytest` | `>=8,<9` | 自动化单元与集成测试框架（1329 项测试）：`uv run pytest -q -ra` |
+| `pytest` | `>=8,<9` | 冒烟验收层（34 项、约 20 秒）：`uv run pytest -q -ra`；历史完整套件已于 2026-10-10 退役（可从 git 历史取回） |
 | `ruff` | `>=0.6,<1` | 高性能代码格式化与代码静态分析：`uv run ruff check src tests scripts` |
 | `pyright` | `>=1.1,<2` | 静态类型安全检查器（标准模式）：`uv run pyright` |
 | `httpx2` | `>=2.13,<3` | 测试辅助 HTTP 夹具库 |
@@ -131,7 +131,7 @@ npm --prefix frontend run build
 npm --prefix frontend run dev
 # (启动后台时附带环境变量：$env:LINGNEXUS_DEV_ORIGIN="http://127.0.0.1:5173")
 
-# 4. 全量质量检验
+# 4. 质量检验（后端冒烟验收约 20 秒）
 .venv/Scripts/python.exe -m pytest -q -ra
 .venv/Scripts/python.exe -m ruff check src tests scripts
 .venv/Scripts/python.exe -m pyright

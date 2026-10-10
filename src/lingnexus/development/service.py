@@ -24,7 +24,7 @@ class DevelopmentService:
                 if old["fingerprint"] != digest:
                     raise Conflict("目标请求编号冲突")
                 return self.read(old["id"])
-            self.history.validate_refs(agent_id, sources, "real")
+            self.history.validate_refs(agent_id, sources)
             gid = new_id()
             db.execute(
                 "INSERT INTO goals VALUES (?,?,?,?,?)", (gid, agent_id, request_id, digest, 1)

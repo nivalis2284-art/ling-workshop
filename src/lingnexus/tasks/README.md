@@ -226,20 +226,10 @@ image does not imply that a TypeScript compiler or arbitrary npm packages are in
 ## Tests
 
 ~~~powershell
-.venv/Scripts/python.exe -m pytest tests/test_tasks.py -q
-$env:LINGNEXUS_TASK_DOCKER_IMAGE='sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f'
-.venv/Scripts/python.exe -m pytest tests/test_task_docker.py -q
-$env:LINGNEXUS_TASK_NODE_IMAGE='sha256:d6aa754f16b3197301076f047b5def2f02ea1dbbc2ca920407d46d7ec7f87b20'
-.venv/Scripts/python.exe -m pytest tests/test_task_docker.py -k node_environment -q
-.venv/Scripts/python.exe -m pytest tests/test_task_browser.py -q
-.venv/Scripts/python.exe -m pytest tests/test_task_memory_fence.py -q
+.venv/Scripts/python.exe -m pytest tests/test_smoke.py -q
 ~~~
 
-Tests use real SQLite, actions, grants and temporary files with httpx.MockTransport
-at the external HTTP boundary. Optional live Docker cases cover failure/fix/retest,
-writable temporary storage, nonroot execution, staged review/apply, stale verification,
-truthful exits, truncation, oversized artifacts and timeout cleanup; no image pulls.
-The Node smoke runs an actual .ts failure/fix/retest using the selected image.
-Chrome tests use an owned loopback form with real POST observation and mocked model
-HTTP; they cover approval waiting, resume/recovery, rejection, uncertain effects,
-pause during preparation, meaningful DOM confirmation and forbidden authority fields.
+The 2026-10-10 acceptance layering retired this module's historical suite (live
+Docker, Chrome, and memory-fence cases included; recoverable from git history).
+The smoke layer keeps the real-SQLite write/verify completion path and the
+uncaptured-source fence. Write ad hoc checks when a change needs deeper coverage.

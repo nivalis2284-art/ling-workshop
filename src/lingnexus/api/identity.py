@@ -101,7 +101,6 @@ def add_entry(agent_id: str, value: EntryCreate, request: Request):
         agent_id,
         "所有者设定或纠正这项认识：" + value.text,
         kind="user",
-        scope="real",
         request_id=value.request_id + ":source",
     )
     proposal = services.identity.propose(

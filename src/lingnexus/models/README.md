@@ -264,11 +264,13 @@ replay/retry, pricing lookup, or live service validation in this spike.
 - [OpenAI reasoning and encrypted continuation](https://developers.openai.com/api/docs/guides/reasoning)
 
 Reviewed on 2026-10-08. Fixtures are local synthetic protocol examples, not
-recordings with real credentials. Tests use httpx.MockTransport exclusively at
-the external HTTP boundary and exercise the real gateway, framing, and reducers.
+recordings with real credentials. Protocol checks use httpx.MockTransport
+exclusively at the external HTTP boundary and exercise the real gateway,
+framing, and reducers; the historical protocol tests were retired with the
+2026-10-10 acceptance layering (recoverable from git history).
 
-From the m0-continuity worktree, run:
+Run:
 
-    ./.venv/Scripts/python.exe -B -m pytest -p no:cacheprovider tests/test_models_protocol.py -q
-    ./.venv/Scripts/python.exe -B -m ruff check --no-cache src/lingnexus/models tests/test_models_protocol.py
-    ./.venv/Scripts/python.exe -B -m pyright src/lingnexus/models
+    ./.venv/Scripts/python.exe -m pytest tests/ -q
+    ./.venv/Scripts/python.exe -m ruff check src tests scripts
+    ./.venv/Scripts/python.exe -m pyright src/lingnexus/models

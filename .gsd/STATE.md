@@ -1,10 +1,10 @@
 # GSD Project State
 
 ## Current Position
-- **Milestone**: v0.2.0 (系统瘦身与架构简化：彻底移除情境与解耦记忆级联)
-- **Active Phase**: Phase 3 (重构记忆与人格演化架构：定期反省思考准备)
-- **Status**: 🟢 Phase 1 & 2 遗留修复完成；验收工具已分层（2026-10-10）
-- **Next Step**: 用户主导的项目级梳理（削减复杂规则与无关业务）→ 之后规划 Phase 3
+- **Milestone**: v0.2.0 (系统瘦身与架构简化：拆两大部分，第一部分先做合格)
+- **Active Phase**: 架构阶段 A/B/C 已完成（2026-10-11）；下一阶段候选 D（任务收尾）或 F（能力扩展）
+- **Status**: 🟢 A（边界隔离 `fa556ba`）、B（沙箱分层 `45a3813`）、C（统一循环 `47a0bdd`）全部完成并验证
+- **Next Step**: 由所有者选择——推进 D（旧任务路径去留/交互统一）或 F（技能包、MCP），或 E（常数对账与文档对齐）；G 待梳理
 
 ## Requirements Progress
 - REQ-SCOPE-01: Implemented
@@ -16,6 +16,9 @@
 - REQ-CASCADE-03: Implemented
 - REQ-EVOLVE-01: Pending (Phase 3)
 - REQ-TEST-01: Superseded（所有者决定：历史套件退役、冒烟层上线，2026-10-10）
+- REQ-LOOP-01: Implemented（C 阶段：对话即循环，多步工具执行 + 中断介入 + 任务合并，2026-10-11）
+- REQ-HOOKS-01: Implemented（C 阶段：BEFORE_TOOL/AFTER_TOOL/BEFORE_TURN_END 三事件钩子，策略不进循环体）
+- REQ-CONFIRM-01: Implemented（C 阶段：副作用实时确认闸门 + 每步独立记账）
 
 ## Acceptance Tooling
 - 后端验收 = 冒烟层：`tests/test_smoke.py` + `tests/test_smoke_learning.py`（34 项，约 20 秒）。

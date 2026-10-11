@@ -28,11 +28,25 @@ with different parameters conflicts.
 
 The immutable plan contains packages, destination, environment, fixed argv,
 limits, permission revision/grants, task checkpoint metadata, snapshot content
-hash and directory identity, and a locally resolved `sha256:` image ID. Image
-inspection never pulls or enables networking. A task/image/checkpoint/grant or
-snapshot change requires a new plan and approval.
+hash and directory identity, and — for the container tier — a locally resolved
+`sha256:` image ID. Image inspection never pulls or enables networking. A
+task/image/checkpoint/grant or snapshot change requires a new plan and approval.
 
-Only `await approve(plan_id, intent_hash=...)` grants bridge networking. It
+## Verification follows the sandbox tier
+
+The plan records `execution_level`, so preparation and verification no longer
+require Docker. On the **container** tier the install runs with bridge
+networking in the approved local image, and a separate read-only, offline
+container re-reads the target metadata. On the **local** tier the install runs
+on the host into the task's private snapshot (`<snapshot>/.deps/python` for pip,
+`<snapshot>` for npm) through the restricted local sandbox, and verification
+re-runs the same metadata reader with the host interpreter; the plan stores no
+image ID. Both tiers verify only exact installed versions read from
+`importlib.metadata`; neither imports the packages. The `GET /sandbox` report
+states which verification path is active.
+
+Only `await approve(plan_id, intent_hash=...)` grants bridge networking (container
+tier only; the local tier has no container network). It
 commits `running` before scheduling bounded Docker work. An HTTP request may
 await completion; cancellation of its awaiter does not cancel the installation.
 The service retains its job and `aclose()` drains it. Process death is different:

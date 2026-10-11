@@ -45,6 +45,40 @@ FileLimitExceeded, and excessive writes are rejected before opening the file.
 Permission violations raise FileAccessDenied (a PermissionError); normal missing
 file and exclusive-create errors retain their standard Python exception types.
 
+## Execution sandbox port
+
+`ExecutionSandbox` is a two-method interface (`level`, `execute(argv)`) with two
+interchangeable implementations:
+
+~~~python
+from lingnexus.tools import create_executor, probe_engine, describe, LocalLimits
+
+engine = probe_engine()            # {"available": bool, "name": "docker"|"podman"|None}
+runner = create_executor("local", worktree, writable=True,
+                         local_limits=LocalLimits(timeout_seconds=30))
+result = runner.execute(["python", "-c", "print('synthetic example')"])
+~~~
+
+`RestrictedLocalSandbox` is the default tier. It runs the argument list with no
+shell, `cwd` set to the worktree, and a minimal child environment whose TMP/TEMP/
+HOME/PYTHONPATH live inside the worktree (host secrets are not forwarded). Where
+the host can enforce them it also bounds process count, memory and CPU time and
+kills the whole process tree on exit. On Windows this uses a Job Object created
+through `ctypes` (`_jobobject.py`); the child is created suspended, assigned to
+the job, then resumed so no descendant escapes. On POSIX the child runs in its
+own session and a timeout kills the process group. `LocalLimits` mirrors
+`ExecutionLimits` plus a `cpu_seconds` budget.
+
+`ContainerSandbox` wraps `DockerExecutor` and prepends the fixed container
+environment (`TMPDIR/TMP/TEMP=/workspace/.tmp`, `HOME=/workspace/.home`,
+`PYTHONPATH=/workspace/.deps/python`).
+
+`describe(level, job_limits=...)` returns the honest `protections`/`limitations`
+lists. The local tier never claims filesystem or network isolation; when the host
+cannot create a job object it states that process/memory/CPU bounds are
+unavailable. `run_process` gained optional `cwd`, `env`, `job_limits` and
+`new_session` arguments; existing callers are unchanged.
+
 Paths reject parent traversal, sibling-prefix confusion, UNC/device/drive-relative
 syntax, alternate data streams, Windows reserved names and trailing dots/spaces.
 All symlinks, junctions, reparse points, hardlinked files and non-regular files are

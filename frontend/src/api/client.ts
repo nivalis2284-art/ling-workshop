@@ -12,6 +12,8 @@ import type {
   ConversationBranch,
   ModelInput,
   ModelSelection,
+  SandboxLevel,
+  SandboxStatus,
   SavedModel,
 } from "./types";
 
@@ -142,6 +144,14 @@ export class LingApi {
     this.post<{ id: string }>("/agents", { name });
   maintain = (operation: "export" | "backup", path: string) =>
     this.post<unknown>("/maintenance/" + operation, { path });
+  sandbox = (signal?: AbortSignal) =>
+    this.request<SandboxStatus>("/sandbox", { signal });
+  setSandboxLevel = (level: SandboxLevel, signal?: AbortSignal) =>
+    this.request<SandboxStatus>("/sandbox", {
+      method: "PUT",
+      body: JSON.stringify({ level }),
+      signal,
+    });
   permissions = (id: string, signal?: AbortSignal) =>
     this.request<AgentPermissions>(
       "/agents/" + encodeURIComponent(id) + "/permissions",

@@ -3,6 +3,17 @@ export interface Agent {
   name: string;
   created_at?: string;
 }
+export type SandboxLevel = "local" | "container";
+// Frozen shape from GET/PUT /sandbox. protections/limitations are the backend's
+// own honest wording and are shown to the owner verbatim.
+export interface SandboxStatus {
+  level: SandboxLevel;
+  available_levels: SandboxLevel[];
+  engine: { available: boolean; name: "docker" | "podman" | null };
+  protections: string[];
+  limitations: string[];
+  image: string;
+}
 export interface AgentPermissions {
   agent_id: string;
   revision: number;

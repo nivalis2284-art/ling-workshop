@@ -9,6 +9,7 @@ import { ModelSettings } from "./ModelSettings";
 import { PermissionSettings } from "./PermissionSettings";
 import { InstructionsSettings } from "./InstructionsSettings";
 import { UsagePanel } from "./UsagePanel";
+import { SandboxSettings } from "./SandboxSettings";
 import { SystemSettings } from "./SystemSettings";
 
 type Operation = "export" | "backup";
@@ -96,6 +97,7 @@ export function SettingsPage({
         agent={agent}
       />
       <UsagePanel key={"usage-" + agent.id} api={api} agent={agent} />
+      <SandboxSettings api={api} />
       <SystemSettings api={api} />
       <section className="panel section-panel">
         <div className="section-heading">

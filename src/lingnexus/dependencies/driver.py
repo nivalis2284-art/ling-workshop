@@ -23,7 +23,14 @@ def digest(value) -> str:
     return hashlib.sha256(encode(value).encode()).hexdigest()
 
 
-def image_id(reference: str) -> str:
+def image_id(reference: str, *, level: str = "container") -> str | None:
+    """Resolve the pinned image only for the container tier.
+
+    The local tier never inspects an image; it returns None and the install
+    runs on the host instead.
+    """
+    if level != "container":
+        return None
     if type(reference) is not str or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_./:@-]*", reference):
         raise PermissionDenied("The task needs a trusted local Docker image.")
     result = run_process([
@@ -103,8 +110,8 @@ def check_npm_project(root: Path, candidate: DependencyCandidate) -> None:
                 raise PermissionDenied("Include every existing exact npm direct dependency in the approved list.")
 
 
-def prepare_directories(root: Path, manager: str) -> None:
-    """Only private task directories; Linux ownership matches Docker's fixed UID."""
+def prepare_directories(root: Path, manager: str, *, container: bool = True) -> None:
+    """Only private task directories; container mode matches Docker's fixed UID."""
     names = [".tmp", ".home"]
     if manager == "pip":
         names += [".deps", ".deps/python"]
@@ -113,7 +120,7 @@ def prepare_directories(root: Path, manager: str) -> None:
         if not path.exists():
             path.mkdir(mode=0o700)
         directory(path)
-        if os.name == "posix" and path.stat().st_uid != 65534:
+        if container and os.name == "posix" and path.stat().st_uid != 65534:
             if os.geteuid() != 0:
                 raise PermissionDenied("Provision private install directories for container UID 65534 first.")
             os.chown(path, 65534, 65534)
@@ -125,7 +132,7 @@ def prepare_directories(root: Path, manager: str) -> None:
         with open_file(config, "read" if config.exists() else "create") as stream:
             if stream.readable() and stream.read(1):
                 raise PermissionDenied("npm global configuration must be empty trusted data.")
-        if os.name == "posix" and config.stat().st_uid != 65534:
+        if container and os.name == "posix" and config.stat().st_uid != 65534:
             if os.geteuid() != 0:
                 raise PermissionDenied("Provision private npm configuration for UID 65534 first.")
             os.chown(config, 65534, 65534)

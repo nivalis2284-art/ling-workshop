@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from lingnexus.actions.catalog import SCHEMAS
 from lingnexus.common.errors import DomainError, PermissionDenied
 from lingnexus.dependencies import DependencyCandidate, DependencyService
-from lingnexus.tools import DockerExecutor, ExecutionLimits
+from lingnexus.tools import ExecutionLimits
 
 from .browser import SCHEMAS as BROWSER_SCHEMAS
 from .browser import BrowserTools
@@ -164,35 +164,22 @@ class ToolExecutor:
                     "effect_id": step["id"],
                 }
             elif name == "run_command":
-                if not task["workspace"] or not task["docker_image"]:
-                    raise PermissionDenied(
-                        "Command requires an authorized snapshot and configured image."
-                    )
+                if not task["workspace"]:
+                    raise PermissionDenied("Command requires an authorized snapshot.")
                 authorize(self.app, task["agent_id"], task["workspace"])
                 root = self.snapshots.path(tid)
                 scan(root)
-                runner = DockerExecutor(
+                # The tier is chosen by the sandbox service; no engine is hard-coded.
+                runner = self.app.sandbox.executor(
                     root, image=task["docker_image"], writable=True, limits=self.limits
                 )
-                # Only container argv; no host environment, host shell, pull or extra bind.
                 result = asdict(
-                    await asyncio.to_thread(
-                        runner.execute,
-                        [
-                            "env",
-                            "TMPDIR=/workspace/.tmp",
-                            "TMP=/workspace/.tmp",
-                            "TEMP=/workspace/.tmp",
-                            "PYTHONPATH=/workspace/.deps/python",
-                            "HOME=/workspace/.home",
-                            *args["argv"],
-                        ],
-                    )
+                    await asyncio.to_thread(runner.execute, list(args["argv"]))
                 )
                 try:
                     scan(root)
                 except (PermissionError, OSError, ValueError):
-                    # The container result remains authoritative even when generated
+                    # The execution result remains authoritative even when generated
                     # artifacts fail validation. Never lose exit/output/cleanup flags.
                     result["artifact_error"] = "unsafe_or_oversized_snapshot"
                 result["verification_passed"] = bool(

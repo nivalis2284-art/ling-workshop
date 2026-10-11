@@ -64,6 +64,15 @@ function backend(
     if (path === "/api/models") return json([]);
     if (path === "/api/models/selection")
       return json({ primary: null, fallback: null });
+    if (path === "/api/sandbox")
+      return json({
+        level: "local",
+        available_levels: ["local"],
+        engine: { available: false, name: null },
+        protections: ["只在任务工作副本内读写"],
+        limitations: ["不能阻止被诱导后主动外传数据"],
+        image: "python:3.12-slim",
+      });
     if (path === "/api/agents/ling-2/permissions")
       return json({
         agent_id: "ling-2",

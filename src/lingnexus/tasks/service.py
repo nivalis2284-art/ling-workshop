@@ -17,6 +17,7 @@ from lingnexus.models import ModelGateway
 
 from .execution import ToolExecutor, account, successful
 from .protocol import append_result, dependency_update, initial, run_model
+from .sandbox import SandboxService
 from .store import TERMINAL, TaskStore, encode
 from .workspace import Snapshots
 
@@ -60,8 +61,12 @@ class TaskRuntime:
         self.client = client or httpx.AsyncClient()
         self._own_client = client is None
         self.gateway = ModelGateway(self.client)
-        self.docker_image, self.max_steps = docker_image, max_steps
-        self._images = {"python": docker_image, "node": node_image}
+        # The sandbox tier decides execution; the image is only its container input.
+        self.sandbox = getattr(app, "sandbox", None) or SandboxService(app.database)
+        app.sandbox = self.sandbox
+        self.docker_image = docker_image or self.sandbox.image
+        self.max_steps = max_steps
+        self._images = {"python": self.docker_image, "node": node_image}
         self.foreground_busy = foreground_busy or (lambda: False)
         self._workers: dict[str, asyncio.Task] = {}
         self._submission_lock = asyncio.Lock()

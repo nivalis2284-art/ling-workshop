@@ -9,7 +9,7 @@ from dataclasses import asdict
 from threading import RLock
 
 from lingnexus.common.errors import Conflict, PermissionDenied
-from lingnexus.tools import DockerExecutor, ExecutionLimits
+from lingnexus.tools import DockerExecutor, ExecutionLimits, LocalLimits, RestrictedLocalSandbox
 from lingnexus.tools._paths import directory
 
 from .driver import (
@@ -39,8 +39,9 @@ class DependencyService:
     module never mutates tasks or automatically resumes them.
     """
 
-    def __init__(self, app, task_runtime):
+    def __init__(self, app, task_runtime, *, sandbox=None):
         self.app, self.task_runtime = app, task_runtime
+        self.sandbox = sandbox or getattr(app, "sandbox", None)
         self.store = DependencyStore(app.database)
         self._database_key = str(app.database.path.absolute())
         self._jobs: set[asyncio.Task] = set()
@@ -48,6 +49,21 @@ class DependencyService:
         with _LOCK:
             self._parent_guard = _GUARDS.setdefault(self._database_key, asyncio.Lock())
             self.store.recover(_ACTIVE, self._database_key)
+
+    def _level(self) -> str:
+        return "container" if self.sandbox is None else self.sandbox.level()
+
+    def _executor(self, level: str, root, plan: dict, *, readonly: bool = False):
+        """Pick the install/verify executor for the current tier."""
+        limits = ExecutionLimits(**plan["limits"])
+        if level == "container":
+            return DockerExecutor(
+                root, image=plan["image_id"], writable=not readonly,
+                network_mode="none" if readonly else "bridge", limits=limits,
+            )
+        return RestrictedLocalSandbox(
+            root, writable=not readonly, limits=LocalLimits.from_execution_limits(limits)
+        )
 
     @staticmethod
     def propose(*, manager: str, packages: list[str]) -> dict:
@@ -76,8 +92,8 @@ class DependencyService:
         task = self.task_runtime.get(task_id)
         if task["status"] not in {"paused", "blocked"}:
             raise Conflict("Pause or block the task before installing dependencies.")
-        if not task.get("workspace") or not task.get("docker_image"):
-            raise PermissionDenied("Dependencies require a task snapshot and trusted Docker image.")
+        if not task.get("workspace"):
+            raise PermissionDenied("Dependencies require an authorized task snapshot.")
         source = directory(task["workspace"])
         grants = self.app.permissions.current(task["agent_id"])
         for kind in ("readable", "writable"):
@@ -103,15 +119,23 @@ class DependencyService:
             if old:
                 return old
             self.ensure_task_ready(task_id)
+            level = self._level()
             binding = self._binding(task_id)
+            if level == "container" and not binding["task_checkpoint"].get("docker_image"):
+                raise PermissionDenied("Container installs need a trusted local image.")
             root = directory(binding["snapshot"]["path"])
             check_npm_project(root, candidate)
-            pinned = image_id(binding["task_checkpoint"]["docker_image"])
+            pinned = image_id(binding["task_checkpoint"]["docker_image"], level=level)
+            if level == "local":
+                destination = str(root / (".deps/python" if manager == "pip" else "node_modules"))
+            else:
+                destination = "/workspace/.deps/python" if manager == "pip" else "/workspace/node_modules"
             plan = {
                 **candidate.model_dump(), "binding": binding, "image_id": pinned,
-                "destination": "/workspace/.deps/python" if manager == "pip" else "/workspace/node_modules",
-                "environment": environment(candidate.manager), "argv": command(candidate),
-                "verification_argv": verification_command(candidate),
+                "execution_level": level, "destination": destination,
+                "environment": environment(candidate.manager),
+                "argv": command(candidate, level=level, root=root),
+                "verification_argv": verification_command(candidate, level=level, root=root),
                 "network_mode": "bridge", "writable": True, "container_user": "65534:65534",
                 "limits": asdict(ExecutionLimits(timeout_seconds=300)),
             }
@@ -157,6 +181,7 @@ class DependencyService:
     def _install(self, value: dict) -> dict:
         plan_id, plan = value["id"], value["plan"]
         key = (self._database_key, plan_id)
+        level = plan.get("execution_level", "container")
         attempted = False
         verifying = False
         evidence = None
@@ -168,16 +193,15 @@ class DependencyService:
                 candidate = DependencyCandidate.model_validate({
                     "manager": plan["manager"], "packages": plan["packages"],
                 })
-                if (command(candidate) != plan["argv"]
-                        or environment(candidate.manager) != plan["environment"]
-                        or verification_command(candidate) != plan.get("verification_argv", [])):
-                    raise Conflict("Dependency command policy changed; prepare a new plan.")
                 root = directory(plan["binding"]["snapshot"]["path"])
+                if (command(candidate, level=level, root=root) != plan["argv"]
+                        or environment(candidate.manager) != plan["environment"]
+                        or verification_command(candidate, level=level, root=root)
+                        != plan.get("verification_argv", [])):
+                    raise Conflict("Dependency command policy changed; prepare a new plan.")
                 check_npm_project(root, candidate)
-                prepare_directories(root, candidate.manager)
-                executor = DockerExecutor(root, image=plan["image_id"], writable=True,
-                                          network_mode="bridge",
-                                          limits=ExecutionLimits(**plan["limits"]))
+                prepare_directories(root, candidate.manager, container=(level == "container"))
+                executor = self._executor(level, root, plan)
             attempted = True
             result = executor.execute(plan["argv"])
             evidence = asdict(result)
@@ -189,9 +213,8 @@ class DependencyService:
             if status == "success" and candidate.manager == "pip":
                 verifying = True
                 # Remain running/fenced until a separate read-only, offline
-                # container confirms every approved distribution in the target.
-                verifier = DockerExecutor(root, image=plan["image_id"],
-                                          limits=ExecutionLimits(**plan["limits"]))
+                # pass confirms every approved distribution in the target.
+                verifier = self._executor(level, root, plan, readonly=True)
                 verification = verifier.execute(plan["verification_argv"])
                 evidence["verification"] = asdict(verification)
                 matched = verified_versions(verification, candidate)

@@ -22,6 +22,7 @@ from lingnexus.maintenance.automatic import AutomaticBackups
 from lingnexus.maintenance.service import MaintenanceService
 from lingnexus.permissions.service import Permissions
 from lingnexus.storage.db import Database
+from lingnexus.tasks.sandbox import SandboxService
 
 
 class Application:
@@ -40,6 +41,7 @@ class Application:
         self.conversations = Conversations(self.database)
         self.permissions = Permissions(self.database)
         self.actions = Actions(self)
+        self.sandbox = SandboxService(self.database)
         self.browser: BrowserService | None = None
         self.dependencies: DependencyService | None = None
         self.automatic_backups: AutomaticBackups | None = None

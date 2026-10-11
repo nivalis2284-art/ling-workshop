@@ -22,6 +22,7 @@ from lingnexus.api import (
     maintenance,
     models,
     permissions,
+    sandbox,
     system,
     tasks,
     usage,
@@ -71,6 +72,8 @@ def create_app(
         server.state.services = Application(
             directory / "ling.db", credential_cache=sys.platform == "win32"
         )
+        # Startup engine probe: it informs the upgrade prompt but never switches tiers.
+        server.state.services.sandbox.probe()
         chrome = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
         server.state.browser = await BrowserService(
             server.state.services.database,
@@ -87,11 +90,15 @@ def create_app(
                 )
 
         server.state.tasks = TaskRuntime(
-            server.state.services, docker_image="python:3.12-slim", foreground_busy=chat_busy
+            server.state.services, foreground_busy=chat_busy
         )
         await server.state.tasks.start()
-        server.state.dependencies = DependencyService(server.state.services, server.state.tasks)
+        server.state.dependencies = DependencyService(
+            server.state.services, server.state.tasks,
+            sandbox=server.state.services.sandbox,
+        )
         server.state.services.dependencies = server.state.dependencies
+        server.state.sandbox = server.state.services.sandbox
         server.state.services.automatic_backups = AutomaticBackups(server.state.services)
         server.state.chat_runtime = ChatRuntime(server.state.services)
 
@@ -181,6 +188,7 @@ def create_app(
     server.include_router(browser.router)
     server.include_router(tasks.router)
     server.include_router(dependencies.router)
+    server.include_router(sandbox.router)
     server.include_router(system.router)
     for router in (
         agents.router,
@@ -195,6 +203,7 @@ def create_app(
         browser.router,
         tasks.router,
         dependencies.router,
+        sandbox.router,
         system.router,
     ):
         server.include_router(router, prefix="/api")

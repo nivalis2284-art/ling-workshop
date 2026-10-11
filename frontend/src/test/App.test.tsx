@@ -45,6 +45,15 @@ function backend(options: { noAgents?: boolean } = {}) {
       if (url.pathname === "/api/models") return json([]);
       if (url.pathname === "/api/models/selection")
         return json({ primary: null, fallback: null });
+      if (url.pathname === "/api/sandbox")
+        return json({
+          level: "local",
+          available_levels: ["local"],
+          engine: { available: false, name: null },
+          protections: ["只在任务工作副本内读写"],
+          limitations: ["不能阻止被诱导后主动外传数据"],
+          image: "python:3.12-slim",
+        });
       if (url.pathname === "/api/agents/ling-1/instructions")
         return json({
           agent_id: agent.id,

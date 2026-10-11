@@ -17,7 +17,7 @@ from lingnexus.api.tasks import router
 tasks = TaskRuntime(
     services,
     client=shared_httpx_client,  # optional, remains caller-owned
-    docker_image=owner_configured_image,  # optional, never model-selected
+    docker_image=None,  # optional; defaults to services.sandbox.image
     node_image="node:24-bookworm-slim",  # trusted parent config; None disables Node execution
     foreground_busy=foreground_busy,  # synchronous () -> bool
     max_steps=40,
@@ -58,17 +58,37 @@ POST /tasks/{id}/pause|resume|cancel, GET /tasks/{id}/events?after=,
 GET /tasks/{id}/stream?after=, GET /tasks/{id}/changes,
 GET /tasks/{id}/artifacts/{relative-path}, and POST /tasks/{id}/apply.
 
-Image configuration is the allowlist. Each task saves the constructor's image
-reference; DockerExecutor inspects and pins its local ID at execution. The model
-cannot select/pull images, configure grants, approve or apply changes. For Node,
-the parent acquires the official node:24-bookworm-slim image (or supplies a different
-trusted node_image reference). The constructor's python/node image map is the only
-image selection authority. Submission/API environment accepts only python or node;
-get/list return the selected environment. The selected image is saved in tasks;
-environment is saved in the run checkpoint (old checkpoints default to python).
-Python request fingerprints retain the pre-environment shape so old/default/explicit
-python submissions replay identically. Node requests include their environment.
-Existing tasks retain their saved image/profile; profile changes block continuation.
+Image configuration is the allowlist. The image is owner configuration, read
+from `services.sandbox.image` (env `LINGNEXUS_SANDBOX_IMAGE`, default
+`python:3.12-slim`); a task may still receive an explicit `docker_image`. The
+model cannot select/pull images, configure grants, approve or apply changes. For
+Node, the parent acquires the official node:24-bookworm-slim image (or supplies a
+different trusted node_image reference). The constructor's python/node image map
+is the only image selection authority. Submission/API environment accepts only
+python or node; get/list return the selected environment. The selected image is
+saved in tasks; environment is saved in the run checkpoint (old checkpoints
+default to python). Python request fingerprints retain the pre-environment shape
+so old/default/explicit python submissions replay identically. Node requests
+include their environment. Existing tasks retain their saved image/profile;
+profile changes block continuation.
+
+## Execution sandbox tiers
+
+Programming tasks no longer require a container engine. `services.sandbox`
+(`SandboxService`) owns one persisted tier, probed at startup but never switched
+automatically:
+
+- **local** (default): `RestrictedLocalSandbox` runs the argv list with no shell,
+  scoped to the task's private snapshot, with time and output bounds and — where
+  the host can enforce them (Windows Job Objects) — process-count, memory and
+  CPU-time limits plus process-tree cleanup on exit. It is not a filesystem or
+  network sandbox.
+- **container** (optional): `ContainerSandbox` wraps the existing DockerExecutor.
+
+`ToolExecutor` asks `services.sandbox.executor(...)` for a runner and never names
+an engine. `GET /sandbox` / `PUT /sandbox` return the frozen shape
+`{level, available_levels, engine{available,name}, protections, limitations, image}`;
+the lists are honest about what each tier can and cannot defend.
 
 ## Browser tools and owner approval
 
@@ -145,16 +165,18 @@ workspace child is mounted. Overlapping project/task-data roots are denied. The
 parent must back up/restore these artifacts along with SQL if task files must survive
 backup/restore; SQL alone preserves protocol and effect state, not missing files.
 
-run_command accepts argv and purpose=work|verify. DockerExecutor supplies UID/GID
-65534, no network, read-only root, one writable snapshot bind, dropped capabilities,
-no pull, bounded output/time/CPU/memory/PIDs, and confirmed cleanup. It has no writable
-/tmp mount. Container argv prefixes env with TMPDIR/TMP/TEMP=/workspace/.tmp;
-programs hard-coding /tmp receive their actual failure. This package adds no tmpfs.
+run_command accepts argv and purpose=work|verify. The tier decides the runner.
+The container tier keeps UID/GID 65534, no network, read-only root, one writable
+snapshot bind, dropped capabilities, no pull, bounded output/time/CPU/memory/PIDs
+and confirmed cleanup, with no writable /tmp mount; its argv is prefixed with
+TMPDIR/TMP/TEMP=/workspace/.tmp so programs hard-coding /tmp see their real
+failure. The local tier runs the same argv list with no shell, cwd set to the
+snapshot, a minimal environment (TMP/TEMP/HOME/PYTHONPATH inside the snapshot,
+no host secrets), and Windows Job Object bounds.
 
-Events retain actual status, exit_code, stdout/stderr, output_truncated, timed_out,
-cleanup_confirmed and container_name. Artifact validation failures are separate
-from container evidence. verification_passed requires purpose=verify, exit 0,
-confirmed cleanup, untruncated output, no timeout and valid artifacts. Writes
+Artifact validation failures are separate from execution evidence.
+verification_passed requires purpose=verify, exit 0, confirmed cleanup,
+untruncated output, no timeout and valid artifacts. Writes
 invalidate earlier checks; a readback cannot override failed/stale tests. For
 ordinary file work, checking expected final contents is verification. Completion
 requires a final response, current verification and no unresolved failures;
@@ -174,10 +196,11 @@ artifacts/diffs for manual application because existing helpers have no safe del
 or binary replacement effect.
 
 Controlled owner-approved online dependency installation remains a parent integration;
-this package does not acquire images or enable a container network. The parent supplies
-locally available Python/Node images; current command execution is offline in the
-authorized snapshot. Native TypeScript type stripping in Node 24 is supported; the
-image does not imply that a TypeScript compiler or arbitrary npm packages are installed.
+the container tier supplies locally available Python/Node images and enables bridge
+networking only for the approved install, while the local tier installs on the host
+into the private snapshot. Normal command execution is offline in the authorized
+snapshot. Native TypeScript type stripping in Node 24 is supported; the image does
+not imply that a TypeScript compiler or arbitrary npm packages are installed.
 
 ## Tests
 

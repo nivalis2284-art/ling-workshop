@@ -11,6 +11,12 @@ task's *precondition* to a *real-time constraint inside the loop* (§2.6). The
 gate set is deliberately small — arbitrary command execution is the operation
 with unbounded real-world effects. Scoped file edits inside an authorized
 directory are the Agent's ordinary work and are not gated.
+
+Remote (MCP) tools are gated too, by name prefix. The client cannot know what a
+remote tool does, so every ``mcp__*`` call is treated as side-effecting: it is
+the same unbounded, prompt-injectable class as ``run_command``. Being configured
+by the owner authorizes *connecting* the server, not silently carrying out each
+call. This is what keeps the "no extra authority" rule true rather than nominal.
 """
 
 from __future__ import annotations
@@ -25,6 +31,13 @@ from lingnexus.common.errors import NotFound
 from .hooks import Handler, HookResult
 
 DEFAULT_GATED = frozenset({"run_command"})
+MCP_TOOL_PREFIX = "mcp__"
+"""Remote tools are declared ``mcp__<server>__<tool>`` (see ``lingnexus.mcp``)."""
+
+
+def is_gated(name: str, gated: frozenset[str] = DEFAULT_GATED) -> bool:
+    """Whether a tool needs real-time owner approval before it runs."""
+    return name in gated or name.startswith(MCP_TOOL_PREFIX)
 DEFAULT_TIMEOUT_SECONDS = 900.0
 
 
@@ -107,7 +120,7 @@ def confirmation_hook(
 
     async def handler(payload: dict) -> HookResult | None:
         name = payload.get("name")
-        if name not in gated:
+        if not isinstance(name, str) or not is_gated(name, gated):
             return None
         context = payload.get("context") or {}
         run_id = context.get("run_id")

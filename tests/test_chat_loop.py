@@ -245,6 +245,45 @@ def test_permission_is_enforced_by_the_hook_not_the_loop(app, agent_id, tmp_path
     assert again.allow is False
 
 
+def test_search_is_authorized_by_readable_grants_never_as_a_path(app, agent_id, tmp_path):
+    """``search`` has no ``path`` argument; a hook that checks it like
+    ``read_file`` would deny it every single time (the file tools then starve
+    the model of any way to find files). The gate is the readable grant.
+    """
+    configure(app)
+    folder = tmp_path / "authorized"
+    _grant(app, agent_id, folder)
+    (folder / "notes.txt").write_text("预算一千七百六十", encoding="utf-8")
+
+    replies = [
+        tool_reply(calls=[("s", "search", {"query": "预算", "match": "content"})]),
+        reply("找到了。"),
+    ]
+    result, events = run_chat(
+        app,
+        replies,
+        {"agent_id": agent_id, "message": "找预算", "request_id": "loop-search"},
+    )
+    assert result["status"] == "completed"
+    tool_result = next(event for event in events if event["event"] == "tool_result")
+    assert tool_result["data"]["status"] == "completed", tool_result["data"]["preview"]
+
+    # An agent with no readable grant is still refused, for its own reason.
+    other = app.create_agent("乙")
+    hook = permission_hook(AppAuthorization(app))
+    denied = asyncio.run(
+        hook(
+            {
+                "name": "search",
+                "arguments": {"query": "预算"},
+                "context": {"agent_id": other, "command_available": False},
+            }
+        )
+    )
+    assert denied is not None and denied.allow is False
+    assert "尚未授权" in (denied.reason or "")
+
+
 def test_confirmation_gate_allows_non_gated_tools_and_denies_until_approved():
     service = ConfirmationService(timeout_seconds=5)
     handler = confirmation_hook(service)

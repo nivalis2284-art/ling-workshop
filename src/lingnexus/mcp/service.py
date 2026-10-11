@@ -14,6 +14,7 @@ Two rules decide every choice here (see ``docs/计划/2026-10-11-F阶段-能力�
 from __future__ import annotations
 
 import json
+import threading
 
 from pydantic import BaseModel, ConfigDict
 
@@ -26,6 +27,9 @@ from .protocol import McpError, remote_tool_name, split_remote_tool
 SETTINGS_KEY = "mcp.servers"
 DEFAULT_TIMEOUT = 15.0
 _RESULT_CHARS = 32_000
+_MAX_BLOCKS = 200
+"""Per call. The joined text is capped at ``_RESULT_CHARS`` anyway; this only
+bounds the work a chatty server can make the client do before that."""
 
 # A remote tool validates against the schema its server published, so the local
 # placeholder must accept any object shape.
@@ -98,6 +102,10 @@ class McpService:
         self._specs: dict[str, ToolSpec] = {}
         self.failures: dict[str, str] = {}
         self._loaded = False
+        # Calls now run off the event loop (``asyncio.to_thread``), so two runs
+        # can reach one connection at once. A connection is one child pipe or
+        # session: interleaving their JSON-RPC ids would cross replies.
+        self._lock = threading.RLock()
 
     # --- configuration ------------------------------------------------------
 
@@ -125,19 +133,21 @@ class McpService:
         return self._specs.get(name)
 
     def _ensure(self) -> None:
-        if self._loaded:
-            return
-        self._loaded = True
-        for config in self.servers():
-            self._connect(config)
+        with self._lock:
+            if self._loaded:
+                return
+            self._loaded = True
+            for config in self.servers():
+                self._connect(config)
 
     def reload(self) -> None:
         """Drop cached state so the next use re-reads the setting (tests, config change)."""
-        self.close()
-        self._connections.clear()
-        self._specs.clear()
-        self.failures.clear()
-        self._loaded = False
+        with self._lock:
+            self.close()
+            self._connections.clear()
+            self._specs.clear()
+            self.failures.clear()
+            self._loaded = False
 
     def _connect(self, config: ServerConfig) -> None:
         connection = config.connection(self._timeout)
@@ -179,37 +189,40 @@ class McpService:
         if split is None:
             return {"status": "failed", "error_code": "mcp_unknown_tool"}, None
         server, tool = split
-        self._ensure()
-        connection = self._connections.get(server)
-        if connection is None:
-            reason = self.failures.get(server, "服务器未连接")
-            return {
-                "status": "failed",
-                "error_code": "mcp_server_unavailable",
-                "result": {"server": server, "message": reason},
-            }, None
-        try:
-            result = connection.call_tool(tool, arguments)
-        except McpError as exc:
-            status = "unknown" if exc.code in {"mcp_timeout", "mcp_connection_closed"} else "failed"
-            return {
-                "status": status,
-                "error_code": exc.code,
-                "result": {"server": server, "tool": tool, "message": exc.message},
-            }, None
-        except (OSError, ValueError) as exc:
-            return {
-                "status": "unknown",
-                "error_code": "mcp_call_unknown",
-                "result": {"server": server, "tool": tool, "message": str(exc)},
-            }, None
+        with self._lock:
+            self._ensure()
+            connection = self._connections.get(server)
+            if connection is None:
+                reason = self.failures.get(server, "服务器未连接")
+                return {
+                    "status": "failed",
+                    "error_code": "mcp_server_unavailable",
+                    "result": {"server": server, "message": reason},
+                }, None
+            try:
+                result = connection.call_tool(tool, arguments)
+            except McpError as exc:
+                status = (
+                    "unknown" if exc.code in {"mcp_timeout", "mcp_connection_closed"} else "failed"
+                )
+                return {
+                    "status": status,
+                    "error_code": exc.code,
+                    "result": {"server": server, "tool": tool, "message": exc.message},
+                }, None
+            except (OSError, ValueError) as exc:
+                return {
+                    "status": "unknown",
+                    "error_code": "mcp_call_unknown",
+                    "result": {"server": server, "tool": tool, "message": str(exc)},
+                }, None
         return self._shape(server, tool, result), None
 
     def _shape(self, server: str, tool: str, result: dict) -> dict:
         content = result.get("content")
         blocks = content if isinstance(content, list) else []
         rendered = []
-        for block in blocks[:_RESULT_CHARS]:
+        for block in blocks[:_MAX_BLOCKS]:
             if isinstance(block, dict) and block.get("type") == "text":
                 rendered.append(str(block.get("text", ""))[:_RESULT_CHARS])
             elif isinstance(block, dict):
@@ -232,6 +245,7 @@ class McpService:
         return {"status": "completed", "result": payload}
 
     def close(self) -> None:
-        for connection in self._connections.values():
-            connection.close()
-        self._connections.clear()
+        with self._lock:
+            for connection in self._connections.values():
+                connection.close()
+            self._connections.clear()

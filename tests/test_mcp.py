@@ -121,6 +121,43 @@ def run_chat(app, responses, request, requests=None):
     return asyncio.run(scenario())
 
 
+async def _approve_all(app, run_id):
+    """The owner's real-time answer, arriving on the same loop while the run waits."""
+    from lingnexus.common.errors import NotFound
+
+    for _ in range(2000):
+        for item in app.confirmations.pending(run_id):
+            try:
+                app.confirmations.decide(run_id, item["fingerprint"], approved=True)
+            except NotFound:  # already answered between the read and the write
+                pass
+            return
+        await asyncio.sleep(0.01)
+
+
+def run_chat_approved(app, responses, request, requests=None):
+    """Like ``run_chat``, but the owner approves every confirmation that appears.
+
+    A remote tool is now confirmation-gated, so a test that wants the call to
+    actually run must supply the owner's approval concurrently with the loop.
+    """
+    from lingnexus.runtime import ChatRuntime
+
+    async def scenario():
+        async with mock_client(responses, requests) as client:
+            runtime = ChatRuntime(app, client=client)
+            value = request if isinstance(request, ChatRequest) else ChatRequest(**request)
+            run = runtime.submit(value)
+            approver = asyncio.create_task(_approve_all(app, run["id"]))
+            events = [event async for event in runtime.events(run["id"])]
+            result = runtime.get_run(run["id"])
+            await runtime.aclose()
+            approver.cancel()
+            return result, events
+
+    return asyncio.run(scenario())
+
+
 # --- optional: nothing configured means nothing happens -------------------
 
 
@@ -347,7 +384,7 @@ def test_remote_tool_runs_through_the_loop_and_its_hooks(app, agent_id):
     app.hooks.register(HookEvent.AFTER_TOOL, spy)
     requests: list[dict] = []
 
-    run, events = run_chat(
+    run, events = run_chat_approved(
         app,
         [
             tool_reply([("c1", "mcp__fixture__echo", {"text": "hi"})]),
@@ -386,7 +423,7 @@ def test_a_denying_hook_blocks_a_remote_tool(app, agent_id):
 
     app.hooks.register(HookEvent.BEFORE_TOOL, refuse)
 
-    run, events = run_chat(
+    run, events = run_chat_approved(
         app,
         [tool_reply([("c1", "mcp__fixture__echo", {"text": "hi"})]), reply("好，不调了")],
         {"agent_id": agent_id, "message": "调远端", "request_id": "r1"},
@@ -396,6 +433,32 @@ def test_a_denying_hook_blocks_a_remote_tool(app, agent_id):
     result = next(event for event in events if event["event"] == "tool_result")
     assert result["data"]["status"] == "blocked"
     assert "所有者策略拒绝" in result["data"]["preview"]
+
+
+def test_remote_tool_requires_owner_approval_before_it_runs(app, agent_id):
+    """An unapproved remote call is refused, exactly like an unapproved command.
+
+    The remote tool is not in the default gated set by name — the prefix is what
+    gates it — and the refusal travels back to the model as the tool result.
+    """
+    configure(app, [stdio_server()])
+    configure_model(app)
+    # Nothing approves; make the wait end immediately instead of in 900 seconds.
+    app.confirmations.timeout_seconds = 0.05
+
+    run, events = run_chat(
+        app,
+        [tool_reply([("c1", "mcp__fixture__echo", {"text": "hi"})]), reply("那算了")],
+        {"agent_id": agent_id, "message": "调远端", "request_id": "r1"},
+    )
+
+    assert run["status"] == "completed"
+    result = next(event for event in events if event["event"] == "tool_result")
+    assert result["data"]["status"] == "blocked"
+    assert "需要所有者确认" in result["data"]["preview"]
+    # The remote tool must not have been contacted: the fixture server would
+    # have answered "echo:hi", and nothing of the sort may appear.
+    assert "echo:" not in result["data"]["preview"]
 
 
 # --- cleanup --------------------------------------------------------------

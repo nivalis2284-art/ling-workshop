@@ -25,7 +25,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from lingnexus.tools._paths import is_link
+from lingnexus.tools._paths import FileAccessDenied, is_link, local_path
 
 SKILL_FILE = "SKILL.md"
 """The one file that makes a folder a skill."""
@@ -240,8 +240,15 @@ class SkillLibrary:
         return sorted(found)
 
     def _read_resource(self, skill: Skill, resource: str) -> dict:
-        raw = Path(resource)
-        if raw.is_absolute() or ".." in raw.parts or not raw.parts:
+        # Validate the *string* form through the shared path rules, not just
+        # ``Path.parts``: on Windows a drive-relative ``C:foo`` or a rooted
+        # ``\foo`` is not ``is_absolute()`` yet ``base / part`` resets the base
+        # entirely, so a per-part join could still land outside the skill folder.
+        try:
+            raw = local_path(resource)
+        except FileAccessDenied:
+            return {"status": "failed", "error_code": "skill_resource_denied"}
+        if raw.is_absolute() or not raw.parts:
             return {"status": "failed", "error_code": "skill_resource_denied"}
         target = skill.path
         for part in raw.parts:
@@ -253,6 +260,10 @@ class SkillLibrary:
             # An alias anywhere along the way could escape the skill folder.
             if is_link(info):
                 return {"status": "failed", "error_code": "skill_resource_denied"}
+        # Whatever the parts were, the join must still land inside the skill
+        # folder — a rooted or drive component resets the base entirely.
+        if not target.is_relative_to(skill.path):
+            return {"status": "failed", "error_code": "skill_resource_denied"}
         final = target.lstat()
         if is_link(final) or not stat.S_ISREG(final.st_mode):
             return {"status": "failed", "error_code": "skill_resource_denied"}

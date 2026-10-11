@@ -9,6 +9,7 @@ caller's environment (snapshot, authorized directories, sandbox, browser).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -111,7 +112,10 @@ class ToolDispatcher:
             if spec.kind == "meta":
                 return self._wrap(*scope.meta(name, args))
             if spec.kind == "mcp":
-                return self._wrap(*self.mcp.call(name, args))
+                # A remote call blocks on its own transport (a child pipe or an
+                # HTTP request). Offload it so the server's event loop keeps
+                # serving other runs and their SSE streams meanwhile.
+                return self._wrap(*(await asyncio.to_thread(self.mcp.call, name, args)))
             return self._fail("invalid_tool_request")
         except (PermissionDenied, FileAccessDenied):
             return self._fail("permission_denied")

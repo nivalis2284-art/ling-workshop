@@ -376,7 +376,11 @@ class ChatRuntime:
                 "payload": payload,
                 "effort": effort,
             }
-            declare_tools(state["payload"], profile, self.dispatcher.schema())
+            # Discovery can block on first use (spawning servers, handshakes);
+            # keep it off the event loop like the remote calls themselves.
+            declare_tools(
+                state["payload"], profile, await asyncio.to_thread(self.dispatcher.schema)
+            )
             max_steps = self._max_steps()
             step = 1
             while True:
@@ -515,7 +519,9 @@ class ChatRuntime:
             profile_id, profile, credentials, payload = replacement
             state.update(profile=profile, credentials=credentials, payload=payload)
             state["effort"] = self.failover.effort(run_id, profile_id, profile, requested_effort)
-            declare_tools(state["payload"], profile, self.dispatcher.schema())
+            declare_tools(
+                state["payload"], profile, await asyncio.to_thread(self.dispatcher.schema)
+            )
         return None
 
     async def _stream_turn(

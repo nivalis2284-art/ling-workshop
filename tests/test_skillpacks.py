@@ -223,6 +223,31 @@ def test_resource_reads_cannot_escape_the_skill_folder(tmp_path):
     assert ok["result"]["text"] == "notes"
 
 
+def test_resource_paths_that_reset_the_base_are_refused(tmp_path):
+    """A drive-relative or rooted resource is not caught by ``is_absolute()``.
+
+    On Windows ``Path("C:foo").is_absolute()`` is False and ``\\foo`` has no
+    drive, yet ``skill_path / "C:"`` (or ``/ "\\"``) discards ``skill_path``
+    entirely — so a per-part join that trusts ``parts`` silently lands outside
+    the skill folder. The hosts file is a real, always-present regular file on
+    any Windows machine, which makes the escape observable rather than
+    theoretical; on POSIX the same strings are refused by the shared rules.
+    """
+    root = tmp_path / "bundled"
+    write_skill(root, "alpha")
+    library = SkillLibrary((("bundled", root),))
+
+    for resource in (
+        "C:Windows\\System32\\drivers\\etc\\hosts",
+        "\\Windows\\System32\\drivers\\etc\\hosts",
+        "/Windows/System32/drivers/etc/hosts",
+        "C:/Windows/System32/drivers/etc/hosts",
+        "C:secret.txt",
+    ):
+        result = library.read("alpha", resource)
+        assert result["error_code"] == "skill_resource_denied", resource
+
+
 def make_alias(link: Path, target: Path) -> str | None:
     """Create an alias at ``link`` pointing to ``target``; say how, or give up.
 

@@ -17,6 +17,13 @@ def local_path(value: str | os.PathLike[str]) -> Path:
     windows = PureWindowsPath(raw)
     if raw.startswith(("\\", "//")) or (windows.drive and not windows.is_absolute()):
         raise FileAccessDenied("UNC, device and drive-relative paths are not supported")
+    # A rooted path without a drive ("\\foo", "/foo") names the current drive's
+    # root and is resolved by whoever joins it — the same ambiguity as a
+    # drive-relative path. Refuse it wherever the local filesystem would not
+    # call the result absolute, so a POSIX "/foo" (genuinely absolute) survives.
+    local = Path(raw.replace("\\", "/"))
+    if windows.root and not windows.drive and not local.is_absolute():
+        raise FileAccessDenied("Root-relative paths are not supported")
     # Apply Windows alias rules on every platform so grants are portable.
     parts = raw.replace("\\", "/").split("/")
     if windows.drive:
@@ -29,7 +36,7 @@ def local_path(value: str | os.PathLike[str]) -> Path:
             or PureWindowsPath(part).is_reserved()
         )):
             raise FileAccessDenied("Traversal or ambiguous filename")
-    return Path(raw.replace("\\", "/"))
+    return local
 
 
 def is_link(info: os.stat_result) -> bool:

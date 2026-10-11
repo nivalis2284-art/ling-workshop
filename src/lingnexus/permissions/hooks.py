@@ -31,7 +31,7 @@ from lingnexus.browser.policy import normalize_origin
 from lingnexus.runtime.hooks import Handler, HookResult
 from lingnexus.tools._paths import FileAccessDenied, local_path
 
-_READ_TOOLS = frozenset({"read_file", "search"})
+_READ_TOOLS = frozenset({"read_file"})
 _WRITE_TOOLS = frozenset({"create_file", "write_file", "edit_file"})
 _PAGE_BROWSER_TOOLS = frozenset({"browser_read", "browser_fill", "browser_request_click"})
 
@@ -82,6 +82,14 @@ def permission_hook(authorization: Authorization) -> Handler:
             return None
         if name in _READ_TOOLS or name in _WRITE_TOOLS:
             return _check_file(name, arguments, agent_id, authorization)
+        if name == "search":
+            # ``search`` has no single path to authorize: it only ever walks the
+            # agent's readable grants (the dispatcher resolves every hit through
+            # the same per-file read). So the gate is simply that a readable
+            # directory exists — checking it as a path tool would deny it always.
+            if not authorization.readable(agent_id):
+                return _deny("尚未授权相应的文件访问目录，请先在权限设置中授权。", name)
+            return None
         if name == "run_command":
             if not context.get("command_available"):
                 return _deny("当前没有已授权的命令执行环境，无法运行命令。", name)

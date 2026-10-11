@@ -240,11 +240,14 @@ class RestrictedLocalSandbox:
             status, error = "success", None
         else:
             status, error = "failed", None
+        # Cleanup is only "confirmed" when the reaper did not report otherwise;
+        # claiming it while a kill was unconfirmed would hide a live process.
         return ExecutionResult(
             status, result.returncode,
             result.stdout.decode("utf-8", errors="replace"),
             result.stderr.decode("utf-8", errors="replace"),
-            result.truncated, result.timed_out, None, True, error,
+            result.truncated, result.timed_out, None,
+            result.error != "process_cleanup_unconfirmed", error,
         )
 
 

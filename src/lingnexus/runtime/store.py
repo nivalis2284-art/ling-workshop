@@ -1,4 +1,4 @@
-"""Runtime-owned durable records; source creation stays in HistoryService."""
+"""Runtime-owned durable records; conversation text lives in the conversation tree."""
 
 import json
 
@@ -25,18 +25,7 @@ class RunStore:
                 "profile_id": row["profile_id"],
                 "conversation_id": row["conversation_id"],
                 "user_message_id": row["user_message_id"],
-                "self_revision": row["self_revision"],
                 "status": row["status"],
-                "user_source": {
-                    "id": row["user_source_id"],
-                    "revision": row["user_source_revision"],
-                },
-                "assistant_source": (
-                    {"id": row["assistant_source_id"], "revision": row["assistant_source_revision"]}
-                    if row["assistant_source_id"]
-                    else None
-                ),
-                "context_sources": json.loads(row["context_sources"]),
                 "context_manifest": (
                     json.loads(row["context_manifest"]) if row["context_manifest"] else None
                 ),

@@ -61,10 +61,6 @@ function backend(
     requests.push({ path, method, init, body });
     if (path === "/api/agents")
       return json([agent, { id: "ling-2", name: "另一个灵" }]);
-    if (path.endsWith("/state"))
-      return json({ agent_id: agent.id, revision: 0, entries: {} });
-    if (path.endsWith("/proposals") || path.endsWith("/revisions"))
-      return json([]);
     if (path === "/api/models") return json([]);
     if (path === "/api/models/selection")
       return json({ primary: null, fallback: null });
@@ -95,6 +91,13 @@ function backend(
       return json(permissions);
     }
     if (path.endsWith("/usage")) return json(usage);
+    if (path.endsWith("/instructions"))
+      return json({
+        agent_id: agent.id,
+        rules: ["默认指令"],
+        defaults: ["默认指令"],
+        customized: false,
+      });
     if (path === "/api/agents/ling-1/attachments") {
       if (method === "POST") {
         if (options.uploadError)

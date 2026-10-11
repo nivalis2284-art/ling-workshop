@@ -1,9 +1,15 @@
-import json
+"""Request opening: owner instructions + individual name + a recent transcript tail.
+
+The context no longer carries a current self state or recalled memories. What is
+sent is: the owner-written system rules, the individual's name, as much of the
+recent raw transcript as fits, and (added by the caller) attachments. When the
+budget is exceeded the oldest messages are dropped and reported, never a failure.
+"""
+
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from lingnexus.common.errors import ContextTooLarge
-from lingnexus.common.types import SourceRef
+from lingnexus.common.errors import NotFound
 
 
 class TokenCounter(Protocol):
@@ -44,66 +50,71 @@ class ContextPacket:
 
 
 class ContextBuilder:
-    def __init__(self, database, identity, history, instructions, counter: TokenCounter | None = None):
-        self.database, self.identity, self.history = database, identity, history
+    def __init__(self, database, instructions, counter: TokenCounter | None = None):
+        self.database = database
         self.instructions = instructions
         self.counter = counter or ConservativeCounter()
+
+    def name(self, agent_id: str) -> str:
+        with self.database.transaction() as db:
+            row = db.execute("SELECT name FROM agents WHERE id=?", (agent_id,)).fetchone()
+            if row is None:
+                raise NotFound("个体不存在")
+            return str(row["name"])
+
+    def header(self, agent_id: str) -> str:
+        """Owner rules head the request verbatim; the name is a plain setting."""
+        rules = self.instructions.rules(agent_id)
+        return "\n".join([*rules, "当前名称：" + self.name(agent_id)])
 
     def build(
         self,
         agent_id: str,
         *,
-        source_refs: list[SourceRef],
-        scope: str = "",
+        messages: list[dict],
         budget: BudgetPolicy | None = None,
     ) -> ContextPacket:
+        """Keep the newest contiguous tail of `messages` that fits the budget.
+
+        Each message is `{role, text, ...}`; `extra_tokens` (attachments, etc.) is
+        counted when present and passed through untouched. The header is always
+        sent. At least the newest message is kept so a turn never fails outright.
+        """
         budget = budget or BudgetPolicy()
-        with self.database.transaction():
-            state = self.identity.current(agent_id)
-            # Owner-written rules head the request verbatim; the identity block below
-            # is generated and never editable as text.
-            rules = self.instructions.rules(agent_id)
-            header = "\n".join(rules) + "\n" if rules else ""
-            instructions = (
-                header
-                + "当前名称："
-                + self.identity.name(agent_id)
-                + "\n当前自我状态：\n"
-                + json.dumps(state.entries, ensure_ascii=False, sort_keys=True)
-            )
-            used = self.counter.count(instructions)
-            if used > budget.input_limit:
-                raise ContextTooLarge("必需的规则与当前自我状态已超过可用输入预算")
-            evidence, omitted = [], []
-            refs = list(dict.fromkeys((r.id, r.revision) for r in source_refs))
-            if refs:
-                records = self.history.validate_refs(
-                    agent_id, [SourceRef(id=i, revision=r) for i, r in refs]
-                )
-                for record in records:
-                    size = self.counter.count(json.dumps(record, ensure_ascii=False))
-                    if used + size <= budget.input_limit:
-                        evidence.append(record)
-                        used += size
-                    else:
-                        omitted.append(
-                            {
-                                "id": record["id"],
-                                "revision": record["revision"],
-                                "reason": "input_budget",
-                            }
-                        )
-            return ContextPacket(
-                instructions,
-                evidence,
-                {
-                    "agent_id": agent_id,
-                    "self_revision": state.revision,
-                    "scope": scope,
-                    "included": [{"id": r["id"], "revision": r["revision"]} for r in evidence],
-                    "omitted": omitted,
-                    "estimated_input_tokens": used,
-                    "token_count_exact": self.counter.exact,
-                    "strategy_version": 1,
-                },
-            )
+        instructions = self.header(agent_id)
+        used = self.counter.count(instructions)
+        limit = budget.input_limit
+
+        def size(message: dict) -> int:
+            return self.counter.count(message["text"]) + int(message.get("extra_tokens", 0))
+
+        selected: list[dict] = []
+        truncated: list[dict] = []
+        for index in range(len(messages) - 1, -1, -1):
+            message = messages[index]
+            if used + size(message) <= limit:
+                selected.append(message)
+                used += size(message)
+            else:
+                truncated = messages[: index + 1]
+                break
+        selected.reverse()
+        if messages and not selected:
+            # Even an over-budget newest message is sent rather than failing the run.
+            selected = [messages[-1]]
+            truncated = messages[:-1]
+            used += size(messages[-1])
+
+        manifest = {
+            "agent_id": agent_id,
+            "sent_messages": len(selected),
+            "truncated_messages": len(truncated),
+            "truncated": [
+                {"role": message["role"], "reason": "input_budget"} for message in truncated
+            ],
+            "estimated_input_tokens": used,
+            "token_count_exact": self.counter.exact
+            and not any(message.get("extra_tokens") for message in selected),
+            "strategy_version": 2,
+        }
+        return ContextPacket(instructions, selected, manifest)

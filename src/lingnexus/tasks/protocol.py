@@ -4,10 +4,9 @@ from contextlib import aclosing
 from copy import deepcopy
 
 from lingnexus.actions.catalog import descriptors
-from lingnexus.common.errors import Conflict, DomainError, PermissionDenied
+from lingnexus.common.errors import Conflict, PermissionDenied
 from lingnexus.dependencies import DependencyCandidate
 from lingnexus.dependencies.policy import package_parts
-from lingnexus.learning.worker import safe_usage
 from lingnexus.models import APIFamily
 
 from .browser import descriptors as browser_descriptors
@@ -30,16 +29,27 @@ recorded dependency statuses and run fresh command verification before delivery.
 Workspace paths are relative to the snapshot (or /workspace/path). Project changes
 are staged artifacts requiring owner review/apply. There is no tool for approving,
 applying, changing permissions, accessing cloud keys or running host shell commands.
-Use read_source for exact original slices and find_knowledge for sourced reports.
-After actual successful checks, save_skill may propose a reusable procedure. It
-creates only a candidate with server-attached task evidence. Report it as awaiting
-validation; never claim it is learned or active. Skill creation grants no permissions.
 Browser tools inspect state, navigate granted origins, read visible DOM, fill permitted
 fields and request owner-approved clicks. First inspect browser_state, then pass its
 origin_revision and current page_version. Every click waits for separate owner action.
 Click completion alone does not verify business success. Follow it with browser_read
 and an expected_text confirmation, then report the actual verification result.
 """
+
+
+def safe_usage(value) -> dict:
+    # Never persist raw provider usage, continuation, reasoning, headers, or errors.
+    return {
+        name: getattr(value, name)
+        for name in (
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "reasoning_tokens",
+            "cached_input_tokens",
+            "cache_creation_input_tokens",
+        )
+    } | {"cost_usd": str(value.cost_usd) if value.cost_usd is not None else None}
 
 
 def catalog():
@@ -50,30 +60,6 @@ def catalog():
             "name": "request_dependencies",
             "description": "Request exact registry versions as data for owner configuration. Never installs, approves or enables network access.",
             "parameters": DependencyCandidate.model_json_schema(),
-        },
-        {
-            "name": "read_skill",
-            "description": "Read a currently active procedural skill belonging to this agent. Never grants permissions.",
-            "parameters": {
-                "type": "object",
-                "properties": {"skill_id": {"type": "string", "minLength": 1}},
-                "required": ["skill_id"],
-                "additionalProperties": False,
-            },
-        },
-        {
-            "name": "save_skill",
-            "description": "Propose a procedural candidate after verified work. Sources come from actual task steps; never activates a skill.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "minLength": 1, "maxLength": 200},
-                    "description": {"type": "string", "minLength": 1, "maxLength": 2000},
-                    "instructions": {"type": "string", "minLength": 1, "maxLength": 32000},
-                },
-                "required": ["name", "description", "instructions"],
-                "additionalProperties": False,
-            },
         },
         {
             "name": "run_command",
@@ -96,9 +82,9 @@ def catalog():
     ]
 
 
-def initial(profile, objective, identity, workspace):
+def initial(profile, objective, system_rules, workspace):
     family = profile.api_family
-    instructions = identity + "\n" + INSTRUCTIONS
+    instructions = system_rules + "\n" + INSTRUCTIONS
     user = objective + (
         "\nOwner-selected workspace is staged at /workspace.\n"
         + "Available files: "
@@ -251,28 +237,12 @@ def final_text(family, response):
 
 
 async def run_model(runtime, tid, state):
-    with runtime.app.database.transaction():
-        if not runtime._check_self(tid, state) or not runtime._check_memory(tid, state):
-            return False
     task = runtime.get(tid)
     if task["workspace"]:
         try:
             authorize(runtime.app, task["agent_id"], task["workspace"])
         except (PermissionDenied, PermissionError, OSError, ValueError):
             runtime.store.status(tid, "blocked", "permissions_revoked")
-            return False
-    if state.get("skill_revisions"):
-        skills = getattr(runtime.app, "skills", None)
-        try:
-            active = (
-                {s["id"]: s["revision"] for s in skills.available(task["agent_id"])}
-                if skills
-                else {}
-            )
-        except DomainError:
-            active = {}
-        if any(active.get(sid) != revision for sid, revision in state["skill_revisions"].items()):
-            runtime.store.status(tid, "blocked", "skills_changed")
             return False
     profile, credentials = runtime.app.profiles.resolve(task["profile_id"])
     if profile.model_dump(mode="json") != state["profile"]:
@@ -287,8 +257,6 @@ async def run_model(runtime, tid, state):
         return False
     state["phase"] = "model_inflight"
     with runtime.app.database.transaction():
-        if not runtime._check_self(tid, state) or not runtime._check_memory(tid, state):
-            return False
         runtime.store.save(tid, state, model_step=True)
         runtime.store.event(tid, "model_started", {"step": task["step_count"] + 1})
         runtime.store.event(
@@ -299,8 +267,6 @@ async def run_model(runtime, tid, state):
         runtime.gateway.stream(profile, state["payload"], credentials=credentials)
     ) as stream:
         async for event in stream:
-            if not runtime._check_self(tid, state) or not runtime._check_memory(tid, state):
-                return False
             if event.type == "tool_call":
                 tool = event.tool_call
                 if tool is None:
@@ -316,8 +282,6 @@ async def run_model(runtime, tid, state):
                 return False
             elif event.type == "complete":
                 complete = event
-    if not runtime._check_self(tid, state):
-        return False
     if complete is None or complete.continuation is None:
         runtime.store.status(tid, "blocked", "model_incomplete")
         return False
@@ -347,8 +311,6 @@ async def run_model(runtime, tid, state):
     # Assistant and calls commit together BEFORE executing any effect. Completed
     # native blocks (not display deltas) are the sole replay material.
     with runtime.app.database.transaction():
-        if not runtime._check_self(tid, state) or not runtime._check_memory(tid, state):
-            return False
         append_response(state["payload"], state["family"], response)
         state["pending"], state["phase"] = calls, "ready"
         runtime.store.save(tid, state)
@@ -378,25 +340,4 @@ async def run_model(runtime, tid, state):
                 final=text,
                 verified=verified,
             )
-            activities = getattr(runtime.app, "activities", None)
-            if verified and activities is not None:
-                summary = text
-                while True:
-                    content = encode(
-                        {
-                            "task_id": tid,
-                            "final": summary,
-                            "verified": True,
-                            "final_truncated": len(summary) < len(text),
-                        }
-                    )
-                    if len(content) <= 8192:
-                        break
-                    summary = summary[: len(summary) // 2]
-                activities.record_event(
-                    task["agent_id"],
-                    dedupe_key="task:" + tid,
-                    kind="task_completed",
-                    content=content,
-                )
     return bool(calls)

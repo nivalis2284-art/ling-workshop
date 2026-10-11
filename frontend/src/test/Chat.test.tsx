@@ -44,7 +44,7 @@ function backend(
   let conversationCreated = false;
   let requestId = "";
   let answer = "";
-  let assistantSource = { id: "assistant-source", revision: 1 };
+  let assistantMessageId = "assistant-answer";
   let userMessageId = "";
   const messages: ConversationMessage[] = [];
   const submitted = new Set<string>();
@@ -57,13 +57,12 @@ function backend(
     head_id: messages.at(-1)?.id ?? null,
   });
   const commit = () => {
-    if (!messages.some((message) => message.source.id === assistantSource.id))
+    if (!messages.some((message) => message.id === assistantMessageId))
       messages.push({
-        id: "answer-" + requestId,
+        id: assistantMessageId,
         role: "assistant",
         text: answer,
         parent_id: userMessageId,
-        source: assistantSource,
       });
   };
   const run = () => ({
@@ -74,9 +73,6 @@ function backend(
     user_message_id: userMessageId,
     profile_id: profile.id,
     status,
-    user_source: { id: "user-source", revision: 1 },
-    assistant_source: status === "completed" ? assistantSource : null,
-    context_sources: [{ id: "user-source", revision: 1 }],
     created_at: "2026-10-09T00:00:00Z",
     finished_at: status === "running" ? null : "2026-10-09T00:01:00Z",
   });
@@ -104,14 +100,6 @@ function backend(
       return json(
         messages.length ? [{ ...messages.at(-1), selected: true }] : [],
       );
-    if (path.endsWith("/state"))
-      return json({ agent_id: "ling-1", revision: 0, entries: {} });
-    if (
-      path.endsWith("/proposals") ||
-      path.endsWith("/revisions") ||
-      path.includes("/episodes?")
-    )
-      return json([]);
     if (path === "/api/models")
       return json(
         options.profiles ?? [
@@ -152,7 +140,6 @@ function backend(
             role: "user",
             text: body.message,
             parent_id: messages.at(-1)?.id ?? null,
-            source: { id: "user-source-" + requestId, revision: 1 },
           });
         }
       }
@@ -199,7 +186,8 @@ function backend(
       received.add(seq);
       if (type === "complete") {
         status = "completed";
-        assistantSource = data.assistant_source as typeof assistantSource;
+        if (typeof data.assistant_message_id === "string")
+          assistantMessageId = data.assistant_message_id;
         commit();
       }
       if (type === "error")
@@ -298,7 +286,7 @@ test("chat starts empty, selects the primary profile, and displays actual stream
     "complete",
     {
       status: "completed",
-      assistant_source: { id: "assistant-source", revision: 1 },
+      assistant_message_id: "assistant-answer",
     },
     6,
   );
@@ -358,7 +346,7 @@ test("network loss reconnects the same run after the last event without duplicat
     "complete",
     {
       status: "completed",
-      assistant_source: { id: "assistant-source", revision: 1 },
+      assistant_message_id: "assistant-answer",
     },
     4,
   );
@@ -410,7 +398,7 @@ test("unmount detaches without cancellation and remount restores run and cursor 
     "complete",
     {
       status: "completed",
-      assistant_source: { id: "assistant-source", revision: 1 },
+      assistant_message_id: "assistant-answer",
     },
     3,
   );
@@ -481,7 +469,7 @@ test("data received without started still establishes the run, survives reload a
     "complete",
     {
       status: "completed",
-      assistant_source: { id: "source-data-first", revision: 1 },
+      assistant_message_id: "answer-data-first",
     },
     14,
   );
@@ -587,7 +575,7 @@ test("Stop racing a completed run replays the missing final answer instead of cl
     "complete",
     {
       status: "completed",
-      assistant_source: { id: "assistant-source", revision: 1 },
+      assistant_message_id: "assistant-answer",
     },
     4,
   );
@@ -649,7 +637,7 @@ async function savedRound(
     "complete",
     {
       status: "completed",
-      assistant_source: { id: "assistant-source", revision: 1 },
+      assistant_message_id: "assistant-answer",
     },
     3,
   );

@@ -7,8 +7,6 @@ export function ChatHeader({
   selecting,
   canSelect,
   onSelectTurns,
-  segmentsOpen,
-  onToggleSegments,
   onOpenSettings,
   disabled,
 }: {
@@ -16,8 +14,6 @@ export function ChatHeader({
   selecting: boolean;
   canSelect: boolean;
   onSelectTurns: () => void;
-  segmentsOpen: boolean;
-  onToggleSegments: () => void;
   onOpenSettings: () => void;
   disabled: boolean;
 }) {
@@ -72,16 +68,6 @@ export function ChatHeader({
               }}
             >
               {selecting ? "退出批量删除" : "批量删除"}
-            </button>
-            <button
-              type="button"
-              className="chat-head-action"
-              onClick={() => {
-                onToggleSegments();
-                setOpen(false);
-              }}
-            >
-              {segmentsOpen ? "收起交流主题与分段" : "交流主题与分段"}
             </button>
             <button
               type="button"

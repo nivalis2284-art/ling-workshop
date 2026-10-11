@@ -9,7 +9,6 @@ afterEach(() => vi.useRealTimers());
 test("任务提交、真实事件与结果、审阅确认使用服务返回的 review_id", async () => {
   let saved = { ...task };
   const { api, requests } = backend(({ path, method, body }) => {
-    if (path.endsWith("/goals")) return [];
     if (path.startsWith("/api/tasks?") && method === "GET") return [saved];
     if (path === "/api/tasks" && method === "POST") {
       saved = { ...saved, objective: String(body.objective) };
@@ -93,7 +92,6 @@ test("任务提交、真实事件与结果、审阅确认使用服务返回的 r
 test("任务暂停、恢复、取消；卸载只停止轮询和读取", async () => {
   let saved = { ...task, status: "running" };
   const { api, requests } = backend(({ path }) => {
-    if (path.endsWith("/goals")) return [];
     if (path.startsWith("/api/tasks?") || path === "/api/tasks/t1")
       return path.includes("?") ? [saved] : saved;
     if (path.includes("/events?")) return [];
@@ -140,7 +138,6 @@ test("任务暂停、恢复、取消；卸载只停止轮询和读取", async ()
 test("选择 Node.js 环境提交；等待浏览器确认的任务必须显式恢复", async () => {
   let saved = { ...task, status: "waiting_owner" };
   const { api, requests } = backend(({ path, method, body }) => {
-    if (path.endsWith("/goals")) return [];
     if (path.startsWith("/api/tasks?")) return [saved];
     if (path === "/api/tasks" && method === "POST") return saved;
     if (path === "/api/tasks/t1") return saved;

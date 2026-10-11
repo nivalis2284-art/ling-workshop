@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from contextlib import contextmanager
 from pathlib import Path
 from threading import RLock
 
@@ -17,22 +16,6 @@ class Actions:
     def __init__(self, app):
         self.app = app
         self._lock = RLock()
-
-    @contextmanager
-    def memory_reads(self):
-        """Pin database-only memory reads using the normal Action lock order.
-
-        Callers may capture source revisions before publishing tool evidence.
-        Never run file operations or await network work inside this context.
-        """
-        with self._lock, self.app.database.transaction():
-            yield
-
-    def preview_memory(self, agent_id: str, name: str, arguments: dict) -> dict:
-        """Read memory without recording an Action; use inside memory_reads()."""
-        if name not in {"find_memories", "read_episode", "read_source", "find_knowledge"}:
-            raise ValueError("Only database memory tools can be previewed.")
-        return self._invoke(agent_id, name, SCHEMAS[name].model_validate(arguments).model_dump())
 
     def get(self, action_id: str) -> dict:
         with self.app.database.transaction() as db:
@@ -58,7 +41,8 @@ class Actions:
         encoded = json.dumps(validated, ensure_ascii=False, sort_keys=True)
         fingerprint = hashlib.sha256((name + encoded).encode()).hexdigest()
         with self.app.database.transaction() as db:
-            self.app.identity.current(agent_id)
+            if db.execute("SELECT 1 FROM agents WHERE id=?", (agent_id,)).fetchone() is None:
+                raise NotFound("个体不存在")
             old = db.execute(
                 "SELECT id,fingerprint FROM actions WHERE agent_id=? AND request_id=?",
                 (agent_id, request_id),
@@ -138,33 +122,6 @@ class Actions:
         if name == "write_file":
             self.app.permissions.write_text(agent_id, Path(args["path"]), args["text"])
             return {"written": True, "path": args["path"]}
-        if name == "find_memories":
-            return {
-                "episodes": self.app.memory.find_episodes(agent_id, args["query"])
-            }
-        if name == "find_knowledge":
-            return {
-                "knowledge": self.app.memory.knowledge.search(agent_id, args["query"])
-            }
-        if name == "read_source":
-            ref = SourceRef(id=args["source_id"], revision=args["revision"])
-            record = self.app.history.read(ref)
-            if record["agent_id"] != agent_id:
-                raise PermissionDenied("来源不在当前个体的经历范围")
-            start, end = args["offset"], args["offset"] + args["limit"]
-            return {
-                "source": ref.model_dump(),
-                "text": record["text"][start:end],
-                "offset": start,
-                "has_more": end < len(record["text"]),
-                "kind": record["kind"],
-                "scope": record.get("scope", ""),
-            }
-        if name == "read_episode":
-            item = self.app.memory.read_episode(args["episode_id"])
-            if item["agent_id"] != agent_id:
-                raise PermissionDenied("事件不属于当前个体")
-            return item
         raise ValueError("未启用工具")
 
     def _finish(
@@ -173,43 +130,13 @@ class Actions:
         with self.app.database.transaction() as db:
             if self.get(intent["id"])["status"] != "executing":
                 return self.get(intent["id"])
-            evidence = json.dumps(
-                {
-                    "action": intent["name"],
-                    "status": status,
-                    "result": result,
-                    "error_code": error_code,
-                },
-                ensure_ascii=False,
-            )
-            ref = self.app.history.add(
-                intent["agent_id"],
-                evidence,
-                kind="tool",
-                scope="",
-                request_id="action:" + intent["id"],
-            )
             db.execute(
-                "UPDATE actions SET status=?,result=?,error_code=?,source_id=?,source_revision=? WHERE id=?",
+                "UPDATE actions SET status=?,result=?,error_code=? WHERE id=?",
                 (
                     status,
                     json.dumps(result, ensure_ascii=False) if result is not None else None,
                     error_code,
-                    ref.id,
-                    ref.revision,
                     intent["id"],
                 ),
             )
-            activities = getattr(self.app, "activities", None)
-            if (
-                activities is not None
-                and status == "completed"
-                and intent["name"] in {"create_file", "write_file"}
-            ):
-                activities.record_event(
-                    intent["agent_id"],
-                    dedupe_key="action:" + intent["id"],
-                    kind="tool_completed",
-                    content=evidence,
-                )
             return self.get(intent["id"])

@@ -4,7 +4,6 @@ import type {
   ChatRequest,
   ChatRun,
   ChatUsage,
-  SourceRef,
   ConversationMessage,
   ConversationBranch,
 } from "../../api/types";
@@ -29,7 +28,7 @@ export interface ChatTurn {
   text: string;
   thinking: string;
   usage?: ChatUsage;
-  assistantSource?: SourceRef | null;
+  assistantMessageId?: string | null;
   status: TurnStatus;
   error?: string;
   cancelling?: boolean;
@@ -253,6 +252,18 @@ export class ChatSession {
         this.adoptRun(run);
       }
       this.update({ messages, branches, historyStatus: "ready" });
+      // A terminal run resolved through GET status carries no assistant id;
+      // adopt the selected branch's answer so the round stays linked to it.
+      const latest = this.state.turns.at(-1);
+      if (latest && latest.status === "complete" && !latest.assistantMessageId) {
+        const answer = branches.find(
+          (branch) => branch.selected && branch.role === "assistant",
+        );
+        if (answer)
+          this.change(latest.request.request_id, {
+            assistantMessageId: answer.id,
+          });
+      }
       return true;
     } catch (error) {
       if (!controller.signal.aborted && this.historyController === controller)
@@ -552,12 +563,15 @@ export class ChatSession {
           patch.text = "";
           patch.thinking = "";
           patch.usage = undefined;
-          patch.assistantSource = undefined;
+          patch.assistantMessageId = undefined;
         }
         break;
       case "notice":
         if (event.data.code === "effort_omitted")
           patch.notice = "备用模型不支持所选思考强度，已使用模型默认设置。";
+        else if (event.data.code === "context_truncated")
+          patch.notice =
+            event.data.message ?? "对话超出模型窗口，已丢弃最早的部分消息。";
         break;
       case "text":
         patch.text = turn.text + event.data.text;
@@ -572,7 +586,7 @@ export class ChatSession {
         break;
       case "complete":
         patch.status = "complete";
-        patch.assistantSource = event.data.assistant_source;
+        patch.assistantMessageId = event.data.assistant_message_id;
         patch.error = undefined;
         break;
       case "error":
@@ -614,7 +628,6 @@ export class ChatSession {
           : run.status === "cancelled"
             ? "stopped"
             : "error",
-      assistantSource: run.assistant_source,
       error: ["completed", "cancelled"].includes(run.status)
         ? undefined
         : chatRunErrorMessage(run.status),

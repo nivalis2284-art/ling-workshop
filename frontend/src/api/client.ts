@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AgentInstructions,
   AgentPermissions,
   AgentUsage,
   Attachment,
@@ -9,19 +10,10 @@ import type {
   Conversation,
   ConversationMessage,
   ConversationBranch,
-  EntryInput,
-  EntryWrite,
-  Episode,
-  IdentityBundle,
-  IdentityState,
-  Instructions,
-  PersonaEntry,
-  Proposal,
-  Revision,
-  Source,
-  SourceRef,
+  ModelInput,
+  ModelSelection,
+  SavedModel,
 } from "./types";
-import type { ModelInput, ModelSelection, SavedModel } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -148,109 +140,13 @@ export class LingApi {
     this.request<Agent[]>("/agents", { signal });
   createAgent = (name: string) =>
     this.post<{ id: string }>("/agents", { name });
-  state = (id: string, signal?: AbortSignal) =>
-    this.request<IdentityState>(
-      "/agents/" + encodeURIComponent(id) + "/state",
-      { signal },
-    );
-  proposals = (id: string, signal?: AbortSignal) =>
-    this.request<Proposal[]>(
-      "/agents/" + encodeURIComponent(id) + "/proposals",
-      { signal },
-    );
-  revisions = (id: string, signal?: AbortSignal) =>
-    this.request<Revision[]>(
-      "/agents/" + encodeURIComponent(id) + "/revisions",
-      { signal },
-    );
-  identity = async (
-    id: string,
-    signal?: AbortSignal,
-  ): Promise<IdentityBundle> => {
-    const [state, proposals, revisions, entries, instructions] =
-      await Promise.all([
-        this.state(id, signal),
-        this.proposals(id, signal),
-        this.revisions(id, signal),
-        this.entries(id, signal),
-        this.instructions(id, signal),
-      ]);
-    return { state, proposals, revisions, entries, instructions };
-  };
-  entries = async (id: string, signal?: AbortSignal) => {
-    const payload = await this.request<{
-      agent_id: string;
-      entries: PersonaEntry[];
-    }>("/agents/" + encodeURIComponent(id) + "/entries", { signal });
-    return payload.entries;
-  };
-  instructions = (id: string, signal?: AbortSignal) =>
-    this.request<Instructions>(
-      "/agents/" + encodeURIComponent(id) + "/instructions",
-      { signal },
-    );
-  saveInstructions = (id: string, rules: string[]) =>
-    this.request<Instructions>(
-      "/agents/" + encodeURIComponent(id) + "/instructions",
-      { method: "PUT", body: JSON.stringify({ rules }) },
-    );
-  resetInstructions = (id: string) =>
-    this.post<Instructions>(
-      "/agents/" + encodeURIComponent(id) + "/instructions/reset",
-      {},
-    );
-  addEntry = (id: string, input: EntryInput) =>
-    this.post<EntryWrite>(
-      "/agents/" + encodeURIComponent(id) + "/entries",
-      input,
-    );
-  removeEntry = (id: string, key: string, expectedRevision: number) =>
-    this.post<EntryWrite>(
-      "/agents/" + encodeURIComponent(id) + "/entries/remove",
-      { key, expected_revision: expectedRevision },
-    );
-  decide = (
-    id: string,
-    decision: "approve" | "reject",
-    expected_revision: number,
-  ) =>
-    this.post<Proposal>("/proposals/" + encodeURIComponent(id) + "/decision", {
-      decision,
-      expected_revision,
-    });
-  rollback = (id: string, target_revision: number, expected_revision: number) =>
-    this.post<IdentityState>(
-      "/agents/" + encodeURIComponent(id) + "/rollback",
-      { target_revision, expected_revision },
-    );
-  episodes = (
-    id: string,
-    query: string,
-    offset: number,
-    signal?: AbortSignal,
-  ) =>
-    this.request<Episode[]>(
-      "/agents/" +
-        encodeURIComponent(id) +
-        "/episodes?" +
-        new URLSearchParams({ query, limit: "20", offset: String(offset) }),
-      { signal },
-    );
-  episode = (id: string, signal?: AbortSignal) =>
-    this.request<Episode>("/episodes/" + encodeURIComponent(id), { signal });
-  source = (ref: SourceRef, signal?: AbortSignal) =>
-    this.request<Source>(
-      "/sources/" + encodeURIComponent(ref.id) + "?revision=" + ref.revision,
-      { signal },
-    );
   maintain = (operation: "export" | "backup", path: string) =>
     this.post<unknown>("/maintenance/" + operation, { path });
   permissions = (id: string, signal?: AbortSignal) =>
     this.request<AgentPermissions>(
       "/agents/" + encodeURIComponent(id) + "/permissions",
       { signal },
-    );
-  savePermissions = (
+    );  savePermissions = (
     id: string,
     update: PermissionUpdate,
     signal?: AbortSignal,
@@ -258,6 +154,21 @@ export class LingApi {
     this.request<AgentPermissions>(
       "/agents/" + encodeURIComponent(id) + "/permissions",
       { method: "PUT", body: JSON.stringify(update), signal },
+    );
+  instructions = (id: string, signal?: AbortSignal) =>
+    this.request<AgentInstructions>(
+      "/agents/" + encodeURIComponent(id) + "/instructions",
+      { signal },
+    );
+  saveInstructions = (id: string, rules: string[], signal?: AbortSignal) =>
+    this.request<AgentInstructions>(
+      "/agents/" + encodeURIComponent(id) + "/instructions",
+      { method: "PUT", body: JSON.stringify({ rules }), signal },
+    );
+  resetInstructions = (id: string, signal?: AbortSignal) =>
+    this.request<AgentInstructions>(
+      "/agents/" + encodeURIComponent(id) + "/instructions/reset",
+      { method: "POST", signal },
     );
   usage = (id: string, signal?: AbortSignal) =>
     this.request<AgentUsage>("/agents/" + encodeURIComponent(id) + "/usage", {

@@ -7,6 +7,7 @@ import { ConfirmDialog } from "../../shared/ConfirmDialog";
 import { ErrorNotice, PageHeader } from "../../shared/ui";
 import { ModelSettings } from "./ModelSettings";
 import { PermissionSettings } from "./PermissionSettings";
+import { InstructionsSettings } from "./InstructionsSettings";
 import { UsagePanel } from "./UsagePanel";
 import { SystemSettings } from "./SystemSettings";
 
@@ -84,6 +85,11 @@ export function SettingsPage({
         description="管理本地资料与当前会话，让重要的记录妥善留存。"
       />
       <ModelSettings api={api} />
+      <InstructionsSettings
+        key={"instructions-" + agent.id}
+        api={api}
+        agent={agent}
+      />
       <PermissionSettings
         key={"permissions-" + agent.id}
         api={api}

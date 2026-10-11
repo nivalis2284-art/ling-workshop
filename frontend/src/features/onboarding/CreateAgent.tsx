@@ -25,7 +25,7 @@ export function CreateAgent({
         <p className="eyebrow">初次见面</p>
         <h1>从一个名字开始。</h1>
         <p className="muted">
-          为你的第一个灵取个名字。此后的经历、记忆与变化，会在这个空间里慢慢积累。
+          为你的第一个灵取个名字。此后的对话、资料与任务，都会在这个空间里进行。
         </p>
         <form
           onSubmit={async (event) => {
@@ -63,7 +63,7 @@ export function CreateAgent({
           </button>
         </form>
         <p className="small muted">
-          当前可用：身份审阅、记忆浏览与数据维护。对话功能正在开发。
+          创建后可以添加模型连接，然后开始对话。
         </p>
       </section>
     </main>

@@ -15,9 +15,9 @@ from lingnexus.common.types import new_id
 from lingnexus.context.builder import BudgetPolicy
 from lingnexus.models import ModelGateway
 
-from .execution import ToolExecutor, account, successful, validate_memory
+from .execution import ToolExecutor, account, successful
 from .protocol import append_result, dependency_update, initial, run_model
-from .store import TERMINAL, TaskStore, encode, remember_refs
+from .store import TERMINAL, TaskStore, encode
 from .workspace import Snapshots
 
 _ACTIVE: dict[tuple[str, str], asyncio.Task] = {}
@@ -91,13 +91,17 @@ class TaskRuntime:
             raise ValueError("Task objective is empty.")
         # Python preserves the original default request fingerprint, including
         # requests created before environment selection was supported.
-        identity_spec = {k: v for k, v in spec.items() if k != "environment" or v != "python"}
-        fingerprint = hashlib.sha256(encode(identity_spec).encode()).hexdigest()
+        fingerprint_spec = {k: v for k, v in spec.items() if k != "environment" or v != "python"}
+        fingerprint = hashlib.sha256(encode(fingerprint_spec).encode()).hexdigest()
         async with self._submission_lock:
             old = self.store.lookup(spec["agent_id"], spec["request_id"], fingerprint)
             if old:
                 return old
-            self.app.identity.current(spec["agent_id"])
+            with self.app.database.transaction() as db:
+                if db.execute(
+                    "SELECT 1 FROM agents WHERE id=?", (spec["agent_id"],)
+                ).fetchone() is None:
+                    raise PermissionDenied("Individual not found.")
             pid = self.app.profiles.selection()["primary"]
             if not pid:
                 raise PermissionDenied("Select a model profile before submitting a task.")
@@ -114,35 +118,26 @@ class TaskRuntime:
             )
             context = self.app.context.build(
                 spec["agent_id"],
-                source_refs=[],
+                messages=[],
                 budget=BudgetPolicy(
                     context_limit=profile.context_window_tokens or 32768,
                     output_reserve=profile.max_output_tokens or 4096,
                 ),
             )
-            descriptions = []
-            if getattr(self.app, "skills", None):
-                descriptions = [
-                    {"id": s["id"], "name": s["name"], "description": s["description"]}
-                    for s in self.app.skills.available(spec["agent_id"])
-                ]
-            identity = (
+            system_rules = (
                 context.instructions
-                + "\nActive procedural skills (read_skill for instructions): "
-                + encode(descriptions)
                 + "\nOwner-selected coding environment: "
                 + spec["environment"]
             )
             state = {
                 "environment": spec["environment"],
-                "self_revision": context.manifest["self_revision"],
                 "coding_workspace": bool(spec["workspace"]),
                 "family": str(profile.api_family),
                 "profile": profile.model_dump(mode="json"),
                 "payload": initial(
                     profile,
                     spec["objective"],
-                    identity,
+                    system_rules,
                     sorted(baseline) if spec["workspace"] else None,
                 ),
                 "pending": [],
@@ -153,9 +148,6 @@ class TaskRuntime:
                 "verified": False,
                 "command_used": False,
                 "command_verified": False,
-                "skill_revisions": {},
-                "memory_refs": [],
-                "source_refs": [],
                 "phase": "ready",
             }
             inserted = self.store.insert(
@@ -237,13 +229,9 @@ class TaskRuntime:
             if self.get(tid)["status"] == "running":
                 return self.get(tid)
             state = self.store.load(tid)
-            if not self._check_self(tid, state) or not self._check_memory(tid, state):
-                return self.get(tid)
             if not dependency_update(self, tid, state):
                 return self.get(tid)
             with self.app.database.transaction():
-                if not self._check_memory(tid, state):
-                    return self.get(tid)
                 self.store.resume(tid, additional_steps)
                 self.store.save(tid, state)
             self._spawn(tid)
@@ -316,9 +304,6 @@ class TaskRuntime:
         return self.get(tid)["status"] == "running"
 
     async def _consume(self, tid, state):
-        with self.app.database.transaction():
-            if not self._check_self(tid, state) or not self._check_memory(tid, state):
-                return False
         task = self.get(tid)
         call = state["pending"][0]
         work = asyncio.create_task(self.executor.execute(task, call))
@@ -330,13 +315,6 @@ class TaskRuntime:
             # its awaiter. Drain it and commit actual results before acknowledging pause.
             cancelled = True
             result = await work
-        if result.get("error_code") == "self_changed":
-            self.store.status(tid, "blocked", "self_changed")
-            return False
-        if result.get("status") == "blocked" and result.get("error_code") == "memory_changed":
-            remember_refs(state, result)
-            self._check_memory(tid, state)
-            return False
         if result.get("status") == "prepared" and result.get("approval_id"):
             state["waiting_owner"] = {
                 "approval_id": result["approval_id"],
@@ -344,20 +322,15 @@ class TaskRuntime:
             }
             state.update(verified=False, browser_used=True, browser_verified=False)
             with self.app.database.transaction():
-                remember_refs(state, result)
                 self.store.save(tid, state)
                 self.store.event(tid, "waiting_owner", state["waiting_owner"])
-                if not self._check_memory(tid, state):
-                    return False
-                if not cancelled and self._check_self(tid, state):
+                if not cancelled:
                     self.store.status(tid, "waiting_owner")
             return False
         if result.get("status") == "unknown":
             with self.app.database.transaction():
-                remember_refs(state, result)
                 self.store.save(tid, state)
-                if self._check_memory(tid, state):
-                    self.store.status(tid, "blocked", "effect_needs_review")
+                self.store.status(tid, "blocked", "effect_needs_review")
             return False
         evidence_call = call
         if task["workspace"] and call["name"] in {"read_file", "create_file", "write_file"}:
@@ -367,11 +340,7 @@ class TaskRuntime:
             except (PermissionDenied, PermissionError, OSError, ValueError):
                 pass  # Keep the failed request as unresolved evidence.
         state["coding_workspace"] = bool(task["workspace"])
-        remember_refs(state, result)
         account(state, evidence_call, result)
-        if call["name"] == "read_skill" and successful(call["name"], result):
-            item = result["result"]
-            state.setdefault("skill_revisions", {})[item["id"]] = item["revision"]
         append_result(
             state["payload"],
             state["family"],
@@ -396,42 +365,11 @@ class TaskRuntime:
                 state.update(verified=False, command_verified=False, command_used=True)
                 self.store.event(tid, "dependencies_required", {"dependency_candidate": candidate})
             self.store.save(tid, state)
-            memory_valid = self._check_memory(tid, state)
-            if candidate and memory_valid and not cancelled and self._check_self(tid, state):
+            if candidate and not cancelled:
                 self.store.status(tid, "blocked", "dependencies_required")
         if cancelled:
             raise asyncio.CancelledError
-        if candidate or not memory_valid:
-            return False
-        return self._check_self(tid, state)
-
-    def _check_self(self, tid, state):
-        if self.app.identity.current(self.get(tid)["agent_id"]).revision == state.get(
-            "self_revision"
-        ):
-            return True
-        self.store.status(tid, "blocked", "self_changed")
-        return False
-
-    def _check_memory(self, tid, state):
-        with self.app.database.transaction():
-            try:
-                if ("memory_refs" not in state or "source_refs" not in state) and (
-                    self.store.unfenced_memory(tid)
-                ):
-                    state["memory_changed"] = True
-                validate_memory(self.app, self.get(tid)["agent_id"], state)
-            except (DomainError, ValueError, TypeError, KeyError):
-                state.update(
-                    memory_changed=True,
-                    verified=False,
-                    command_verified=False,
-                    browser_verified=False,
-                )
-                self.store.save(tid, state)
-                self.store.status(tid, "blocked", "memory_changed")
-                return False
-            return True
+        return not candidate
 
     async def _model(self, tid, state):
         return await run_model(self, tid, state)

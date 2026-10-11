@@ -14,6 +14,12 @@ export interface PermissionUpdate {
   writable: string[];
   expected_revision: number;
 }
+export interface AgentInstructions {
+  agent_id: string;
+  rules: string[];
+  defaults: string[];
+  customized: boolean;
+}
 export interface AgentUsage {
   scope: "chat" | "all";
   categories?: Record<string, number>;
@@ -37,75 +43,6 @@ export interface Attachment {
   metadata: Record<string, unknown>;
   warnings: string[];
 }
-export interface SourceRef {
-  id: string;
-  revision: number;
-}
-export interface IdentityState {
-  agent_id: string;
-  revision: number;
-  entries: Record<string, string>;
-}
-export interface PersonaEntry {
-  key: string;
-  text: string;
-  kind: string;
-  origin: { proposal_id: string; kind: string; sources: SourceRef[] } | null;
-}
-export interface Instructions {
-  agent_id: string;
-  rules: string[];
-  defaults: string[];
-  customized: boolean;
-}
-export interface EntryInput {
-  kind: string;
-  key: string;
-  text: string;
-  expected_revision: number;
-  request_id: string;
-}
-export interface EntryWrite {
-  state: IdentityState;
-  entries: PersonaEntry[];
-}
-export interface Proposal {
-  id: string;
-  key: string;
-  text: string;
-  status: string;
-  kind?: string;
-  sources: SourceRef[];
-  base_revision: number;
-  created_at?: string;
-}
-export interface Revision {
-  revision: number;
-  entries: Record<string, string>;
-  reason?: string;
-  created_at?: string;
-}
-export interface Episode {
-  id: string;
-  title: string;
-  summary: string;
-  sources: SourceRef[];
-  scope: string;
-  created_at?: string;
-}
-export interface Source extends SourceRef {
-  text: string;
-  kind?: string;
-  scope?: string;
-  recorded_at?: string;
-}
-export interface IdentityBundle {
-  state: IdentityState;
-  proposals: Proposal[];
-  revisions: Revision[];
-  entries: PersonaEntry[];
-  instructions: Instructions;
-}
 export interface ModelCapabilities {
   streaming: boolean;
   tools: boolean;
@@ -120,7 +57,9 @@ export interface ModelCapabilities {
 }
 export interface ModelProfile {
   api_family:
-    "anthropic_messages" | "openai_chat_completions" | "openai_responses";
+    | "anthropic_messages"
+    | "openai_chat_completions"
+    | "openai_responses";
   model: string;
   base_url: string;
   capabilities: ModelCapabilities;
@@ -173,13 +112,14 @@ export interface Conversation {
   background?: string;
 }
 
+// Messages hold their own text; the selected branch is the chain up to the head.
 export interface ConversationMessage {
   id: string;
   parent_id: string | null;
   role: "user" | "assistant";
   text: string;
-  source: SourceRef;
   attachment_ids?: string[];
+  created_at?: string;
 }
 
 export interface ConversationBranch extends ConversationMessage {
@@ -211,7 +151,7 @@ export type ChatEvent = { id: string } & (
         restart: boolean;
       };
     }
-  | { event: "notice"; data: { run_id: string; code: string } }
+  | { event: "notice"; data: { run_id: string; code: string; message?: string } }
   | { event: "text" | "thinking"; data: { run_id: string; text: string } }
   | { event: "usage"; data: { run_id: string; usage: ChatUsage } }
   | {
@@ -219,7 +159,7 @@ export type ChatEvent = { id: string } & (
       data: {
         run_id: string;
         status: "completed";
-        assistant_source: SourceRef | null;
+        assistant_message_id: string | null;
       };
     }
   | { event: "error"; data: { run_id: string; code: string; message: string } }
@@ -231,11 +171,9 @@ export interface ChatRun {
   request_id: string;
   profile_id: string;
   status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
-  user_source: SourceRef;
-  assistant_source: SourceRef | null;
-  context_sources: SourceRef[];
-  created_at: string;
-  finished_at: string | null;
   conversation_id?: string | null;
   user_message_id?: string | null;
+  context_manifest?: Record<string, unknown> | null;
+  created_at: string;
+  finished_at: string | null;
 }

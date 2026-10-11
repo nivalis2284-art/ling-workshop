@@ -13,23 +13,6 @@ def encode(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=lambda v: v.model_dump())
 
 
-def remember_refs(state, result):
-    """Accumulate consumed evidence without replacing any earlier revision."""
-    for key in ("memory_refs", "source_refs"):
-        refs = state.setdefault(key, [])
-        known = {encode(r) for r in refs}
-        returned = list(result.get(key, []))
-        if key == "source_refs" and result.get("source"):
-            # Exact attached observations also survive recovery of older results.
-            returned.append(result["source"])
-        for ref in returned:
-            if encode(ref) not in known:
-                refs.append(ref)
-                known.add(encode(ref))
-    if result.get("memory_changed") or result.get("error_code") == "memory_changed":
-        state["memory_changed"] = True
-
-
 class TaskStore:
     def __init__(self, database):
         self.database = database
@@ -131,19 +114,6 @@ class TaskStore:
                 (int(model_step), utc_now(), tid),
             )
 
-    def unfenced_memory(self, tid):
-        """Legacy recalled text cannot acquire new markers from today's database."""
-        with self.database.transaction() as db:
-            return bool(
-                db.execute(
-                    "SELECT 1 FROM task_steps WHERE task_id=? AND status='completed' "
-                    "AND name IN ('find_memories','read_episode','read_source','find_knowledge') "
-                    "AND (json_type(result,'$.memory_refs') IS NULL "
-                    "OR json_type(result,'$.source_refs') IS NULL) LIMIT 1",
-                    (tid,),
-                ).fetchone()
-            )
-
     def status(self, tid, status, error=None, *, final=None, verified=False):
         with self.database.transaction() as db:
             old = self.get(tid)
@@ -243,21 +213,6 @@ class TaskStore:
     def effect(self, sid, effect_id):
         with self.database.transaction() as db:
             db.execute("UPDATE task_steps SET effect_id=? WHERE id=?", (effect_id, sid))
-
-    def evidence(self, tid):
-        with self.database.transaction() as db:
-            rows = db.execute(
-                "SELECT name,result FROM task_steps WHERE task_id=? AND status='completed' "
-                "AND name!='save_skill' ORDER BY model_step,created_at",
-                (tid,),
-            )
-            refs = []
-            for row in rows:
-                result = json.loads(row["result"])
-                refs.append(result.get("source"))
-                if row["name"] == "read_source":
-                    refs.append(result.get("result", {}).get("source"))
-            return list({(r["id"], r["revision"]): r for r in refs if r}.values())
 
     def review(self, tid, manifest):
         rid = new_id()

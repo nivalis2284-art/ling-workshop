@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import type { Agent } from "../api/types";
 import { Mark } from "../shared/ui";
-import { navigation, upcoming } from "./navigation";
+import { navigation } from "./navigation";
 import type { PageId } from "./navigation";
 
 const collapseKey = "lingnexus.shell.collapsed";
@@ -124,22 +124,6 @@ export function Shell({
               )}
             </button>
           ))}
-          {upcoming.length > 0 && (
-            <>
-              <p className="nav-caption upcoming-caption">继续生长中</p>
-              {upcoming.map((item) => (
-                <div
-                  key={item.label}
-                  className="nav-item upcoming"
-                  title={item.description}
-                >
-                  <item.icon size={19} strokeWidth={1.7} aria-hidden="true" />
-                  <span className="nav-label">{item.label}</span>
-                  <span className="soon-tag">开发中</span>
-                </div>
-              ))}
-            </>
-          )}
         </nav>
         <div className="sidebar-bottom">
           <div className="local-note">

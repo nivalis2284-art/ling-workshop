@@ -11,24 +11,17 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from lingnexus.activities.investigation import ModelInvestigator
 from lingnexus.api import (
-    activities,
+    agents,
     background,
     browser,
     chat,
     content,
     conversations,
     dependencies,
-    development,
-    history,
-    identity,
     maintenance,
-    memory,
     models,
     permissions,
-    segments,
-    skills,
     system,
     tasks,
     usage,
@@ -39,7 +32,6 @@ from lingnexus.background import Supervisor
 from lingnexus.browser import BrowserService
 from lingnexus.common.errors import Conflict, DomainError, NotFound, PermissionDenied
 from lingnexus.dependencies import DependencyService
-from lingnexus.learning import ConsolidationWorker
 from lingnexus.maintenance.automatic import AutomaticBackups
 from lingnexus.runtime import ChatRuntime
 from lingnexus.tasks import TaskRuntime
@@ -102,9 +94,6 @@ def create_app(
         server.state.services.dependencies = server.state.dependencies
         server.state.services.automatic_backups = AutomaticBackups(server.state.services)
         server.state.chat_runtime = ChatRuntime(server.state.services)
-        server.state.learning = ConsolidationWorker(server.state.services)
-        server.state.investigator = ModelInvestigator(server.state.services)
-        server.state.services.activities.investigate = server.state.investigator
 
         def foreground_busy():
             with server.state.services.database.transaction() as db:
@@ -116,16 +105,14 @@ def create_app(
                 )
 
         server.state.background = Supervisor(
-            server.state.services, server.state.learning, foreground_busy=foreground_busy
+            server.state.services, foreground_busy=foreground_busy
         )
         server.state.background.start()
-        server.state.background.activities = server.state.services.activities
         server.state.background.automatic_backups = server.state.services.automatic_backups
         try:
             yield
         finally:
             await server.state.background.aclose()
-            await server.state.investigator.aclose()
             await server.state.chat_runtime.aclose()
             await server.state.dependencies.aclose()
             await server.state.tasks.aclose()
@@ -182,10 +169,8 @@ def create_app(
     def health():
         return {"status": "ok", "version": _package_version()}
 
-    server.include_router(identity.router)
-    server.include_router(history.router)
+    server.include_router(agents.router)
     server.include_router(maintenance.router)
-    server.include_router(development.router)
     server.include_router(models.router)
     server.include_router(content.router)
     server.include_router(chat.router)
@@ -193,19 +178,13 @@ def create_app(
     server.include_router(conversations.router)
     server.include_router(permissions.router)
     server.include_router(background.router)
-    server.include_router(skills.router)
-    server.include_router(activities.router)
     server.include_router(browser.router)
     server.include_router(tasks.router)
-    server.include_router(segments.router)
-    server.include_router(memory.router)
     server.include_router(dependencies.router)
     server.include_router(system.router)
     for router in (
-        identity.router,
-        history.router,
+        agents.router,
         maintenance.router,
-        development.router,
         models.router,
         content.router,
         chat.router,
@@ -213,12 +192,8 @@ def create_app(
         conversations.router,
         permissions.router,
         background.router,
-        skills.router,
-        activities.router,
         browser.router,
         tasks.router,
-        segments.router,
-        memory.router,
         dependencies.router,
         system.router,
     ):

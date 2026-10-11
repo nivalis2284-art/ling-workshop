@@ -14,7 +14,7 @@ from lingnexus.common.types import new_id, utc_now
 from lingnexus.models import APIFamily, ModelGateway, ModelProfile, RuntimeCredentials
 
 from . import attachments
-from .failover import ChatFailover, FailoverBlocked, context_refs
+from .failover import ChatFailover, FailoverBlocked
 from .payload import build_payload
 from .secret_guard import CredentialEcho, SecretGuard
 from .store import MAX_EVENT_CURSOR, RunStore
@@ -57,24 +57,22 @@ COMPLETE_REASONS = {
 class ChatRuntime:
     """One manager per database/process, used on the server's asyncio loop.
 
-    submit(ChatRequest) atomically saves a user source and a run, then schedules
-    the model independently of subscribers. It returns a run dict with id,
-    status, profile_id, conversation_id, user_message_id, self_revision,
-    user_source, assistant_source, context_sources and context_manifest. New fields are null on
-    legacy runs; sources and original events stay replayable without backfill.
-    A repeated (agent_id, request_id) with identical input returns that run,
-    including terminal runs, without another model call or requiring credentials.
-    Different input or an overlapping turn for that agent raises Conflict (409).
+    submit(ChatRequest) atomically saves a user message and a run, then schedules
+    the model independently of subscribers. It returns a run dict with id, status,
+    profile_id, conversation_id, user_message_id and context_manifest. A repeated
+    (agent_id, request_id) with identical input returns that run, including
+    terminal runs, without another model call or requiring credentials. Different
+    input or an overlapping turn for that agent raises Conflict (409).
 
     events(run_id, after=0) yields durable {id, event, data} records. id is a
     positive per-run sequence, and after is exclusive. started carries
-    {run_id, conversation_id};
-    text/thinking carry {run_id, text}; usage carries
+    {run_id, conversation_id}; text/thinking carry {run_id, text}; usage carries
     {run_id, attempt, profile_id, snapshot: true, usage}; complete
-    carries {run_id, status: completed, assistant_source}; error carries
+    carries {run_id, status: completed, assistant_message_id}; error carries
     {run_id, code, message}. Only complete/error end a subscriber. Thinking is
-    provider-returned visible display material, never an assistant source.
-    notice carries a safe code/message; model_switch carries
+    provider-returned visible display material, never an assistant message.
+    notice carries a safe code/message (model_switch, context_truncated,
+    effort_omitted); model_switch carries
     {run_id, from_profile, to_profile, restart: true}. Subscribers must reset
     both visible buffers at that marker. Earlier partial events stay replayable.
 
@@ -85,15 +83,12 @@ class ChatRuntime:
     attempted. Unavailable main calls can restart once on the designated backup;
     that conversation retains its backup binding across subsequent turns.
 
-    Only the selected conversation branch supplies transcript sources. ID-less
-    clients use a persistent default real conversation. ContextBuilder supplies
-    current self instructions without resetting personality on new conversations.
-    Completion and failover revalidate sources (including recall), selected head
-    and self revision atomically. Native continuation is never persisted/replayed.
-    Regeneration selects/reuses a matching user node on the current branch.
-    Attachments are linked to that user node with immutable digests. Only files
-    in included transcript nodes are sent; their bytes are checked again before
-    assistant persistence. Replay uses durable input and never rereads files.
+    Only the selected conversation branch supplies transcript messages. ID-less
+    clients use a persistent default conversation. The request opening is the
+    owner's system instructions, the individual's name, and a recent transcript
+    tail; over-budget context is truncated and reported, never failed. Completion
+    revalidates only the selected head. Attachments are linked to the user message
+    with immutable digests. Replay uses durable input and never rereads files.
     """
 
     def __init__(self, application: "Application", *, client: httpx.AsyncClient | None = None):
@@ -174,36 +169,45 @@ class ChatRuntime:
                     conversation["id"], value.message, request_id=f"chat:{run_id}:user"
                 )
                 attachments.link(self.app, conversation["id"], user["id"], plans)
-            user_ref = user["source"]
-            refs = [node["source"] for node in self.app.conversations.messages(conversation["id"])]
+            user_id = user["id"]
+            messages = self.app.conversations.messages(conversation["id"])
             payload, manifest = build_payload(
-                self.app, value.agent_id, profile, refs
+                self.app, value.agent_id, profile, messages
             )
             db.execute(
                 "INSERT INTO chat_runs(id,agent_id,request_id,fingerprint,profile_id,status,"
-                "user_source_id,user_source_revision,context_sources,created_at,"
-                "conversation_id,user_message_id,self_revision,context_manifest) "
-                "VALUES (?,?,?,?,?,'running',?,?,?,?,?,?,?,?)",
+                "conversation_id,user_message_id,context_manifest,created_at) "
+                "VALUES (?,?,?,?,?,'running',?,?,?,?)",
                 (
                     run_id,
                     value.agent_id,
                     value.request_id,
                     fingerprint,
                     profile_id,
-                    user_ref.id,
-                    user_ref.revision,
-                    json.dumps([r.model_dump() for r in context_refs(refs, manifest)]),
-                    utc_now(),
                     conversation["id"],
-                    user["id"],
-                    manifest["self_revision"],
+                    user_id,
                     json.dumps(manifest),
+                    utc_now(),
                 ),
             )
             self.store.append(
                 run_id, "started", {"run_id": run_id, "conversation_id": conversation["id"]}
             )
-            self.failover.save_selection(run_id, selected, refs)
+            if manifest["truncated_messages"]:
+                self.store.append(
+                    run_id,
+                    "notice",
+                    {
+                        "run_id": run_id,
+                        "code": "context_truncated",
+                        "truncated_messages": manifest["truncated_messages"],
+                        "message": (
+                            "对话超出模型窗口，已丢弃最早的 "
+                            f"{manifest['truncated_messages']} 条消息。"
+                        ),
+                    },
+                )
+            self.failover.save_selection(run_id, selected)
             effort = self.failover.effort(run_id, profile_id, profile, value.effort)
         task = loop.create_task(
             self._execute(run_id, profile, selected.credentials, payload, effort, value.effort)
@@ -332,17 +336,14 @@ class ChatRuntime:
             if run["status"] != "running":
                 return
             try:
-                conversation, _ = self.failover.validate_context(run)
-                attachments.validate_manifest(
-                    self.app, run["agent_id"], run["context_manifest"] or {}
-                )
-                ref = (
+                conversation = self.failover.validate_head(run)
+                message = (
                     self.app.conversations.append_assistant(
                         conversation["id"],
                         text,
                         request_id=f"chat:{run_id}:assistant",
                         expected_head=run["user_message_id"],
-                    )["source"]
+                    )
                     if text
                     else None
                 )
@@ -350,9 +351,8 @@ class ChatRuntime:
                 self._fail(run_id, "context_invalidated")
                 return
             db.execute(
-                "UPDATE chat_runs SET status='completed',assistant_source_id=?,"
-                "assistant_source_revision=?,finished_at=? WHERE id=?",
-                (ref.id if ref else None, ref.revision if ref else None, utc_now(), run_id),
+                "UPDATE chat_runs SET status='completed',finished_at=? WHERE id=?",
+                (utc_now(), run_id),
             )
             self.store.append(
                 run_id,
@@ -360,7 +360,7 @@ class ChatRuntime:
                 {
                     "run_id": run_id,
                     "status": "completed",
-                    "assistant_source": ref.model_dump() if ref else None,
+                    "assistant_message_id": message["id"] if message else None,
                 },
             )
             self.failover.finish_attempt(run_id, "completed")

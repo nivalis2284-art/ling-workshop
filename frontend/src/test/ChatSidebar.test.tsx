@@ -27,13 +27,7 @@ function node(
   text: string,
   parent: string | null,
 ): ConversationMessage {
-  return {
-    id,
-    role,
-    text,
-    parent_id: parent,
-    source: { id: "src-" + id, revision: 1 },
-  };
+  return { id, role, text, parent_id: parent };
 }
 
 /** Two persisted rounds, so a deletion always leaves something to compare with. */
@@ -89,12 +83,6 @@ function backend() {
     if (path === "/api/models") return json([profile]);
     if (path === "/api/models/selection")
       return json({ primary: profile.id, fallback: null });
-    if (path.endsWith("/state"))
-      return json({ agent_id: "ling-1", revision: 0, entries: {} });
-    if (path.endsWith("/proposals") || path.endsWith("/revisions"))
-      return json([]);
-    if (path.includes("/episodes?")) return json([]);
-    if (path.endsWith("/segments")) return json([]);
     throw new Error("Unexpected endpoint: " + path);
   });
   return { requests };

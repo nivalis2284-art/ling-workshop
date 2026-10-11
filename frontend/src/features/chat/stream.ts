@@ -1,17 +1,5 @@
-import type { ChatEvent, SourceRef } from "../../api/types";
+import type { ChatEvent } from "../../api/types";
 import { ChatStreamError } from "./errors";
-
-function isSourceRef(value: unknown): value is SourceRef {
-  return (
-    !!value &&
-    typeof value === "object" &&
-    "id" in value &&
-    typeof value.id === "string" &&
-    "revision" in value &&
-    typeof value.revision === "number" &&
-    Number.isInteger(value.revision)
-  );
-}
 
 function parseEvent(id: string, event: string, json: string): ChatEvent {
   let data: unknown;
@@ -72,7 +60,17 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
       break;
     case "notice":
       if (typeof value.code === "string" && value.code)
-        return { id, event, data: { run_id, code: value.code } };
+        return {
+          id,
+          event,
+          data: {
+            run_id,
+            code: value.code,
+            ...(typeof value.message === "string"
+              ? { message: value.message }
+              : {}),
+          },
+        };
       break;
     case "text":
     case "thinking":
@@ -94,7 +92,9 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
     case "complete":
       if (
         value.status === "completed" &&
-        (value.assistant_source === null || isSourceRef(value.assistant_source))
+        (value.assistant_message_id === null ||
+          (typeof value.assistant_message_id === "string" &&
+            !!value.assistant_message_id))
       )
         return {
           id,
@@ -102,7 +102,7 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
           data: {
             run_id,
             status: "completed",
-            assistant_source: value.assistant_source,
+            assistant_message_id: value.assistant_message_id,
           },
         };
       break;

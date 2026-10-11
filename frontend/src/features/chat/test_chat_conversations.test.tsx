@@ -39,13 +39,7 @@ const node = (
   role: "user" | "assistant",
   text: string,
   parent_id: string | null,
-): ConversationMessage => ({
-  id,
-  role,
-  text,
-  parent_id,
-  source: { id: "source-" + id, revision: 2 },
-});
+): ConversationMessage => ({ id, role, text, parent_id });
 const original = [
   node("u1", "user", "原问题", null),
   node("a1", "assistant", "原回复", "u1"),
@@ -201,9 +195,6 @@ function backend(
         user_message_id: currentUser?.id,
         profile_id: currentRequest.profile_id,
         status: runStatus,
-        user_source: currentUser?.source,
-        assistant_source: null,
-        context_sources: [],
         created_at: "2026-10-09T00:00:00Z",
         finished_at: null,
       });
@@ -369,7 +360,7 @@ test("regenerate reuses exact parent user text and reads the committed replaceme
   server.conversations[0].head_id = replacement.id;
   await server.emit(
     "complete",
-    { status: "completed", assistant_source: replacement.source },
+    { status: "completed", assistant_message_id: replacement.id },
     3,
   );
   expect(await screen.findByText("后端确认的新回复")).toBeVisible();
@@ -381,11 +372,11 @@ test("regenerate reuses exact parent user text and reads the committed replaceme
     }),
   ).toHaveLength(1);
   expect(screen.getByRole("article", { name: "灵的回复" })).toHaveAttribute(
-    "data-source-id",
-    "source-a-new",
+    "data-message-id",
+    "a-new",
   );
   // The user line is reused rather than duplicated; branch switching is no
-  // longer a UI control, so the source id is the observable proof.
+  // longer a UI control, so the message id is the observable proof.
   expect(screen.getByRole("article", { name: "你的消息" })).toHaveAttribute(
     "data-message-id",
     "u1",
@@ -554,7 +545,7 @@ async function secondRound(
   await user.click(screen.getByRole("button", { name: "发送消息" }));
   await server.emit("started", { conversation_id: "c1" }, 1);
   await server.emit("text", { text: "第二条回复" }, 2);
-  await server.emit("complete", { status: "completed", assistant_source: null }, 3);
+  await server.emit("complete", { status: "completed", assistant_message_id: null }, 3);
   await screen.findByText("第二个问题");
 }
 

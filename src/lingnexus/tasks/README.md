@@ -95,16 +95,16 @@ An approved click retains business_outcome=not_verified. Only a later browser_re
 with nonempty expected_text matching the actual untruncated visible DOM supplies
 verification_passed. State reads, successful click dispatch, and model prose cannot
 replace this check. Coding and browser verification requirements both apply to
-mixed tasks. Browser read/effect results receive exact tool SourceRefs for provenance.
+mixed tasks.
 
 ## Persistence and recovery
 
 TASK_TABLES exports tasks, task_checkpoints, task_steps, task_events, task_reviews.
 The tables respectively contain submission/status/budget/outcome, native run state,
 tool/effect intents and results, cursor-addressed events, and reviewed application
-fences. Native continuation is separate from long memory and never contains stored
-RuntimeCredentials. Ordinary granted file/memory calls use app.actions.execute;
-private snapshot file calls and commands use task_steps effect IDs with purpose.
+fences. Native continuation is separate from stored state and never contains stored
+RuntimeCredentials. Ordinary granted file calls use app.actions.execute; private
+snapshot file calls and commands use task_steps effect IDs with purpose.
 
 Continuation uses only ModelGateway complete.response: native Anthropic blocks
 retain signatures/redacted content/tool IDs, Chat retains its assistant message
@@ -127,54 +127,10 @@ drain within their bounded limits so actual results and cleanup flags persist be
 pause/cancel returns. Foreground priority is checked between tools/model calls and
 while waiting for the model lock; an already-started container runs to its bound.
 
-Initial context preserves ContextBuilder's self instructions and adds active skill
-descriptions. read_skill rechecks active ownership and loaded revisions are checked
-before later model requests. Source correction prevents reuse of stale instructions.
-The checkpoint pins ContextBuilder's self_revision. A changed/withdrawn effective
-self blocks with self_changed before model/tool execution and after awaited model
-or tool results. Already completed effects/results remain recorded. Resume does
-not rebuild the native conversation: a self_changed task stays blocked. Explicit
-restart currently means a new submission with a new request_id/current context;
-review the prior task's effects and staged artifacts before restarting. Checkpoints
-created before this fence, with no self_revision, also block rather than silently
-adopting the current self. Native IDs and previous effect records are retained.
-
-Task memory evidence is also fenced. Checkpoints accumulate memory_refs containing
-the kind, ID and revision of each returned episode/knowledge item, and source_refs
-containing exact original slices, each item's actual sources and attached tool
-observations. These references come from actual returned objects; model prose,
-arguments and invented IDs cannot supply evidence. MemoryMaintenance.snapshot_marker
-is captured in the same short SQLite transaction that Actions.execute uses to read
-the content. Pure memory preflight captures original provenance before Actions._finish
-creates its own tool observation; it is used only when the executed result returns
-the identical actual content. SourceInvalid blocks with memory_changed immediately
-instead of becoming a generic failed tool that the model could retry. Recovered
-Actions retain their own returned content and references. Only the four memory
-tools join that outer transaction; generic file operations and network awaits
-run outside it. References retain their original
-revisions throughout recovery and are never replaced with today's memory versions.
-
-Before model/tool work and after awaited results, the runtime revalidates derived
-memory revisions/status and exact source ownership, scope, revision and branch
-visibility. The final check and commit of a final response or tool plan share one
-transaction. Only the same agent's real or external experience is accepted, including
-external observations. Owner correction, archive, delete, source correction or branch
-withdrawal blocks with status=blocked, error_code=memory_changed and verified=false.
-It emits no final or task_completed activity. Already completed effects, results,
-native call IDs and provenance remain recorded. Resume/steer cannot freshen the old
-conversation, even if a source becomes visible again; submit a new task with a new
-request_id to use current memory. Legacy checkpoints containing successful memory
-reads without captured references also block instead of certifying old text.
-
-find_memories/read_episode/find_knowledge/read_source remain existing action tools;
-read_source returns exact original slices and pagination metadata. save_skill creates
-only a candidate after verified work, with sources attached from actual successful
-task step evidence and precise original references. The model cannot supply source
-IDs or activate candidates. Snapshot/command observations have real tool SourceRefs
-for reflection/provenance; raw native continuation never becomes that evidence.
-Actual verified completion emits one deduplicated task_completed activity event
-when Application.activities is present. Failed/uncertain outcomes emit no such event.
-There is no vector service or automatic skill activation.
+Initial context is the owner's system instructions, the individual's name, and the
+selected coding environment. Checkpoints pin the model profile; a profile change
+blocks continuation rather than silently switching. Resume does not rebuild the
+native conversation. Native IDs and previous effect records are retained.
 
 ## Workspace and verification
 
@@ -199,7 +155,7 @@ Events retain actual status, exit_code, stdout/stderr, output_truncated, timed_o
 cleanup_confirmed and container_name. Artifact validation failures are separate
 from container evidence. verification_passed requires purpose=verify, exit 0,
 confirmed cleanup, untruncated output, no timeout and valid artifacts. Writes
-invalidate earlier checks; reading source cannot override failed/stale tests. For
+invalidate earlier checks; a readback cannot override failed/stale tests. For
 ordinary file work, checking expected final contents is verification. Completion
 requires a final response, current verification and no unresolved failures;
 uncertainty becomes needs_review. The marker proves the declared check passed;
@@ -230,6 +186,6 @@ image does not imply that a TypeScript compiler or arbitrary npm packages are in
 ~~~
 
 The 2026-10-10 acceptance layering retired this module's historical suite (live
-Docker, Chrome, and memory-fence cases included; recoverable from git history).
-The smoke layer keeps the real-SQLite write/verify completion path and the
-uncaptured-source fence. Write ad hoc checks when a change needs deeper coverage.
+Docker, Chrome, and long-term-memory cases included; recoverable from git history).
+The smoke layer keeps the real-SQLite write/verify completion path. Write ad hoc
+checks when a change needs deeper coverage.

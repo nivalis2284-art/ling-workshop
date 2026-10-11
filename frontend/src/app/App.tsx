@@ -7,13 +7,9 @@ import { ErrorNotice, Loading, Mark } from "../shared/ui";
 import { Connect } from "../features/onboarding/Connect";
 import { CreateAgent } from "../features/onboarding/CreateAgent";
 import { OverviewPage } from "../features/overview/OverviewPage";
-import { IdentityPage } from "../features/identity/IdentityPage";
-import { MemoryPage } from "../features/memory/MemoryPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { ContentPage } from "../features/content/ContentPage";
 import { TasksPage } from "../features/tasks/TasksPage";
-import { ActivitiesPage } from "../features/activities/ActivitiesPage";
-import { SkillsPage } from "../features/skills/SkillsPage";
 import { BrowserPage } from "../features/browser/BrowserPage";
 import { BackgroundPage } from "../features/background/BackgroundPage";
 import { ChatPage } from "../features/chat/ChatPage";
@@ -61,9 +57,8 @@ function AgentWorkspace({
     >
       <div key={agent.id}>
         {page === "overview" && (
-          <OverviewPage api={api} agent={agent} navigate={setPage} />
+          <OverviewPage agent={agent} navigate={setPage} />
         )}
-        {page === "identity" && <IdentityPage api={api} agent={agent} />}
         {page === "chat" && (
           <ChatPage
             api={api}
@@ -73,7 +68,6 @@ function AgentWorkspace({
             openSettings={() => setPage("settings")}
           />
         )}
-        {page === "memory" && <MemoryPage api={api} agent={agent} />}
         {page === "content" && <ContentPage api={api} agent={agent} />}
         {page === "tasks" && (
           <TasksPage
@@ -82,8 +76,6 @@ function AgentWorkspace({
             openBrowser={() => setPage("browser")}
           />
         )}
-        {page === "activities" && <ActivitiesPage api={api} agent={agent} />}
-        {page === "skills" && <SkillsPage api={api} agent={agent} />}
         {page === "browser" && <BrowserPage api={api} agent={agent} />}
         {page === "background" && <BackgroundPage api={api} agent={agent} />}
         {page === "settings" && (

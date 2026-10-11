@@ -1,16 +1,21 @@
-"""Selected conversation paths; original message nodes remain viewable."""
+"""Conversation branches; a selected path is read from the conversation head.
+
+Messages hold their own text. There is no source table, revision, visibility or
+recall here: the selected branch is exactly the chain reached by following
+`parent_id` up from `conversations.head_id`.
+"""
 
 from __future__ import annotations
 
 import json
 
 from lingnexus.common.errors import Conflict, NotFound, PermissionDenied, RevisionConflict
-from lingnexus.common.types import SourceRef, new_id, utc_now
+from lingnexus.common.types import new_id, utc_now
 
 
 class Conversations:
-    def __init__(self, database, history):
-        self.database, self.history = database, history
+    def __init__(self, database):
+        self.database = database
 
     def create(self, agent_id: str, title: str) -> dict:
         if not title.strip():
@@ -69,8 +74,6 @@ class Conversations:
             ).fetchone()
             if row is None:
                 raise NotFound("消息不属于该交流")
-            ref = SourceRef(id=row["source_id"], revision=row["source_revision"])
-            source = self.history.read(ref, active_only=False)
             attachments = [
                 value[0]
                 for value in db.execute(
@@ -78,11 +81,7 @@ class Conversations:
                     (message_id,),
                 )
             ]
-            return dict(row) | {
-                "source": ref,
-                "text": source["text"],
-                "attachment_ids": attachments,
-            }
+            return dict(row) | {"attachment_ids": attachments}
 
     def _path(self, conversation_id: str, head: str | None) -> list[dict]:
         nodes, seen = [], set()
@@ -142,26 +141,11 @@ class Conversations:
             parent_id = parent if fork else value["head_id"]
             if parent_id:
                 self._node(conversation_id, parent_id)
-            ref = self.history.add(
-                value["agent_id"],
-                text,
-                kind=role,
-                scope=value["scope"],
-                request_id=f"conversation:{conversation_id}:{request_id}",
-            )
             mid = new_id()
             db.execute(
-                "INSERT INTO conversation_messages VALUES (?,?,?,?,?,?,?,?)",
-                (
-                    mid,
-                    conversation_id,
-                    parent_id,
-                    ref.id,
-                    ref.revision,
-                    role,
-                    request_id,
-                    utc_now(),
-                ),
+                "INSERT INTO conversation_messages"
+                "(id,conversation_id,parent_id,role,request_id,text,created_at) VALUES (?,?,?,?,?,?,?)",
+                (mid, conversation_id, parent_id, role, request_id, text, utc_now()),
             )
             self.select_head(conversation_id, mid)
             return self._node(conversation_id, mid)
@@ -193,16 +177,10 @@ class Conversations:
             )
 
     def select_head(self, conversation_id: str, message_id: str) -> dict:
+        """Point the conversation at a branch; the path is read back from this head."""
         with self.database.transaction() as db:
-            value = self.read(conversation_id)
-            old = self._path(conversation_id, value["head_id"])
-            selected = self._path(conversation_id, message_id)
-            selected_ids = {node["id"] for node in selected}
-            for node in old:
-                if node["id"] not in selected_ids:
-                    self.history.set_visible(node["source"], False)
-            for node in selected:
-                self.history.set_visible(node["source"], True)
+            self.read(conversation_id)
+            self._path(conversation_id, message_id)
             db.execute(
                 "UPDATE conversations SET head_id=? WHERE id=?", (message_id, conversation_id)
             )
@@ -212,9 +190,9 @@ class Conversations:
         """Remove whole turns from the selected path.
 
         A turn is a user message plus the assistant replies that follow it. The
-        surviving messages are re-linked into one chain, the sources of the removed
-        messages are deactivated (which retires memory derived from them), and the
-        removed nodes — including old branches hanging below them — are deleted.
+        surviving messages are re-linked into one chain, and the removed nodes —
+        including old branches hanging below them — are deleted. Rows in tables
+        that reference messages are cleared first so the deletes stay valid.
         """
         with self.database.transaction() as db:
             value = self.read(conversation_id)
@@ -268,9 +246,6 @@ class Conversations:
                         level[child] = level[current] + 1
                         queue.append(child)
             doomed = set(level)
-            for node in path:
-                if node["id"] in doomed:
-                    self.history.set_visible(node["source"], False)
             db.executemany(
                 "DELETE FROM conversation_attachments WHERE message_id=?",
                 [(mid,) for mid in doomed],
@@ -279,6 +254,8 @@ class Conversations:
                 "UPDATE chat_runs SET user_message_id=NULL WHERE user_message_id=?",
                 [(mid,) for mid in doomed],
             )
+            # Topic segments (a second-part table) reference messages by id; their
+            # rows must go before the messages or the foreign key blocks the delete.
             db.executemany(
                 "DELETE FROM conversation_segments WHERE start_message_id=? OR last_message_id=?",
                 [(mid, mid) for mid in doomed],

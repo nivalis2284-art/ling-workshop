@@ -85,7 +85,6 @@ function backend(
     role: "user",
     text: "原问题",
     parent_id: null,
-    source: { id: "source-user", revision: 1 },
     ...(options.oldAttachments
       ? { attachment_ids: options.oldAttachments }
       : {}),
@@ -97,7 +96,6 @@ function backend(
       role: "assistant",
       text: "原回复",
       parent_id: "user",
-      source: { id: "source-answer", revision: 1 },
     },
   ];
   let releaseUpload: ((response: Response) => void) | undefined;

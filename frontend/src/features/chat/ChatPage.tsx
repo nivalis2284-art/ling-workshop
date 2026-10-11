@@ -8,7 +8,6 @@ import { ChatComposer } from "./ChatComposer";
 import { ChatControls } from "./ChatControls";
 import { ChatHeader } from "./ChatHeader";
 import { ChatTranscript } from "./ChatTranscript";
-import { SegmentPanel } from "./SegmentPanel";
 import { ChatSession, isPending } from "./session";
 import type { ConversationList } from "./useConversations";
 import { useChatAttachments } from "./useChatAttachments";
@@ -27,7 +26,6 @@ export function ChatPage({
   conversations: ConversationList;
   openSettings: () => void;
 }) {
-  const [segmentsOpen, setSegmentsOpen] = useState(false);
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState(new Set<string>());
@@ -131,23 +129,10 @@ export function ChatPage({
           selecting={selecting}
           canSelect={!!userTurns && !disabled}
           onSelectTurns={() => (selecting ? stopSelecting() : setSelecting(true))}
-          segmentsOpen={segmentsOpen}
-          onToggleSegments={() => setSegmentsOpen(!segmentsOpen)}
           onOpenSettings={openSettings}
           disabled={locked}
         />
         <div className="chat-column">
-        {segmentsOpen && state.conversationId && (
-          <div className="chat-segments">
-            <SegmentPanel
-              key={state.conversationId}
-              api={api}
-              conversationId={state.conversationId}
-              messages={state.messages}
-              disabled={locked}
-            />
-          </div>
-        )}
         {models.status === "loading" && <Loading label="正在读取对话模型…" />}
         {models.status === "error" && (
           <ErrorNotice
@@ -336,7 +321,7 @@ export function ChatPage({
             <h2 id="chat-confirm-heading">删除这一轮？</h2>
             <p>
               将删除 {confirming.length} 轮。这些内容会从对话中消失，之后发给模型的
-              请求里不再出现；由它们产生的记忆和身份变化也会一起作废，删除后无法撤销。
+              请求里不再出现，删除后无法撤销。
             </p>
             <div className="button-row">
               <button

@@ -145,7 +145,7 @@ test("chat requests use owner authorization, omit cookies and preserve replay id
     return path.endsWith("/cancel") || path.endsWith("run%2F1")
       ? new Response('{"id":"run/1","status":"cancelled"}')
       : streamResponse(
-          'id: 1\nevent: complete\ndata: {"run_id":"run/1","status":"completed","assistant_source":null}\n\n',
+          'id: 1\nevent: complete\ndata: {"run_id":"run/1","status":"completed","assistant_message_id":null}\n\n',
         );
   });
   const api = new LingApi("test-owner", () => {});
@@ -186,7 +186,7 @@ test("SSE parsing streams split UTF-8, multiline data and event ids independentl
         'id: 2\nevent: thinking\ndata: {"run_id":"run-1","text":"想一想"}\n\n' +
         'id: 3\nevent: text\ndata: {"run_id":"run-1",\ndata: "text":"你好，灵"}\n\n' +
         'id: 4\nevent: usage\ndata: {"run_id":"run-1","usage":{"input_tokens":5,"output_tokens":4,"total_tokens":9,"reasoning_tokens":null}}\n\n' +
-        'id: 5\nevent: complete\ndata: {"run_id":"run-1","status":"completed","assistant_source":{"id":"source-1","revision":1}}\n\n',
+        'id: 5\nevent: complete\ndata: {"run_id":"run-1","status":"completed","assistant_message_id":"message-1"}\n\n',
     ),
     (event) => events.push(event),
     new AbortController().signal,
@@ -214,7 +214,7 @@ test("SSE parsing streams split UTF-8, multiline data and event ids independentl
       data: {
         run_id: "run-1",
         status: "completed",
-        assistant_source: { id: "source-1", revision: 1 },
+        assistant_message_id: "message-1",
       },
     },
   ]);
@@ -240,7 +240,7 @@ test("started preserves conversation membership and model switches are parsed ac
     streamResponse(
       'id: 1\nevent: started\ndata: {"run_id":"run-1","conversation_id":"conversation-1"}\n\n' +
         'id: 2\nevent: model_switch\ndata: {"run_id":"run-1","from_profile":"primary","to_profile":"backup","restart":true}\n\n' +
-        'id: 3\nevent: complete\ndata: {"run_id":"run-1","status":"completed","assistant_source":null}\n\n',
+        'id: 3\nevent: complete\ndata: {"run_id":"run-1","status":"completed","assistant_message_id":null}\n\n',
     ),
     (event) => events.push(event),
     new AbortController().signal,
@@ -256,7 +256,7 @@ test.each([
   "id: 1\nevent: text\ndata: {invalid}\n\n",
   'id: 1\nevent: text\ndata: {"run_id":"run-1","text":123}\n\n',
   'id: 1\nevent: text\ndata: {"text":"missing run"}\n\n',
-  'id: 1\nevent: complete\ndata: {"run_id":"run-1","status":"running","assistant_source":null}\n\n',
+  'id: 1\nevent: complete\ndata: {"run_id":"run-1","status":"running","assistant_message_id":null}\n\n',
 ])("malformed events do not enter the visible transcript", async (text) => {
   const events: ChatEvent[] = [];
   await expect(

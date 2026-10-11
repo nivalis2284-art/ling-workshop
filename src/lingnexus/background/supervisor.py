@@ -1,10 +1,14 @@
-"""A single background coordinator; work never belongs to a browser request."""
+"""A single background coordinator; work never belongs to a browser request.
+
+The first part's background drives automatic backups only. The long-term part's
+consolidation worker and proactive attention are not assembled and must not be
+referenced here.
+"""
 
 import asyncio
 import json
 from collections.abc import Callable
 
-from lingnexus.activities import ActivityService
 from lingnexus.maintenance.automatic import AutomaticBackups
 
 
@@ -12,30 +16,26 @@ class Supervisor:
     def __init__(
         self,
         app,
-        learning,
         *,
         foreground_busy: Callable[[], bool] | None = None,
         interval_seconds: float = 20,
     ):
-        self.app, self.learning = app, learning
+        self.app = app
         self.foreground_busy = foreground_busy or (lambda: False)
         self.interval = interval_seconds
         self._lock = asyncio.Lock()
         self._loop_task: asyncio.Task | None = None
         self._work_task: asyncio.Task | None = None
         self._last_result: dict | None = None
-        self.activities: ActivityService | None = None
         self.automatic_backups: AutomaticBackups | None = None
 
     def status(self) -> dict:
         with self.app.database.transaction() as db:
             row = db.execute("SELECT value FROM settings WHERE key='background_enabled'").fetchone()
             enabled = json.loads(row[0]) if row else True
-            queued = db.execute("SELECT count(*) FROM jobs WHERE status='queued'").fetchone()[0]
         return {
             "enabled": enabled,
             "working": self._lock.locked(),
-            "queued": queued,
             "last_result": self._last_result,
             "interval_seconds": self.interval,
         }
@@ -60,17 +60,11 @@ class Supervisor:
         if self._lock.locked():
             return {"status": "busy"}
         async with self._lock:
-            if self.automatic_backups is not None:
-                await asyncio.to_thread(self.automatic_backups.tick)
-            if self.activities is not None:
-                activity = await self.activities.tick()
-                if activity is not None:
-                    result = {"status": "activity", "activity": activity}
-                    self._last_result = result
-                    return result
-            result = await self.learning.run_once()
-            self._last_result = result
-            return result
+            if self.automatic_backups is None:
+                return {"status": "unavailable"}
+            result = await asyncio.to_thread(self.automatic_backups.tick)
+            self._last_result = {"status": "ok", "backup_created": bool(result.get("created"))}
+            return self._last_result
 
     def start(self) -> None:
         if self._loop_task is None or self._loop_task.done():
@@ -99,4 +93,3 @@ class Supervisor:
         await asyncio.gather(
             *(t for t in (self._work_task, self._loop_task) if t), return_exceptions=True
         )
-        await self.learning.aclose()

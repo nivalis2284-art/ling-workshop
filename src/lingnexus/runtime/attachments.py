@@ -1,8 +1,8 @@
-"""User-node attachment provenance, bounded extraction and native content blocks.
+"""User-message attachment provenance, bounded extraction and native content blocks.
 
-Only links reached through selected transcript refs are inspected. Blob reads and
-capability checks happen after the finite history budget chooses a recent tail.
-Uploads are never implicitly added to chat or recall.
+Only links on the selected transcript messages are inspected. Blob reads and
+capability checks happen after the finite budget chooses a recent tail. Uploads
+are never implicitly added to a conversation.
 """
 
 import base64
@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from lingnexus.common.errors import Conflict, ContextTooLarge, DomainError, PermissionDenied
-from lingnexus.common.types import SourceRef
 from lingnexus.models import APIFamily, ModelProfile
 
 MAX_TEXT_BYTES = 12000
@@ -49,11 +48,11 @@ class AttachmentPlan:
     def native_bytes(self) -> int:
         return self.item["byte_count"] if self.mode != "text" else 0
 
-    def manifest(self, source: SourceRef) -> dict:
+    def manifest(self, message_id: str) -> dict:
         return {
             "id": self.item["id"],
             "sha256": self.item["sha256"],
-            "source": source.model_dump(),
+            "message_id": message_id,
             "byte_count": self.item["byte_count"],
             "mode": self.mode,
             "status": "partial" if self.truncated else self.item["status"],
@@ -64,12 +63,10 @@ class AttachmentPlan:
         }
 
 
-def describe(app, agent_id: str, attachment_id: str, *, sha256: str | None = None):
+def describe(app, agent_id: str, attachment_id: str):
     item = app.attachments.read(attachment_id)
     if item["agent_id"] != agent_id:
         raise PermissionDenied("Attachment belongs to another agent.")
-    if sha256 is not None and item["sha256"] != sha256:
-        raise DomainError("Attachment digest changed after linking.")
     if not 0 < item["byte_count"] <= 25 * 1024 * 1024:
         raise DomainError("Attachment byte count is invalid.")
     extension = Path(item["original_name"]).suffix.lower()
@@ -143,15 +140,14 @@ def linked(app, message_id: str) -> list[dict]:
         ]
 
 
-def for_source(app, agent_id: str, source: SourceRef) -> list[AttachmentPlan]:
+def for_message(app, agent_id: str, message_id: str) -> list[AttachmentPlan]:
     with app.database.transaction() as db:
         rows = db.execute(
-            "SELECT a.attachment_id,a.sha256 FROM conversation_attachments a "
-            "JOIN conversation_messages m ON m.id=a.message_id "
-            "WHERE m.source_id=? AND m.source_revision=? ORDER BY a.ordinal",
-            (source.id, source.revision),
+            "SELECT attachment_id FROM conversation_attachments "
+            "WHERE message_id=? ORDER BY ordinal",
+            (message_id,),
         ).fetchall()
-        return [describe(app, agent_id, row[0], sha256=row[1]) for row in rows]
+        return [describe(app, agent_id, row[0]) for row in rows]
 
 
 def verify_blob(app, plan: AttachmentPlan) -> bytes:
@@ -251,9 +247,3 @@ def content(app, profile: ModelProfile, text: str, plans: list[AttachmentPlan]) 
             block = {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{encoded}"}}
         blocks.append(block)
     return blocks
-
-
-def validate_manifest(app, agent_id: str, manifest: dict) -> None:
-    for entry in manifest.get("attachments", []):
-        plan = describe(app, agent_id, entry["id"], sha256=entry["sha256"])
-        verify_blob(app, plan)

@@ -1,4 +1,4 @@
-"""Durable Agent tasks, separate from foreground chat and background learning."""
+"""Durable Agent tasks, separate from foreground chat and background backups."""
 
 from .service import TaskRuntime
 from .store import TASK_TABLES

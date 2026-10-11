@@ -95,8 +95,6 @@ function SavedMessage({
       className={"chat-message " + (user ? "chat-user" : "chat-assistant")}
       aria-label={user ? "你的消息" : name + "的回复"}
       data-message-id={message.id}
-      data-source-id={message.source.id}
-      data-source-revision={message.source.revision}
     >
       <div className="chat-message-head">
         {selecting && user && (
@@ -241,12 +239,8 @@ export function ChatTranscript({
   const follow = useRef(true);
   const last = state.turns.at(-1);
   const committed =
-    last?.assistantSource &&
-    state.messages.some(
-      (message) =>
-        message.source.id === last.assistantSource!.id &&
-        message.source.revision === last.assistantSource!.revision,
-    );
+    last?.assistantMessageId &&
+    state.messages.some((message) => message.id === last.assistantMessageId);
   const live =
     last &&
     !committed &&
@@ -289,9 +283,7 @@ export function ChatTranscript({
           name={name}
           disabled={disabled}
           turn={state.turns.find(
-            (turn) =>
-              turn.assistantSource?.id === message.source.id &&
-              turn.assistantSource.revision === message.source.revision,
+            (turn) => turn.assistantMessageId === message.id,
           )}
           canRegenerate={
             canRegenerate &&

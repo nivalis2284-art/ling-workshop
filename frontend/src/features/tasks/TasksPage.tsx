@@ -7,7 +7,6 @@ import { ResourceNotice } from "./ManagementUi";
 import { useManagementResource } from "./useManagementResource";
 import { TaskForm } from "./TaskForm";
 import { TaskDetails } from "./TaskDetails";
-import { GoalsPanel } from "../development/GoalsPanel";
 import { BrowserPage } from "../browser/BrowserPage";
 
 export function TasksPage({
@@ -109,7 +108,6 @@ export function TasksPage({
           <BrowserPage api={api} agent={agent} />
         </section>
       )}
-      <GoalsPanel api={api} agent={agent} />
     </div>
   );
 }

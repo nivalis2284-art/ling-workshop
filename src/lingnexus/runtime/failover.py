@@ -9,9 +9,7 @@ import json
 from dataclasses import dataclass
 
 from lingnexus.common.errors import Conflict, ContextTooLarge, DomainError, PermissionDenied
-from lingnexus.common.types import SourceRef, utc_now
-from lingnexus.identity.policy import validate_experience
-from lingnexus.memory.maintenance import MemoryMaintenance
+from lingnexus.common.types import utc_now
 from lingnexus.models import ModelEvent, ModelProfile, RuntimeCredentials, Usage
 
 from .payload import build_payload
@@ -88,12 +86,6 @@ def unavailable(event: ModelEvent) -> bool:
     )
 
 
-def context_refs(refs: list[SourceRef], manifest: dict) -> list[SourceRef]:
-    """Recall is validation evidence, not a message in the conversation tree."""
-    values = [*refs, *(SourceRef.model_validate(v) for v in manifest.get("recall_sources", []))]
-    return list({(r.id, r.revision): r for r in values}.values())
-
-
 @dataclass(frozen=True)
 class Selection:
     requested: str | None
@@ -142,7 +134,7 @@ class ChatFailover:
             raise DomainError("The selected model does not support streaming.")
         return Selection(requested, initial, main, fallback, pid, profile, credentials, reason)
 
-    def save_selection(self, run_id: str, selected: Selection, refs: list[SourceRef]) -> None:
+    def save_selection(self, run_id: str, selected: Selection) -> None:
         with self.app.database.transaction() as db:
             db.execute(
                 "INSERT INTO chat_run_profiles VALUES (?,?,?,?,?,?,?)",
@@ -153,7 +145,7 @@ class ChatFailover:
                     selected.main,
                     selected.fallback,
                     selected.reason,
-                    json.dumps([r.model_dump() for r in refs]),
+                    json.dumps([]),
                 ),
             )
             if selected.reason == "credentials_failover":
@@ -178,39 +170,12 @@ class ChatFailover:
             return None
         return requested
 
-    def validate_context(self, run: dict) -> tuple[dict, list[SourceRef]]:
+    def validate_head(self, run: dict) -> dict:
+        """The selected branch must not have moved while the reply was generating."""
         conversation = self.app.conversations.for_chat(run["agent_id"], run["conversation_id"])
         if conversation["head_id"] != run["user_message_id"]:
             raise Conflict("The selected conversation head changed.")
-        if self.app.identity.current(run["agent_id"]).revision != run["self_revision"]:
-            raise Conflict("The current self state changed.")
-        refs = [SourceRef.model_validate(v) for v in run["context_sources"]]
-        MemoryMaintenance(self.app).validate_markers(
-            run["agent_id"], (run["context_manifest"] or {}).get("memory_refs", [])
-        )
-        self._validate_sources(run["agent_id"], refs, conversation, run["context_manifest"] or {})
-        return conversation, refs
-
-    def _validate_sources(
-        self, agent_id: str, refs: list[SourceRef], conversation: dict, manifest: dict
-    ):
-        recalled = {(r["id"], r["revision"]) for r in manifest.get("recall_sources", [])}
-        # A transcript reference always retains exact scope, even if it also
-        # occurs in recall provenance. External user messages cannot become real.
-        transcript = {
-            (n["source"].id, n["source"].revision)
-            for n in self.app.conversations.messages(conversation["id"])
-        }
-        recall_refs, conversation_refs = [], []
-        for ref in refs:
-            key = (ref.id, ref.revision)
-            (
-                recall_refs if key in recalled and key not in transcript else conversation_refs
-            ).append(ref)
-        if conversation_refs:
-            self.app.history.validate_refs(agent_id, conversation_refs)
-        if recall_refs:
-            validate_experience(self.app.history, agent_id, recall_refs)
+        return conversation
 
     def retry(self, run_id: str, event: ModelEvent):
         """Return a fresh backup call or None; all switch effects commit atomically."""
@@ -237,10 +202,7 @@ class ChatFailover:
             ):
                 return None
             try:
-                conversation, _ = self.validate_context(run)
-                refs = [
-                    SourceRef.model_validate(v) for v in json.loads(policy["conversation_sources"])
-                ]
+                conversation = self.validate_head(run)
             except (DomainError, TypeError, ValueError):
                 raise FailoverBlocked("context_invalidated") from None
             try:
@@ -252,27 +214,15 @@ class ChatFailover:
             if not profile.capabilities.streaming:
                 raise FailoverBlocked("profile_unavailable")
             try:
-                payload, manifest = build_payload(
-                    self.app,
-                    run["agent_id"],
-                    profile,
-                    refs,
-                )
-                if manifest["self_revision"] != run["self_revision"]:
-                    raise Conflict("The current self state changed.")
-                checked_refs = context_refs(
-                    refs,
-                    manifest,
-                )
-                self.validate_context(run)
-                self._validate_sources(run["agent_id"], checked_refs, conversation, manifest)
+                messages = self.app.conversations.messages(conversation["id"])
+                payload, manifest = build_payload(self.app, run["agent_id"], profile, messages)
             except ContextTooLarge:
                 raise FailoverBlocked("context_unavailable") from None
             except (DomainError, TypeError, ValueError):
                 raise FailoverBlocked("context_invalidated") from None
             db.execute(
-                "UPDATE chat_runs SET context_sources=?,context_manifest=? WHERE id=?",
-                (json.dumps([r.model_dump() for r in checked_refs]), json.dumps(manifest), run_id),
+                "UPDATE chat_runs SET context_manifest=? WHERE id=?",
+                (json.dumps(manifest), run_id),
             )
             self._notice(run_id, run["profile_id"], backup, error.code)
             self._switch(run_id, run["profile_id"], backup)

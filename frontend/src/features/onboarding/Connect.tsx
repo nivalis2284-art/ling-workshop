@@ -20,7 +20,7 @@ export function Connect({ expired = false }: { expired?: boolean }) {
         <ol className="steps">
           <li>打开电脑上的 LingNexus 启动器，确认服务已启动。</li>
           <li>使用启动器提供的浏览器入口进入此页面。</li>
-          <li>连接后，就可以查看你的灵、审阅变化和浏览记忆。</li>
+          <li>连接后，就可以和你的灵对话、上传资料并交办任务。</li>
         </ol>
         <div className="notice">
           <LockKeyhole size={19} aria-hidden="true" />

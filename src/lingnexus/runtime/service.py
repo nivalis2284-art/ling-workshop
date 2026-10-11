@@ -14,6 +14,7 @@ import httpx
 from lingnexus.actions.dispatch import ToolDispatcher
 from lingnexus.common.errors import Conflict, DomainError
 from lingnexus.common.types import new_id, utc_now
+from lingnexus.configuration.settings import read_int
 from lingnexus.models import (
     APIFamily,
     ModelEvent,
@@ -656,19 +657,9 @@ class ChatRuntime:
         )
 
     def _max_steps(self) -> int:
-        with self.app.database.transaction() as db:
-            row = db.execute(
-                "SELECT value FROM settings WHERE key=?", (MAX_STEPS_SETTING,)
-            ).fetchone()
-        if row is None:
-            return DEFAULT_MAX_STEPS
-        try:
-            value = json.loads(row[0])
-        except (TypeError, ValueError):
-            return DEFAULT_MAX_STEPS
-        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
-            return value
-        return DEFAULT_MAX_STEPS
+        return read_int(
+            self.app.database, MAX_STEPS_SETTING, DEFAULT_MAX_STEPS, minimum=1
+        )
 
     def _complete(self, run_id: str, text: str) -> None:
         with self.app.database.transaction() as db:

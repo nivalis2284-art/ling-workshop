@@ -6,6 +6,7 @@ from threading import RLock
 from lingnexus.common.errors import NotFound, PermissionDenied
 from lingnexus.common.types import new_id
 from lingnexus.configuration.credential_cache import CredentialCache
+from lingnexus.configuration.settings import read_json, write_json
 from lingnexus.models import ModelProfile, RuntimeCredentials
 
 
@@ -100,16 +101,13 @@ class Profiles:
                 ):
                     raise NotFound("所选模型连接不存在")
             value = {"primary": primary, "fallback": fallback}
-            db.execute(
-                "INSERT INTO settings VALUES ('model_selection',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (json.dumps(value),),
-            )
+            write_json(self.database, "model_selection", value)
             return value
 
     def selection(self) -> dict:
-        with self.database.transaction() as db:
-            row = db.execute("SELECT value FROM settings WHERE key='model_selection'").fetchone()
-            return json.loads(row[0]) if row else {"primary": None, "fallback": None}
+        return read_json(
+            self.database, "model_selection", {"primary": None, "fallback": None}
+        )
 
     def clear_credentials(self) -> None:
         with self._lock:

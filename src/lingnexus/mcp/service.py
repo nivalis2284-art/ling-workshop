@@ -18,6 +18,7 @@ import json
 from pydantic import BaseModel, ConfigDict
 
 from lingnexus.actions.registry import ToolSpec
+from lingnexus.configuration.settings import read_json
 
 from .client import HttpTransport, McpConnection, StdioTransport
 from .protocol import McpError, remote_tool_name, split_remote_tool
@@ -104,14 +105,11 @@ class McpService:
         return bool(self.servers())
 
     def servers(self) -> list[ServerConfig]:
-        with self._database.transaction() as db:
-            row = db.execute(
-                "SELECT value FROM settings WHERE key=?", (SETTINGS_KEY,)
-            ).fetchone()
-        if row is None:
+        value = read_json(self._database, SETTINGS_KEY, None)
+        if value is None:
             return []
         try:
-            return parse_servers(json.loads(row[0]))
+            return parse_servers(value)
         except (TypeError, ValueError):
             return []
 

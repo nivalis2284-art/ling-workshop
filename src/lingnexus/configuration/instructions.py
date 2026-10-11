@@ -5,7 +5,7 @@ never appears in proposal candidates, and is not touched by identity rollback.
 Each individual keeps its own list.
 """
 
-import json
+from lingnexus.configuration.settings import clear, read_json, write_json
 
 KEY_PREFIX = "owner.instructions:"
 
@@ -32,16 +32,7 @@ class OwnerInstructions:
 
     def stored(self, agent_id: str) -> list[str] | None:
         """Return the owner's list, or None when it was never customized."""
-        with self.database.transaction() as db:
-            row = db.execute(
-                "SELECT value FROM settings WHERE key=?", (self._key(agent_id),)
-            ).fetchone()
-        if row is None:
-            return None
-        try:
-            value = json.loads(row[0])
-        except (TypeError, ValueError):
-            return None
+        value = read_json(self.database, self._key(agent_id), None)
         if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
             return None
         return _clean(value)
@@ -65,17 +56,11 @@ class OwnerInstructions:
             raise ValueError(f"系统指令最多 {MAX_RULES} 条")
         # An intentionally empty list is stored as empty; reset() is the way back
         # to the program defaults.
-        with self.database.transaction() as db:
-            db.execute(
-                "INSERT INTO settings VALUES (?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (self._key(agent_id), json.dumps(cleaned, ensure_ascii=False)),
-            )
+        write_json(self.database, self._key(agent_id), cleaned)
         return self.view(agent_id)
 
     def reset(self, agent_id: str) -> dict:
-        with self.database.transaction() as db:
-            db.execute("DELETE FROM settings WHERE key=?", (self._key(agent_id),))
+        clear(self.database, self._key(agent_id))
         return self.view(agent_id)
 
 

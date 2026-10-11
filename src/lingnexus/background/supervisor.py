@@ -6,9 +6,9 @@ referenced here.
 """
 
 import asyncio
-import json
 from collections.abc import Callable
 
+from lingnexus.configuration.settings import read_json, write_json
 from lingnexus.maintenance.automatic import AutomaticBackups
 
 
@@ -30,9 +30,7 @@ class Supervisor:
         self.automatic_backups: AutomaticBackups | None = None
 
     def status(self) -> dict:
-        with self.app.database.transaction() as db:
-            row = db.execute("SELECT value FROM settings WHERE key='background_enabled'").fetchone()
-            enabled = json.loads(row[0]) if row else True
+        enabled = read_json(self.app.database, "background_enabled", True)
         return {
             "enabled": enabled,
             "working": self._lock.locked(),
@@ -43,11 +41,7 @@ class Supervisor:
     def configure(self, *, enabled: bool) -> dict:
         if type(enabled) is not bool:
             raise ValueError("后台开关必须为布尔值")
-        with self.app.database.transaction() as db:
-            db.execute(
-                "INSERT INTO settings VALUES ('background_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (json.dumps(enabled),),
-            )
+        write_json(self.app.database, "background_enabled", enabled)
         if not enabled and self._work_task and not self._work_task.done():
             self._work_task.cancel()
         return self.status()

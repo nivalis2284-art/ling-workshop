@@ -5,10 +5,10 @@ engine is probed but never switches the tier by itself; only an explicit owner
 choice changes it.
 """
 
-import json
 from typing import Literal
 
 from lingnexus.common.errors import PermissionDenied
+from lingnexus.configuration.settings import read_choice, write_json
 from lingnexus.tools import (
     ExecutionLimits,
     LocalLimits,
@@ -42,15 +42,7 @@ class SandboxService:
         return self._engine
 
     def level(self) -> str:
-        with self.database.transaction() as db:
-            row = db.execute("SELECT value FROM settings WHERE key=?", (SETTING_KEY,)).fetchone()
-        if row is None:
-            return "local"
-        try:
-            value = json.loads(row[0])
-        except (TypeError, ValueError):
-            return "local"
-        return value if value in _LEVELS else "local"
+        return read_choice(self.database, SETTING_KEY, "local", _LEVELS)
 
     def available_levels(self) -> list[str]:
         levels = ["local"]
@@ -65,12 +57,7 @@ class SandboxService:
         engine = self.probe()
         if level == "container" and not engine["available"]:
             raise PermissionDenied("本机没有可用的容器引擎，无法切换到容器隔离。")
-        with self.database.transaction() as db:
-            db.execute(
-                "INSERT INTO settings VALUES (?,?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (SETTING_KEY, json.dumps(level)),
-            )
+        write_json(self.database, SETTING_KEY, level)
         return self.info()
 
     def info(self) -> dict:

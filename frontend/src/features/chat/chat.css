@@ -615,3 +615,121 @@
   line-height: 1.7;
   margin: 0 0 18px;
 }
+
+/* --- 对话循环：工具调用 / 运行控制 / 副作用确认 --- */
+.chat-tools {
+  list-style: none;
+  margin: 4px 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.chat-tool {
+  border: 1px solid #d7dfd3;
+  border-radius: 10px;
+  background: #fafbf7;
+  padding: 6px 10px;
+}
+.chat-tool.blocked {
+  border-color: #e2c4b9;
+  background: #fbf3ef;
+}
+.chat-tool-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+.chat-tool-name {
+  color: #315e4b;
+  font-weight: 600;
+}
+.chat-tool-status {
+  color: var(--muted);
+  font-size: 11px;
+}
+.chat-tool-preview {
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: #eff3ea;
+  color: #5f6a5c;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.chat-run-controls {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 24px 4px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.chat-run-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.chat-guide {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.chat-guide input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d7dfd3;
+  border-radius: 10px;
+  background: var(--paper);
+  padding: 7px 11px;
+  font-size: 13px;
+}
+.chat-guide input:focus-visible {
+  border-color: #9db88c;
+  outline: none;
+}
+.chat-approval {
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 0 24px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.chat-approval-card {
+  padding: 14px 16px;
+  border-color: #e2c4b9;
+  background: #fbf3ef;
+}
+.chat-approval-card h2 {
+  font-size: 14px;
+  margin: 0 0 6px;
+}
+.chat-approval-card p {
+  font-size: 13px;
+  line-height: 1.7;
+  margin: 0 0 10px;
+}
+.chat-approval-args {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #e2c4b9;
+  font-size: 12px;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

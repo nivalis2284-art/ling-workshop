@@ -3,9 +3,11 @@ import type {
   ChatEvent,
   ChatRequest,
   ChatRun,
+  ChatToolCall,
   ChatUsage,
   ConversationMessage,
   ConversationBranch,
+  PendingConfirmation,
 } from "../../api/types";
 import {
   chatErrorMessage,
@@ -35,6 +37,11 @@ export interface ChatTurn {
   userMessageId?: string;
   switchedProfile?: string;
   notice?: string;
+  // Live loop state. Persisted for subscribers only; a reload re-syncs it.
+  step?: number;
+  tools?: ChatToolCall[];
+  paused?: boolean;
+  confirmations?: PendingConfirmation[];
 }
 export interface ChatSnapshot {
   turns: ChatTurn[];
@@ -373,7 +380,21 @@ export class ChatSession {
     }
     if (!this.attached) return;
     void this.refreshHistory();
+    const active = this.state.turns.at(-1);
+    // A confirmation issued while this page was away is not replayed by the
+    // stream, so re-read the run's pending decisions on reattach.
+    if (isPending(active) && active?.runId) void this.syncConfirmations(active.runId);
     if (isPending(this.state.turns.at(-1))) void this.reconnect();
+  }
+  private async syncConfirmations(runId: string) {
+    try {
+      const list = await this.api.chatConfirmations(runId);
+      const turn = this.state.turns.at(-1);
+      if (turn?.runId === runId)
+        this.change(turn.request.request_id, { confirmations: list });
+    } catch {
+      /* The stream re-notifies if a confirmation is (re)issued. */
+    }
   }
   detach = () => {
     this.attached = false;
@@ -572,6 +593,58 @@ export class ChatSession {
         else if (event.data.code === "context_truncated")
           patch.notice =
             event.data.message ?? "对话超出模型窗口，已丢弃最早的部分消息。";
+        else if (event.data.code === "step_budget_exhausted")
+          patch.notice =
+            event.data.message ?? "已达到步数上限，任务尚未完成。";
+        else if (
+          event.data.code === "confirmation_required" &&
+          event.data.fingerprint
+        ) {
+          const fingerprint = event.data.fingerprint;
+          patch.notice =
+            event.data.message ?? "该操作有现实副作用，等待所有者确认。";
+          patch.confirmations = [
+            ...(turn.confirmations ?? []).filter(
+              (item) => item.fingerprint !== fingerprint,
+            ),
+            {
+              run_id: event.data.run_id,
+              fingerprint,
+              tool: event.data.tool ?? "",
+              arguments: event.data.arguments,
+              message: event.data.message,
+            },
+          ];
+        }
+        break;
+      case "step_started":
+        patch.step = event.data.step;
+        patch.status = "streaming";
+        break;
+      case "tool_started":
+        patch.status = "streaming";
+        patch.tools = [
+          ...(turn.tools ?? []),
+          {
+            step: event.data.step,
+            name: event.data.name,
+            call_id: event.data.call_id,
+            arguments: event.data.arguments,
+          },
+        ];
+        break;
+      case "tool_result":
+        patch.tools = (turn.tools ?? []).map((tool) =>
+          tool.call_id === event.data.call_id
+            ? { ...tool, status: event.data.status, preview: event.data.preview }
+            : tool,
+        );
+        break;
+      case "paused":
+        patch.paused = true;
+        break;
+      case "resumed":
+        patch.paused = false;
         break;
       case "text":
         patch.text = turn.text + event.data.text;
@@ -588,6 +661,8 @@ export class ChatSession {
         patch.status = "complete";
         patch.assistantMessageId = event.data.assistant_message_id;
         patch.error = undefined;
+        patch.paused = false;
+        patch.confirmations = [];
         break;
       case "error":
         patch.status = event.data.code === "cancelled" ? "stopped" : "error";
@@ -595,6 +670,8 @@ export class ChatSession {
           event.data.code === "cancelled"
             ? undefined
             : chatRunErrorMessage(event.data.code);
+        patch.paused = false;
+        patch.confirmations = [];
         break;
     }
     this.change(id, patch);
@@ -667,6 +744,58 @@ export class ChatSession {
     } finally {
       this.change(id, { cancelling: false });
     }
+  };
+  // Loop intervention: pause/resume act at the next step boundary (never kill an
+  // in-flight tool); a guide is injected before the next step.
+  pauseRun = async (): Promise<void> => {
+    const turn = this.state.turns.at(-1);
+    if (!turn?.runId) return;
+    try {
+      await this.api.pauseChat(turn.runId);
+      this.change(turn.request.request_id, { paused: true });
+    } catch (error) {
+      this.update({ actionError: errorMessage(error) });
+    }
+  };
+  resumeRun = async (): Promise<void> => {
+    const turn = this.state.turns.at(-1);
+    if (!turn?.runId) return;
+    try {
+      await this.api.resumeChat(turn.runId);
+      this.change(turn.request.request_id, { paused: false });
+    } catch (error) {
+      this.update({ actionError: errorMessage(error) });
+    }
+  };
+  guideRun = async (text: string): Promise<boolean> => {
+    const turn = this.state.turns.at(-1);
+    const value = text.trim();
+    if (!turn?.runId || !value) return false;
+    try {
+      await this.api.guideChat(turn.runId, value);
+      return true;
+    } catch (error) {
+      this.update({ actionError: errorMessage(error) });
+      return false;
+    }
+  };
+  decideConfirmation = async (
+    fingerprint: string,
+    approved: boolean,
+  ): Promise<void> => {
+    const turn = this.state.turns.at(-1);
+    if (!turn?.runId) return;
+    try {
+      await this.api.decideChatConfirmation(turn.runId, fingerprint, approved);
+    } catch (error) {
+      this.update({ actionError: errorMessage(error) });
+      return;
+    }
+    this.change(turn.request.request_id, {
+      confirmations: (turn.confirmations ?? []).filter(
+        (item) => item.fingerprint !== fingerprint,
+      ),
+    });
   };
 }
 

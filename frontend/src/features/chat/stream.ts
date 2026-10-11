@@ -69,9 +69,68 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
             ...(typeof value.message === "string"
               ? { message: value.message }
               : {}),
+            ...(typeof value.fingerprint === "string"
+              ? { fingerprint: value.fingerprint }
+              : {}),
+            ...(typeof value.tool === "string" ? { tool: value.tool } : {}),
+            ...(value.arguments &&
+            typeof value.arguments === "object" &&
+            !Array.isArray(value.arguments)
+              ? { arguments: value.arguments as Record<string, unknown> }
+              : {}),
           },
         };
       break;
+    case "step_started":
+      if (typeof value.step === "number")
+        return { id, event, data: { run_id, step: value.step } };
+      break;
+    case "tool_started":
+      if (
+        typeof value.step === "number" &&
+        typeof value.name === "string" &&
+        typeof value.call_id === "string"
+      )
+        return {
+          id,
+          event,
+          data: {
+            run_id,
+            step: value.step,
+            name: value.name,
+            call_id: value.call_id,
+            arguments:
+              value.arguments &&
+              typeof value.arguments === "object" &&
+              !Array.isArray(value.arguments)
+                ? (value.arguments as Record<string, unknown>)
+                : {},
+          },
+        };
+      break;
+    case "tool_result":
+      if (
+        typeof value.step === "number" &&
+        typeof value.name === "string" &&
+        typeof value.call_id === "string" &&
+        typeof value.status === "string"
+      )
+        return {
+          id,
+          event,
+          data: {
+            run_id,
+            step: value.step,
+            name: value.name,
+            call_id: value.call_id,
+            status: value.status,
+            preview: typeof value.preview === "string" ? value.preview : "",
+          },
+        };
+      break;
+    case "paused":
+    case "resumed":
+      return { id, event, data: { run_id } };
     case "text":
     case "thinking":
       if (typeof value.text === "string")

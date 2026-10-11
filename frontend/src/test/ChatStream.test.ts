@@ -269,6 +269,45 @@ test.each([
   expect(events).toHaveLength(0);
 });
 
+test("loop events (steps, tools, pause and confirmations) are parsed, not rejected", async () => {
+  const events: ChatEvent[] = [];
+  await readChatStream(
+    streamResponse(
+      'id: 1\nevent: step_started\ndata: {"run_id":"run-1","step":1}\n\n' +
+        'id: 2\nevent: tool_started\ndata: {"run_id":"run-1","step":1,"name":"create_file","call_id":"c1","arguments":{"path":"/a"}}\n\n' +
+        'id: 3\nevent: tool_result\ndata: {"run_id":"run-1","step":1,"name":"create_file","call_id":"c1","status":"completed","preview":"ok"}\n\n' +
+        'id: 4\nevent: paused\ndata: {"run_id":"run-1"}\n\n' +
+        'id: 5\nevent: resumed\ndata: {"run_id":"run-1"}\n\n' +
+        'id: 6\nevent: notice\ndata: {"run_id":"run-1","code":"confirmation_required","fingerprint":"fp1","tool":"run_command","arguments":{"argv":["ls"]},"message":"等待确认"}\n\n' +
+        'id: 7\nevent: complete\ndata: {"run_id":"run-1","status":"completed","assistant_message_id":null}\n\n',
+    ),
+    (event) => events.push(event),
+    new AbortController().signal,
+  );
+  expect(events.map((event) => event.event)).toEqual([
+    "step_started",
+    "tool_started",
+    "tool_result",
+    "paused",
+    "resumed",
+    "notice",
+    "complete",
+  ]);
+  expect(events[1].data).toMatchObject({
+    step: 1,
+    name: "create_file",
+    call_id: "c1",
+    arguments: { path: "/a" },
+  });
+  expect(events[3]).toMatchObject({ event: "paused", data: { run_id: "run-1" } });
+  expect(events[5].data).toMatchObject({
+    code: "confirmation_required",
+    fingerprint: "fp1",
+    tool: "run_command",
+    arguments: { argv: ["ls"] },
+  });
+});
+
 test("aborting a subscriber closes its reader without making a cancel request", async () => {
   let closed = false;
   const response = new Response(

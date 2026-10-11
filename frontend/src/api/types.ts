@@ -144,6 +144,26 @@ export interface ChatUsage {
   [key: string]: unknown;
 }
 
+// One tool call inside the chat loop. It starts as "running" on tool_started and
+// is completed by the matching tool_result (same call_id).
+export interface ChatToolCall {
+  step: number;
+  name: string;
+  call_id: string;
+  arguments: Record<string, unknown>;
+  status?: string;
+  preview?: string;
+}
+
+// A side-effecting call waiting for the owner's decision (run_command).
+export interface PendingConfirmation {
+  run_id: string;
+  fingerprint: string;
+  tool: string;
+  arguments?: Record<string, unknown>;
+  message?: string;
+}
+
 export type ChatEvent = { id: string } & (
   | {
       event: "started";
@@ -162,7 +182,40 @@ export type ChatEvent = { id: string } & (
         restart: boolean;
       };
     }
-  | { event: "notice"; data: { run_id: string; code: string; message?: string } }
+  | {
+      event: "notice";
+      data: {
+        run_id: string;
+        code: string;
+        message?: string;
+        fingerprint?: string;
+        tool?: string;
+        arguments?: Record<string, unknown>;
+      };
+    }
+  | { event: "step_started"; data: { run_id: string; step: number } }
+  | {
+      event: "tool_started";
+      data: {
+        run_id: string;
+        step: number;
+        name: string;
+        call_id: string;
+        arguments: Record<string, unknown>;
+      };
+    }
+  | {
+      event: "tool_result";
+      data: {
+        run_id: string;
+        step: number;
+        name: string;
+        call_id: string;
+        status: string;
+        preview: string;
+      };
+    }
+  | { event: "paused" | "resumed"; data: { run_id: string } }
   | { event: "text" | "thinking"; data: { run_id: string; text: string } }
   | { event: "usage"; data: { run_id: string; usage: ChatUsage } }
   | {

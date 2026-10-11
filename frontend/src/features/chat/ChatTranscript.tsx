@@ -1,8 +1,73 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChatSnapshot, ChatTurn } from "./session";
-import type { Attachment, ConversationMessage } from "../../api/types";
+import type {
+  Attachment,
+  ChatToolCall,
+  ConversationMessage,
+} from "../../api/types";
 import { AttachmentNames } from "./ChatAttachments";
 import { EmptyState } from "../../shared/ui";
+
+// The tool name is kept alongside the plain-language label so the owner can
+// always see exactly which primitive ran, never just a friendly paraphrase.
+const TOOL_LABELS: Record<string, string> = {
+  run_command: "运行命令",
+  read_file: "读取文件",
+  create_file: "新建文件",
+  write_file: "写入文件",
+  edit_file: "编辑文件",
+  search: "查找内容",
+  browser_goto: "打开网页",
+  browser_read: "读取网页",
+  browser_fill: "填写表单",
+  browser_request_click: "点击网页",
+  browser_state: "查看浏览器",
+  request_dependencies: "申请依赖",
+};
+
+function toolLabel(name: string) {
+  const label = TOOL_LABELS[name];
+  return label ? label + "（" + name + "）" : name;
+}
+
+function toolStatus(tool: ChatToolCall) {
+  switch (tool.status) {
+    case undefined:
+      return "执行中…";
+    case "completed":
+      return "完成";
+    case "blocked":
+      return "已拒绝";
+    case "failed":
+      return "失败";
+    case "unknown":
+      return "结果待核对";
+    default:
+      return tool.status;
+  }
+}
+
+function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
+  if (!tools?.length) return null;
+  return (
+    <ul className="chat-tools" aria-label="工具调用">
+      {tools.map((tool) => (
+        <li
+          key={tool.call_id}
+          className={"chat-tool" + (tool.status ? " " + tool.status : "")}
+        >
+          <div className="chat-tool-head">
+            <span className="chat-tool-name">{toolLabel(tool.name)}</span>
+            <span className="chat-tool-status">{toolStatus(tool)}</span>
+          </div>
+          {tool.preview && (
+            <pre className="chat-tool-preview">{tool.preview}</pre>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
 function Reply({ turn }: { turn: ChatTurn }) {
   return (
@@ -13,6 +78,7 @@ function Reply({ turn }: { turn: ChatTurn }) {
           <p className="preserve-text">{turn.thinking}</p>
         </details>
       )}
+      <ToolCalls tools={turn.tools} />
       {turn.text ? (
         <p className="preserve-text">{turn.text}</p>
       ) : (
@@ -20,7 +86,9 @@ function Reply({ turn }: { turn: ChatTurn }) {
           {turn.status === "connecting"
             ? "正在连接…"
             : turn.status === "streaming"
-              ? "正在等待回复…"
+              ? turn.paused
+                ? "已暂停，等待继续。"
+                : "正在等待回复…"
               : "尚未收到正文。"}
         </p>
       )}
@@ -34,7 +102,11 @@ function Reply({ turn }: { turn: ChatTurn }) {
                 ? "回复未完成"
                 : turn.status === "disconnected"
                   ? "连接已断开"
-                  : "正在生成…"}
+                  : turn.paused
+                    ? "已暂停"
+                    : turn.step
+                      ? "正在生成…（第 " + turn.step + " 步）"
+                      : "正在生成…"}
         </span>
         {turn.usage && (
           <span title="按服务商返回值展示；统计口径可能不同，总计可能不等于输入与输出之和。">

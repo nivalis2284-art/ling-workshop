@@ -7,6 +7,7 @@ import { ChatAttachments, attachmentProblem } from "./ChatAttachments";
 import { ChatComposer } from "./ChatComposer";
 import { ChatControls } from "./ChatControls";
 import { ChatHeader } from "./ChatHeader";
+import { ChatRunControls } from "./ChatRunControls";
 import { ChatTranscript } from "./ChatTranscript";
 import { ChatSession, isPending } from "./session";
 import type { ConversationList } from "./useConversations";
@@ -258,6 +259,55 @@ export function ChatPage({
           </div>
         )}
         </div>
+        {(last?.confirmations?.length ?? 0) > 0 && (
+          <div className="chat-approval" role="alert">
+            {last!.confirmations!.map((item) => (
+              <section
+                className="panel chat-approval-card"
+                key={item.fingerprint}
+              >
+                <h2>需要你确认的一次操作</h2>
+                <p>
+                  {agent.name}请求执行「<strong>{item.tool}</strong>」
+                  。该操作有现实副作用，批准后才会真正执行。
+                </p>
+                {item.arguments &&
+                  Object.keys(item.arguments).length > 0 && (
+                    <pre className="chat-approval-args">
+                      {JSON.stringify(item.arguments, null, 2)}
+                    </pre>
+                  )}
+                <div className="button-row">
+                  <button
+                    className="button secondary"
+                    onClick={() =>
+                      void session.decideConfirmation(item.fingerprint, false)
+                    }
+                  >
+                    拒绝
+                  </button>
+                  <button
+                    className="button"
+                    onClick={() =>
+                      void session.decideConfirmation(item.fingerprint, true)
+                    }
+                  >
+                    批准并执行
+                  </button>
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+        {pending && last && last.runId && (
+          <ChatRunControls
+            paused={!!last.paused}
+            onPause={() => void session.pauseRun()}
+            onResume={() => void session.resumeRun()}
+            onGuide={session.guideRun}
+            disabled={false}
+          />
+        )}
         <ChatComposer
           draft={state.draft}
           onDraft={session.setDraft}

@@ -12,6 +12,7 @@ import type {
   ConversationBranch,
   ModelInput,
   ModelSelection,
+  PendingConfirmation,
   SandboxLevel,
   SandboxStatus,
   SavedModel,
@@ -299,5 +300,37 @@ export class LingApi {
       {
         method: "POST",
       },
+    );
+  pauseChat = (runId: string) =>
+    this.request<{ run_id: string; paused: boolean }>(
+      "/chat/runs/" + encodeURIComponent(runId) + "/pause",
+      { method: "POST" },
+    );
+  resumeChat = (runId: string) =>
+    this.request<{ run_id: string; paused: boolean }>(
+      "/chat/runs/" + encodeURIComponent(runId) + "/resume",
+      { method: "POST" },
+    );
+  guideChat = (runId: string, text: string) =>
+    this.post<{ run_id: string; queued: number }>(
+      "/chat/runs/" + encodeURIComponent(runId) + "/guide",
+      { text },
+    );
+  chatConfirmations = (runId: string, signal?: AbortSignal) =>
+    this.request<PendingConfirmation[]>(
+      "/chat/runs/" + encodeURIComponent(runId) + "/confirmations",
+      { signal },
+    );
+  decideChatConfirmation = (
+    runId: string,
+    fingerprint: string,
+    approved: boolean,
+  ) =>
+    this.post<{ run_id: string; fingerprint: string; approved: boolean }>(
+      "/chat/runs/" +
+        encodeURIComponent(runId) +
+        "/confirmations/" +
+        encodeURIComponent(fingerprint),
+      { approved },
     );
 }

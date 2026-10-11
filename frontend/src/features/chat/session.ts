@@ -615,6 +615,9 @@ export class ChatSession {
               message: event.data.message,
             },
           ];
+          // The stream notice is a light signal; the REST list is the source of
+          // truth and carries the full arguments the owner must review.
+          void this.syncConfirmations(event.data.run_id);
         }
         break;
       case "step_started":

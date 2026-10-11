@@ -39,7 +39,15 @@ function apiFor(stream: Response, calls: string[]): LingApi {
     }),
     conversationMessages: async () => [],
     conversationBranches: async () => [],
-    chatConfirmations: async () => [],
+    // The REST list is the source of truth and carries the full arguments.
+    chatConfirmations: async () => [
+      {
+        run_id: "run-1",
+        fingerprint: "fp1",
+        tool: "run_command",
+        arguments: { argv: ["ls"] },
+      },
+    ],
     pauseChat: async (runId: string) => {
       calls.push("pause");
       return { run_id: runId, paused: true };
@@ -168,8 +176,8 @@ test("需要确认的副作用会浮出并等待所有者决定", async () => {
   );
   await waitFor(() =>
     expect(
-      session.getSnapshot().turns.at(-1)?.confirmations?.length,
-    ).toBe(1),
+      session.getSnapshot().turns.at(-1)?.confirmations?.[0]?.arguments,
+    ).toEqual({ argv: ["ls"] }),
   );
   expect(session.getSnapshot().turns.at(-1)?.confirmations?.[0]).toMatchObject({
     fingerprint: "fp1",

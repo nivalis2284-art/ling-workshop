@@ -549,6 +549,26 @@ async function secondRound(
   await screen.findByText("第二个问题");
 }
 
+test("an empty reply keeps its live round with a placeholder instead of vanishing", async () => {
+  const server = backend();
+  const user = userEvent.setup();
+  open();
+  await screen.findByText("原回复");
+  await user.type(screen.getByLabelText("消息"), "空回复的问题");
+  await user.click(screen.getByRole("button", { name: "发送消息" }));
+  await server.emit("started", { conversation_id: "c1" }, 1);
+  await server.emit(
+    "complete",
+    { status: "completed", assistant_message_id: null },
+    2,
+  );
+  // assistant_message_id 为 null 时没有可挂靠的已存消息；回合必须以占位
+  // 形式留在页面上，而不是在历史就绪后静默消失。
+  expect(await screen.findByText("空回复的问题")).toBeVisible();
+  expect(screen.getByText("尚未收到正文。")).toBeVisible();
+  expect(screen.getByText("回复完成")).toBeVisible();
+});
+
 test("deleting a round asks first, then removes it with its reply", async () => {
   const server = backend();
   const user = userEvent.setup();
@@ -557,12 +577,15 @@ test("deleting a round asks first, then removes it with its reply", async () => 
   await secondRound(user, server);
   const log = screen.getByRole("log");
   // Only the owner's messages offer deletion; a reply is removed with its round.
+  // 空回复的完成会保留一个占位回合，所以回复文章可能不止一篇。
   expect(
-    within(screen.getByRole("article", { name: "灵的回复" })).queryByRole(
-      "button",
-      { name: "删除这一轮" },
-    ),
-  ).not.toBeInTheDocument();
+    within(log)
+      .getAllByRole("article", { name: "灵的回复" })
+      .every(
+        (article) =>
+          !within(article).queryByRole("button", { name: "删除这一轮" }),
+      ),
+  ).toBe(true);
   const mine = within(log).getAllByRole("article", { name: "你的消息" });
   expect(mine).toHaveLength(2);
   await user.click(within(mine[0]).getByRole("button", { name: "删除这一轮" }));

@@ -34,6 +34,7 @@ export function ChatPage({
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState(new Set<string>());
   const [confirming, setConfirming] = useState<string[]>([]);
+  const [deciding, setDeciding] = useState<string[]>([]);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const list = conversations.list;
   const unresolved =
@@ -122,6 +123,19 @@ export function ChatPage({
     setConfirming([]);
     const done = await session.deleteTurns(anchors);
     if (done) stopSelecting();
+  };
+  const decide = (fingerprint: string, approved: boolean) => {
+    // 在途的同一指纹直接忽略；会话层还有已决策记账兜底，双击不会造成
+    // 第二次决策请求（也就不会用 404 制造假错误横幅）。
+    if (deciding.includes(fingerprint)) return;
+    setDeciding((current) => [...current, fingerprint]);
+    void session
+      .decideConfirmation(fingerprint, approved)
+      .finally(() =>
+        setDeciding((current) =>
+          current.filter((item) => item !== fingerprint),
+        ),
+      );
   };
   const userTurns = state.messages.filter(
     (message) => message.role === "user",
@@ -285,17 +299,15 @@ export function ChatPage({
                 <div className="button-row">
                   <button
                     className="button secondary"
-                    onClick={() =>
-                      void session.decideConfirmation(item.fingerprint, false)
-                    }
+                    disabled={deciding.includes(item.fingerprint)}
+                    onClick={() => decide(item.fingerprint, false)}
                   >
                     拒绝
                   </button>
                   <button
                     className="button"
-                    onClick={() =>
-                      void session.decideConfirmation(item.fingerprint, true)
-                    }
+                    disabled={deciding.includes(item.fingerprint)}
+                    onClick={() => decide(item.fingerprint, true)}
                   >
                     批准并执行
                   </button>
@@ -307,6 +319,8 @@ export function ChatPage({
         {pending && last && last.runId && (
           <ChatRunControls
             paused={!!last.paused}
+            pausePending={!!last.pausePending}
+            resumePending={!!last.resumePending}
             onPause={() => void session.pauseRun()}
             onResume={() => void session.resumeRun()}
             onGuide={session.guideRun}

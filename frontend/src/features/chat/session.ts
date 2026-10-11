@@ -41,7 +41,13 @@ export interface ChatTurn {
   step?: number;
   tools?: ChatToolCall[];
   paused?: boolean;
+  // “暂停请求中”是独立状态：后端只在步边界真正暂停并补发 paused 事件，
+  // POST /pause 仅置标志，所以不能乐观翻 paused；恢复同理。
+  pausePending?: boolean;
+  resumePending?: boolean;
   confirmations?: PendingConfirmation[];
+  // 本回合已提交决策的指纹：决策与回读/通知并发时，靠它防止已处理的卡复活。
+  decidedFingerprints?: string[];
 }
 export interface ChatSnapshot {
   turns: ChatTurn[];
@@ -154,6 +160,11 @@ function restore(agentId: string, conversationId?: string): ChatSnapshot {
       turns: saved.turns.filter(isPending).map((turn: ChatTurn) => ({
         ...turn,
         cancelling: false,
+        // 在途控制标记不跨页面生命周期：重载后没有请求可等。已决策记账也不
+        // 保留——重载可能截断了决策请求，此时必须允许用户重新作答。
+        pausePending: false,
+        resumePending: false,
+        decidedFingerprints: undefined,
         status: isPending(turn) ? "disconnected" : turn.status,
       })),
     };
@@ -170,6 +181,7 @@ export class ChatSession {
   private attached = false;
   private historyController: AbortController | null = null;
   private runController: AbortController | null = null;
+  private confirmationsController: AbortController | null = null;
   private conversations = new Map<string, ChatSession>();
 
   constructor(
@@ -387,13 +399,35 @@ export class ChatSession {
     if (isPending(this.state.turns.at(-1))) void this.reconnect();
   }
   private async syncConfirmations(runId: string) {
+    // 新回读发出时旧回读即作废：切换/重连后先发后至的旧快照会把更新的事实
+    // （例如刚决策完的项）重新写回。
+    this.confirmationsController?.abort();
+    const controller = new AbortController();
+    this.confirmationsController = controller;
     try {
-      const list = await this.api.chatConfirmations(runId);
+      const list = await this.api.chatConfirmations(runId, controller.signal);
+      if (
+        controller.signal.aborted ||
+        this.confirmationsController !== controller
+      )
+        return;
       const turn = this.state.turns.at(-1);
-      if (turn?.runId === runId)
-        this.change(turn.request.request_id, { confirmations: list });
+      if (turn?.runId !== runId) return;
+      const decided = new Set(turn.decidedFingerprints ?? []);
+      // 按 fingerprint 合并而不是整表覆盖：决策与回读并发时任何一方都不该
+      // 抹掉对方；已决策的指纹不因旧快照复活，新指纹仍按服务端真源补入。
+      const merged = [...(turn.confirmations ?? [])];
+      for (const item of list) {
+        if (decided.has(item.fingerprint)) continue;
+        const index = merged.findIndex(
+          (existing) => existing.fingerprint === item.fingerprint,
+        );
+        if (index >= 0) merged[index] = item;
+        else merged.push(item);
+      }
+      this.change(turn.request.request_id, { confirmations: merged });
     } catch {
-      /* The stream re-notifies if a confirmation is (re)issued. */
+      /* 取消或失败都交给流的再次通知；已决策项不会因此复活。 */
     }
   }
   detach = () => {
@@ -404,6 +438,8 @@ export class ChatSession {
     this.historyController = null;
     this.runController?.abort();
     this.runController = null;
+    this.confirmationsController?.abort();
+    this.confirmationsController = null;
     const turn = this.state.turns.at(-1);
     if (isPending(turn))
       this.change(turn!.request.request_id, { status: "disconnected" });
@@ -603,6 +639,11 @@ export class ChatSession {
           const fingerprint = event.data.fingerprint;
           patch.notice =
             event.data.message ?? "该操作有现实副作用，等待所有者确认。";
+          // 同一指纹被拒后模型可能原样重试并再次通知；流通知比本地记账新，
+          // 所以同时撤销“已决策”标记，否则回读会把新请求当作已处理。
+          patch.decidedFingerprints = (turn.decidedFingerprints ?? []).filter(
+            (item) => item !== fingerprint,
+          );
           patch.confirmations = [
             ...(turn.confirmations ?? []).filter(
               (item) => item.fingerprint !== fingerprint,
@@ -644,10 +685,13 @@ export class ChatSession {
         );
         break;
       case "paused":
+        // 后端在步边界补发的 paused 才是“真的暂停了”，请求标记随之结束。
         patch.paused = true;
+        patch.pausePending = false;
         break;
       case "resumed":
         patch.paused = false;
+        patch.resumePending = false;
         break;
       case "text":
         patch.text = turn.text + event.data.text;
@@ -664,7 +708,10 @@ export class ChatSession {
         patch.status = "complete";
         patch.assistantMessageId = event.data.assistant_message_id;
         patch.error = undefined;
+        // 任何终态都清空暂停标记与确认卡，收尾后不残留待办。
         patch.paused = false;
+        patch.pausePending = false;
+        patch.resumePending = false;
         patch.confirmations = [];
         break;
       case "error":
@@ -674,6 +721,8 @@ export class ChatSession {
             ? undefined
             : chatRunErrorMessage(event.data.code);
         patch.paused = false;
+        patch.pausePending = false;
+        patch.resumePending = false;
         patch.confirmations = [];
         break;
     }
@@ -711,6 +760,11 @@ export class ChatSession {
       error: ["completed", "cancelled"].includes(run.status)
         ? undefined
         : chatRunErrorMessage(run.status),
+      // 通过 GET 状态收尾同样是终态：暂停标记与确认卡一并清空。
+      paused: false,
+      pausePending: false,
+      resumePending: false,
+      confirmations: [],
     };
   }
   stop = async () => {
@@ -730,7 +784,15 @@ export class ChatSession {
         this.controller?.abort();
         this.controller = null;
         if (run.status === "cancelled") {
-          this.change(id, { status: "stopped", error: undefined });
+          // stopped 也是终态：确认卡与暂停标记不能跨过停止残留下来。
+          this.change(id, {
+            status: "stopped",
+            error: undefined,
+            paused: false,
+            pausePending: false,
+            resumePending: false,
+            confirmations: [],
+          });
           void this.refreshHistory();
         } else {
           // Completion won the race with Stop. Replay the tail so the final
@@ -752,21 +814,28 @@ export class ChatSession {
   // in-flight tool); a guide is injected before the next step.
   pauseRun = async (): Promise<void> => {
     const turn = this.state.turns.at(-1);
-    if (!turn?.runId) return;
+    if (!turn?.runId || turn.paused || turn.pausePending) return;
+    const id = turn.request.request_id;
+    // POST /pause 只置后端标志，真正暂停发生在下一个步边界；这里不乐观置位，
+    // 只标“请求中”挡住重复点击，等 paused 事件落地再显示已暂停。
+    this.change(id, { pausePending: true });
     try {
       await this.api.pauseChat(turn.runId);
-      this.change(turn.request.request_id, { paused: true });
     } catch (error) {
+      this.change(id, { pausePending: false });
       this.update({ actionError: errorMessage(error) });
     }
   };
   resumeRun = async (): Promise<void> => {
     const turn = this.state.turns.at(-1);
-    if (!turn?.runId) return;
+    if (!turn?.runId || !turn.paused || turn.resumePending) return;
+    const id = turn.request.request_id;
+    // 与暂停同理：resumed 事件才是真的恢复，POST 期间只挡重复点击。
+    this.change(id, { resumePending: true });
     try {
       await this.api.resumeChat(turn.runId);
-      this.change(turn.request.request_id, { paused: false });
     } catch (error) {
+      this.change(id, { resumePending: false });
       this.update({ actionError: errorMessage(error) });
     }
   };
@@ -788,17 +857,42 @@ export class ChatSession {
   ): Promise<void> => {
     const turn = this.state.turns.at(-1);
     if (!turn?.runId) return;
+    // 已记账的指纹直接短路：双击或并发触发不会发出第二个决策请求，
+    // 也就不会用第二次 404 制造假错误横幅。
+    if (turn.decidedFingerprints?.includes(fingerprint)) return;
+    const id = turn.request.request_id;
+    const runId = turn.runId;
+    // 先记账再请求：POST 在途时到来的回读不能把该项复活。
+    this.change(id, {
+      decidedFingerprints: [...(turn.decidedFingerprints ?? []), fingerprint],
+    });
     try {
-      await this.api.decideChatConfirmation(turn.runId, fingerprint, approved);
+      await this.api.decideChatConfirmation(runId, fingerprint, approved);
     } catch (error) {
+      // 失败时卡片仍在、应允许重试，所以撤销记账。
+      const failed = this.state.turns.find(
+        (item) => item.request.request_id === id,
+      );
+      if (failed && failed.runId === runId)
+        this.change(id, {
+          decidedFingerprints: (failed.decidedFingerprints ?? []).filter(
+            (item) => item !== fingerprint,
+          ),
+        });
       this.update({ actionError: errorMessage(error) });
       return;
     }
-    this.change(turn.request.request_id, {
-      confirmations: (turn.confirmations ?? []).filter(
-        (item) => item.fingerprint !== fingerprint,
-      ),
-    });
+    // 只移除这一个指纹，且基于当前 state：await 期间由通知或回读写入的
+    // 其它确认项必须原样保留，不能被旧快照整体覆盖。
+    const current = this.state.turns.find(
+      (item) => item.request.request_id === id,
+    );
+    if (current && current.runId === runId)
+      this.change(id, {
+        confirmations: (current.confirmations ?? []).filter(
+          (item) => item.fingerprint !== fingerprint,
+        ),
+      });
   };
 }
 

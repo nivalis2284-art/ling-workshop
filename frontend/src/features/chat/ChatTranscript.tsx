@@ -311,12 +311,16 @@ export function ChatTranscript({
   const follow = useRef(true);
   const last = state.turns.at(-1);
   const committed =
-    last?.assistantMessageId &&
+    !!last?.assistantMessageId &&
     state.messages.some((message) => message.id === last.assistantMessageId);
+  // 空正文的完成没有可挂靠的已存消息（assistant_message_id 可为 null）；
+  // 保留 live 回合显示占位，而不是让整轮静默消失。
+  const emptyReply = last?.status === "complete" && !last.assistantMessageId;
   const live =
     last &&
     !committed &&
-    (last.status !== "complete" ||
+    (emptyReply ||
+      last.status !== "complete" ||
       !state.conversationId ||
       state.historyStatus === "loading")
       ? last

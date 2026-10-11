@@ -167,7 +167,7 @@ class ChatRuntime:
         self.app = application
         self.store = RunStore(application.database)
         self.failover = ChatFailover(application, self.store)
-        self.dispatcher = ToolDispatcher()
+        self.dispatcher = ToolDispatcher(mcp=getattr(application, "mcp", None))
         self._client = client
         self._owns_client = client is None
         self._tasks: dict[str, asyncio.Task] = {}
@@ -375,7 +375,7 @@ class ChatRuntime:
                 "payload": payload,
                 "effort": effort,
             }
-            declare_tools(state["payload"], profile, self.dispatcher.registry.schema())
+            declare_tools(state["payload"], profile, self.dispatcher.schema())
             max_steps = self._max_steps()
             step = 1
             while True:
@@ -514,7 +514,7 @@ class ChatRuntime:
             profile_id, profile, credentials, payload = replacement
             state.update(profile=profile, credentials=credentials, payload=payload)
             state["effort"] = self.failover.effort(run_id, profile_id, profile, requested_effort)
-            declare_tools(state["payload"], profile, self.dispatcher.registry.schema())
+            declare_tools(state["payload"], profile, self.dispatcher.schema())
         return None
 
     async def _stream_turn(

@@ -9,6 +9,7 @@ caller's environment (snapshot, authorized directories, sandbox, browser).
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
@@ -60,19 +61,46 @@ class ToolScope(Protocol):
 
 
 class ToolDispatcher:
-    """Routes one validated tool call to the scope and shapes the result."""
+    """Routes one validated tool call to the scope and shapes the result.
 
-    def __init__(self, registry: ToolRegistry | None = None):
+    ``mcp`` is optional. When present, the tools it currently offers are merged
+    into the declarations and dispatch below, so a remote tool is reached through
+    exactly the same path — and therefore the same hooks — as a local one.
+    """
+
+    def __init__(self, registry: ToolRegistry | None = None, mcp=None):
         self.registry = registry or default_registry
+        self.mcp = mcp
+
+    def specs(self) -> list:
+        """Local declarations plus whatever remote tools are presently offered."""
+        extra = self.mcp.specs() if self.mcp is not None else []
+        return [*self.registry.specs(), *extra]
+
+    def schema(self) -> list[dict]:
+        return [spec.schema() for spec in self.specs()]
+
+    def get(self, name: str):
+        spec = self.registry.get(name)
+        if spec is not None:
+            return spec
+        return self.mcp.get(name) if self.mcp is not None else None
 
     async def execute(self, name: str, arguments: dict, scope: ToolScope) -> ToolResult:
-        spec = self.registry.get(name)
+        spec = self.get(name)
         if spec is None:
             return self._fail("invalid_tool_request")
-        try:
-            args = spec.parameters.model_validate(arguments).model_dump()
-        except (ValidationError, ValueError, TypeError):
-            return self._fail("invalid_tool_request")
+        if spec.kind == "mcp":
+            # A remote tool validates against its own published schema; the
+            # arguments are size-bounded here and passed through unchanged.
+            if self._oversized(arguments):
+                return self._fail("invalid_tool_request")
+            args = arguments
+        else:
+            try:
+                args = spec.parameters.model_validate(arguments).model_dump()
+            except (ValidationError, ValueError, TypeError):
+                return self._fail("invalid_tool_request")
         try:
             if spec.kind == "command":
                 return await self._command(name, args, scope)
@@ -82,6 +110,8 @@ class ToolDispatcher:
                 return self._wrap(*(await scope.browser(name, args)))
             if spec.kind == "meta":
                 return self._wrap(*scope.meta(name, args))
+            if spec.kind == "mcp":
+                return self._wrap(*self.mcp.call(name, args))
             return self._fail("invalid_tool_request")
         except (PermissionDenied, FileAccessDenied):
             return self._fail("permission_denied")
@@ -92,6 +122,13 @@ class ToolDispatcher:
             if name in {"create_file", "write_file", "edit_file", "run_command"}:
                 return self._fail("tool_operation_failed", status="unknown")
             return self._fail("tool_operation_failed")
+
+    def _oversized(self, arguments: dict) -> bool:
+        try:
+            encoded = json.dumps(arguments, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return True
+        return len(encoded) > _ARGUMENT_BYTES
 
     # --- routing ------------------------------------------------------------
 

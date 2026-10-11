@@ -23,6 +23,7 @@ from lingnexus.conversations.service import Conversations
 from lingnexus.dependencies import DependencyService
 from lingnexus.maintenance.automatic import AutomaticBackups
 from lingnexus.maintenance.service import MaintenanceService
+from lingnexus.mcp import McpService
 from lingnexus.permissions.hooks import AppAuthorization, permission_hook
 from lingnexus.permissions.service import Permissions
 from lingnexus.runtime.confirmations import ConfirmationService, confirmation_hook
@@ -84,6 +85,11 @@ class Application:
             HookEvent.BEFORE_TOOL,
             confirmation_hook(self.confirmations, notifier=_notify_confirmation),
         )
+        # Optional MCP servers, read from the `mcp.servers` setting on first use.
+        # With nothing configured this stays completely inert: no connection, no
+        # tool, no extra startup cost. A remote tool is declared through the same
+        # dispatcher the chat loop reads, so it passes the same hooks below.
+        self.mcp = McpService(self.database)
         self.actions = Actions(self)
         self.sandbox = SandboxService(self.database)
         self.browser: BrowserService | None = None
@@ -109,3 +115,5 @@ class Application:
     def close(self) -> None:
         # Release process-memory keys; the optional user-encrypted cache survives shutdown.
         self.profiles.clear_credentials()
+        # Stop any MCP server processes this process started.
+        self.mcp.close()

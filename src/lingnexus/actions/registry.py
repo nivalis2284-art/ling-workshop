@@ -12,24 +12,30 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-ToolKind = Literal["command", "file", "browser", "meta"]
+ToolKind = Literal["command", "file", "browser", "meta", "mcp"]
 ToolStatus = Literal["completed", "failed", "blocked", "unknown"]
 
 
 @dataclass(frozen=True)
 class ToolSpec:
-    """One declared tool. `parameters` is a pydantic model used for JSON Schema."""
+    """One declared tool. `parameters` is a pydantic model used for JSON Schema.
+
+    A remote (MCP) tool arrives with its own JSON Schema rather than a pydantic
+    model, so ``input_schema`` carries that schema verbatim; ``parameters`` then
+    only keeps the field non-optional for local tools.
+    """
 
     name: str
     description: str
     parameters: type[BaseModel]
     kind: ToolKind
+    input_schema: dict | None = None
 
     def schema(self) -> dict:
         return {
             "name": self.name,
             "description": self.description,
-            "parameters": self.parameters.model_json_schema(),
+            "parameters": self.input_schema or self.parameters.model_json_schema(),
         }
 
 

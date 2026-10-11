@@ -2,9 +2,9 @@
 
 ## Current Position
 - **Milestone**: v0.2.0 (系统瘦身与架构简化：拆两大部分，第一部分先做合格)
-- **Active Phase**: 架构阶段 A/B/C 已完成（2026-10-11）；下一阶段候选 D（任务收尾）或 F（能力扩展）
-- **Status**: 🟢 A（边界隔离 `fa556ba`）、B（沙箱分层 `45a3813`）、C（统一循环 `47a0bdd`）全部完成并验证
-- **Next Step**: 由所有者选择——推进 D（旧任务路径去留/交互统一）或 F（技能包、MCP），或 E（常数对账与文档对齐）；G 待梳理
+- **Active Phase**: A/B/C 已完成（2026-10-11）；**D（任务收尾）进行中**——交互统一已落地（任务收进对话），「去留」待所有者拍板
+- **Status**: 🟢 A（边界隔离 `fa556ba`）、B（沙箱分层 `45a3813`）、C（统一循环 `13fd8ce`）全部完成并验证；🟡 D 部分完成
+- **Next Step**: 待所有者拍板 D 的「旧任务路径去留」（保留为对话内次级入口 / 彻底移除）；之后可选 F（技能包、MCP）或 E（常数对账与文档对齐）；G 待梳理
 
 ## Requirements Progress
 - REQ-SCOPE-01: Implemented
@@ -19,6 +19,7 @@
 - REQ-LOOP-01: Implemented（C 阶段：对话即循环，多步工具执行 + 中断介入 + 任务合并，2026-10-11）
 - REQ-HOOKS-01: Implemented（C 阶段：BEFORE_TOOL/AFTER_TOOL/BEFORE_TURN_END 三事件钩子，策略不进循环体）
 - REQ-CONFIRM-01: Implemented（C 阶段：副作用实时确认闸门 + 每步独立记账）
+- REQ-ENTRY-01: Implemented（D 阶段：对话是唯一入口，任务路径收进对话为次级「任务工作副本」，`13fd8ce`）
 
 ## Acceptance Tooling
 - 后端验收 = 冒烟层：`tests/test_smoke.py` + `tests/test_smoke_learning.py`（34 项，约 20 秒）。

@@ -73,15 +73,20 @@ class ContextBuilder:
         *,
         messages: list[dict],
         budget: BudgetPolicy | None = None,
+        extra_header: str = "",
     ) -> ContextPacket:
         """Keep the newest contiguous tail of `messages` that fits the budget.
 
         Each message is `{role, text, ...}`; `extra_tokens` (attachments, etc.) is
         counted when present and passed through untouched. The header is always
-        sent. At least the newest message is kept so a turn never fails outright.
+        sent, and `extra_header` (the resident skill index, when tools are
+        available) rides with it *inside* the budget so it is never free tokens.
+        At least the newest message is kept so a turn never fails outright.
         """
         budget = budget or BudgetPolicy()
         instructions = self.header(agent_id)
+        if extra_header:
+            instructions = f"{instructions}\n\n{extra_header}"
         used = self.counter.count(instructions)
         limit = budget.input_limit
 

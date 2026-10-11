@@ -43,6 +43,13 @@ class Command(BaseModel):
     argv: list[str] = Field(min_length=1, max_length=100)
     purpose: Literal["work", "verify"]
 
+class SkillRead(BaseModel):
+    """Reading a skill is knowledge only; it can never widen what the model may do."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    name: str = Field(min_length=1, max_length=64)
+    resource: str | None = Field(default=None, min_length=1, max_length=256)
+
 
 # --- browser parameters (declared once, here) --------------------------------
 
@@ -117,6 +124,14 @@ def _specs() -> list[ToolSpec]:
             "Find files by name and/or content inside authorized directories.",
             Search,
             "file",
+        ),
+        ToolSpec(
+            "read_skill",
+            "Read an installed skill's instructions by name. Pass `resource` to read a "
+            "reference file the skill lists. Skills are knowledge, never permissions: "
+            "anything a skill describes is still done through the ordinary tools.",
+            SkillRead,
+            "meta",
         ),
         ToolSpec(
             "browser_state",

@@ -1,9 +1,12 @@
 """Composition root: connects the first part's modules through their public services.
 
 This root assembles only the independently runnable Agent system: conversations,
-tools/actions, permissions, models, attachments, maintenance and backups. The
-long-term part (history, identity, memory, development, segments, skills,
-activities) is not assembled here and must not be imported by this part.
+tools/actions, permissions, models, attachments, skill packages, maintenance and
+backups. The long-term part (history, identity, memory, development, segments,
+the skills *accumulation* service, activities) is not assembled here and must not
+be imported by this part. Note the distinction: ``skillpacks`` (this part) loads
+skill *knowledge* from folders; ``skills`` (the long-term part) accumulates and
+versions skills from experience.
 """
 
 from pathlib import Path
@@ -25,6 +28,7 @@ from lingnexus.permissions.service import Permissions
 from lingnexus.runtime.confirmations import ConfirmationService, confirmation_hook
 from lingnexus.runtime.hooks import HookEvent, HookRegistry
 from lingnexus.runtime.store import RunStore
+from lingnexus.skillpacks import SkillLibrary
 from lingnexus.storage.db import Database
 from lingnexus.tasks.sandbox import SandboxService
 
@@ -44,6 +48,17 @@ class Application:
         self.attachments = Attachments(self.database)
         self.conversations = Conversations(self.database)
         self.permissions = Permissions(self.database)
+        # Skill packages are external *knowledge*, never a permission source. The
+        # folders are scanned once here; nothing is granted by loading a skill —
+        # every action it describes still goes through the ordinary tools, the
+        # permission hook and the sandbox. With no skills installed this is inert.
+        self.skillpacks = SkillLibrary(
+            (
+                ("project", Path.cwd() / ".lingnexus" / "skills"),
+                ("user", path.parent / "skills"),
+                ("bundled", Path(__file__).parent / "skillpacks" / "builtin"),
+            )
+        )
         # Policy is injected through hooks, never written into a loop body. The
         # permission hook is the only authorization gate for every tool call; the
         # confirmation hook adds the real-time owner gate for side-effecting calls.

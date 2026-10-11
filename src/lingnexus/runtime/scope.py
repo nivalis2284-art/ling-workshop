@@ -145,6 +145,12 @@ class ChatToolScope:
         return result, record.get("id")
 
     def meta(self, name: str, args: dict) -> tuple[dict, str | None]:
+        if name == "read_skill":
+            # Knowledge only: reading a skill never changes what the tools may do.
+            library = getattr(self.app, "skillpacks", None)
+            if library is None:
+                return {"status": "failed", "error_code": "skillpacks_unavailable"}, None
+            return library.read(args["name"], args.get("resource")), None
         if name == "request_dependencies":
             from lingnexus.dependencies import DependencyService
 

@@ -52,6 +52,7 @@ def build_payload(
         agent_id,
         messages=entries,
         budget=BudgetPolicy(context_limit=limit, output_reserve=output, tool_reserve=256),
+        extra_header=_skill_index(app, profile),
     )
     # Native attachments are bytes-bounded independently of the token estimate.
     selected = list(context.evidence)
@@ -100,6 +101,20 @@ def build_payload(
             "max_completion_tokens": output,
         }
     return payload, manifest
+
+
+def _skill_index(app: "Application", profile: ModelProfile) -> str:
+    """The resident skill list (disclosure level 1), or "" when it cannot be used.
+
+    A profile that cannot request tools would only get noise from the list — and
+    the index is charged to the request budget — so it is sent only where the
+    model can actually act on it. No skills installed means no extra header at
+    all, which is what keeps this feature optional.
+    """
+    if not profile.capabilities.tools:
+        return ""
+    library = getattr(app, "skillpacks", None)
+    return library.prompt_index() if library is not None else ""
 
 
 def _messages(payload: dict, profile: ModelProfile) -> list:

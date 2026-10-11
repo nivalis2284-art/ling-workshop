@@ -178,6 +178,12 @@ class TaskToolScope:
         return result, result.get("id") or self.effect
 
     def meta(self, name: str, args: dict) -> tuple[dict, str | None]:
+        if name == "read_skill":
+            # Knowledge only, and no real-world effect: nothing to reconcile later.
+            library = getattr(self.app, "skillpacks", None)
+            if library is None:
+                return {"status": "failed", "error_code": "skillpacks_unavailable"}, None
+            return library.read(args["name"], args.get("resource")), None
         if name == "request_dependencies":
             result = {
                 "status": "completed",

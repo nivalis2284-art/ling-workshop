@@ -2,31 +2,71 @@
 
 Dispatch itself lives in one place — ``lingnexus.actions.dispatch`` — shared by
 every loop. This module only adapts one chat run to the environment that
-dispatcher needs. Chat has no snapshot workspace, so commands are reported as
-unavailable and the ``BEFORE_TOOL`` policy hook decides what that means; file
-tools run against the owner's authorized directories and every access
-re-checks the grants. Browser sessions are not wired into the chat loop yet, so
-a browser call is honestly refused rather than silently faked.
+dispatcher needs.
+
+A chat run now gets a **real authorized working directory**: the first directory
+the owner has granted writable, read from the existing ``Permissions`` grants —
+the same directory-authorization system the file tools already use, not a new
+one. ``run_command`` therefore executes for real, and it executes through the
+``SandboxService`` (the default restricted-local tier), never a bare host shell.
+
+Authorization is *not* decided here. The ``BEFORE_TOOL`` permission hook reads
+the same grants and rejects anything out of scope; this module only says how to
+reach the caller's environment, exactly like the task scope does. When no
+directory is authorized, ``workdir`` is ``None`` and the hook honestly refuses
+commands. Browser sessions are delegated to the parent ``BrowserService`` when
+one is present; without it a browser call is refused rather than faked.
 """
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+from dataclasses import asdict
 from pathlib import Path
 
 from lingnexus.common.errors import PermissionDenied
+
+_BROWSER_ACTIONS = {
+    "browser_goto": "goto",
+    "browser_read": "read",
+    "browser_fill": "fill",
+    "browser_request_click": "click",
+}
 
 
 class ChatToolScope:
     """Adapts one chat run to the environment the shared dispatcher needs."""
 
-    def __init__(self, app, agent_id: str):
+    def __init__(self, app, agent_id: str, run_id: str):
         self.app = app
         self.agent_id = agent_id
+        self.run_id = run_id
+        self._step = 0
+        self._call_id = ""
+
+    def bind(self, step: int, call_id: str) -> None:
+        """Remember this call's identity so an effect id is deterministic.
+
+        This is environment plumbing (a stable id for later reconciliation), not
+        a policy decision — every allow/deny still comes from a hook.
+        """
+        self._step = step
+        self._call_id = call_id
+
+    @property
+    def _effect_id(self) -> str:
+        return f"chat:{self.run_id}:{self._step}:{self._call_id}"
+
+    @property
+    def _writable(self) -> tuple[Path, ...]:
+        return tuple(Path(p) for p in self.app.permissions.current(self.agent_id)["writable"])
 
     @property
     def workdir(self) -> Path | None:
-        """Chat has no authorized command sandbox this wave; commands are unavailable."""
-        return None
+        """The authorized working directory, or None when none is granted."""
+        roots = self._writable
+        return roots[0] if roots else None
 
     @property
     def command_available(self) -> bool:
@@ -45,16 +85,64 @@ class ChatToolScope:
             self.app.permissions.create_text(self.agent_id, Path(raw), text)
         else:
             self.app.permissions.write_text(self.agent_id, Path(raw), text)
-        return {"status": "completed", "result": {"path": raw, "written": True}}, None
+        return (
+            {"status": "completed", "result": {"path": raw, "written": True}},
+            self._effect_id,
+        )
 
     def read_path(self, path: Path) -> str:
         return self.app.permissions.read_text(self.agent_id, path)
 
     async def run(self, argv: list[str], purpose: str) -> tuple[dict, str | None]:
-        raise PermissionDenied("当前对话没有已授权的命令执行环境。")
+        """Execute for real, through the sandbox tier — never a bare host shell."""
+        workdir = self.workdir
+        if workdir is None:
+            raise PermissionDenied("当前对话没有已授权的命令执行环境。")
+        # The tier is chosen by the sandbox service; no engine is hard-coded here.
+        runner = self.app.sandbox.executor(workdir, writable=True)
+        result = asdict(await asyncio.to_thread(runner.execute, list(argv)))
+        result["verification_passed"] = bool(
+            purpose == "verify"
+            and result.get("status") == "success"
+            and result.get("exit_code") == 0
+            and result.get("cleanup_confirmed")
+            and not result.get("timed_out")
+            and not result.get("output_truncated")
+            and not result.get("error")
+        )
+        return result, self._effect_id
 
     async def browser(self, name: str, args: dict) -> tuple[dict, str | None]:
-        raise PermissionDenied("当前对话没有可用的浏览器会话。")
+        """Delegate to the parent browser service; refuse honestly without one."""
+        browser = getattr(self.app, "browser", None)
+        if browser is None:
+            raise PermissionDenied("当前对话没有可用的浏览器会话。")
+        if name == "browser_state":
+            return {"status": "completed", "result": await browser.state(self.agent_id)}, None
+        from lingnexus.browser.policy import ActionInput
+
+        expected = args.get("expected_text")
+        raw = {key: value for key, value in args.items() if key != "expected_text"}
+        raw.setdefault("action", _BROWSER_ACTIONS[name])
+        # A deterministic, bounded request id makes the browser store idempotent
+        # across steps, so a retried call can never repeat a recorded effect.
+        raw["request_id"] = "chat:" + hashlib.sha256(self._effect_id.encode()).hexdigest()[:40]
+        request = ActionInput.model_validate(raw)
+        record = await browser.submit(self.agent_id, request)
+        result = dict(record)
+        if record.get("status") == "executing":
+            result.update(status="unknown", error_code="effect_needs_review")
+        if name == "browser_read":
+            data = record.get("result") or {}
+            result["verification_passed"] = bool(
+                record.get("status") == "completed"
+                and expected
+                and expected.strip()
+                and expected in data.get("text", "")
+                and not data.get("truncated")
+            )
+            result["verification_expected_text"] = expected
+        return result, record.get("id")
 
     def meta(self, name: str, args: dict) -> tuple[dict, str | None]:
         if name == "request_dependencies":

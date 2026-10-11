@@ -134,7 +134,7 @@ class ChatRuntime:
     {run_id, conversation_id}; step_started carries {run_id, step}; tool_started
     and tool_result carry {run_id, step, name, call_id, ...}; paused/resumed carry
     {run_id}; text/thinking carry {run_id, text}; usage carries
-    {run_id, attempt, profile_id, snapshot: true, usage}; complete
+    {run_id, step, attempt, profile_id, snapshot: true, usage}; complete
     carries {run_id, status: completed, assistant_message_id}; error carries
     {run_id, code, message}. Only complete/error end a subscriber. Thinking is
     provider-returned visible display material, never an assistant message.
@@ -368,7 +368,7 @@ class ChatRuntime:
             if self._client is None:
                 self._client = httpx.AsyncClient()
             run = self.store.get(run_id)
-            scope = ChatToolScope(self.app, run["agent_id"])
+            scope = ChatToolScope(self.app, run["agent_id"], run_id)
             state = {
                 "profile": profile,
                 "credentials": credentials,
@@ -446,28 +446,47 @@ class ChatRuntime:
     async def _step_call(
         self, run_id: str, step: int, state: dict, requested_effort: str | None
     ) -> _Turn | None:
-        """Run one model call; step one keeps the primary→backup restart policy."""
+        """Run one model call; step one keeps the primary→backup restart policy.
+
+        Every step records its own attempt row, so the accounting is honest for
+        the whole loop — a second or third model call is never dropped.
+        """
         if step > 1:
+            profile_id = self.store.get(run_id)["profile_id"]
+            self.failover.begin_attempt(run_id, step, 1, profile_id)
             turn = await self._stream_turn(
-                run_id, state["profile"], state["payload"], state["credentials"], state["effort"]
+                run_id,
+                step,
+                state["profile"],
+                state["payload"],
+                state["credentials"],
+                state["effort"],
+                attempt=1,
             )
             if turn is None:
                 return None
             if turn.eof:
+                self.failover.finish_attempt(run_id, "failed", "unexpected_eof")
                 self._fail(run_id, "unexpected_eof")
                 return None
             if turn.error is not None:
-                code = turn.error.error.code if turn.error.error else "runtime_error"
+                error = turn.error.error
+                code = error.code if error else "runtime_error"
+                self.failover.finish_attempt(
+                    run_id, "failed", code, error.status_code if error else None
+                )
                 self._fail(run_id, code)
                 return None
+            self.failover.finish_attempt(run_id, "completed")
             return turn
         for attempt in (1, 2):
             if self.store.get(run_id)["status"] != "running":
                 return None
             profile_id = self.store.get(run_id)["profile_id"]
-            self.failover.begin_attempt(run_id, attempt, profile_id)
+            self.failover.begin_attempt(run_id, step, attempt, profile_id)
             turn = await self._stream_turn(
                 run_id,
+                step,
                 state["profile"],
                 state["payload"],
                 state["credentials"],
@@ -477,9 +496,11 @@ class ChatRuntime:
             if turn is None:
                 return None
             if turn.eof:
+                self.failover.finish_attempt(run_id, "failed", "unexpected_eof")
                 self._fail(run_id, "unexpected_eof")
                 return None
             if turn.error is None:
+                self.failover.finish_attempt(run_id, "completed")
                 return turn
             error = turn.error.error
             code = error.code if error else "runtime_error"
@@ -499,11 +520,12 @@ class ChatRuntime:
     async def _stream_turn(
         self,
         run_id: str,
+        step: int,
         profile: ModelProfile,
         payload: dict,
         credentials: RuntimeCredentials,
         effort: str | None,
-        attempt: int | None = None,
+        attempt: int,
     ) -> _Turn | None:
         """One native model stream reduced to text, tool calls and a finish marker."""
         text: list[str] = []
@@ -519,8 +541,7 @@ class ChatRuntime:
             async for event in stream:
                 if self.store.get(run_id)["status"] != "running":
                     return None
-                if attempt is not None:
-                    self.failover.usage(run_id, attempt, event.usage)
+                self.failover.usage(run_id, step, attempt, event.usage)
                 if event.type in ("text_delta", "thinking_delta"):
                     kind = "text" if event.type == "text_delta" else "thinking"
                     safe_text = guards[kind].feed(event.text or "")
@@ -567,7 +588,16 @@ class ChatRuntime:
                 "arguments": call.arguments,
             },
         )
-        context = {"agent_id": scope.agent_id, "command_available": scope.command_available}
+        context = {
+            "agent_id": scope.agent_id,
+            "command_available": scope.command_available,
+            "run_id": run_id,
+            "step": step,
+            "call_id": call.id,
+        }
+        # The call identity is environment plumbing for the scope (a deterministic
+        # effect id), never a policy decision — policy stays in the hooks.
+        scope.bind(step, call.id)
         started = time.monotonic()
         decision = await self.app.hooks.run(
             HookEvent.BEFORE_TOOL,

@@ -187,8 +187,10 @@ class ChatFailover:
             policy = db.execute(
                 "SELECT * FROM chat_run_profiles WHERE run_id=?", (run_id,)
             ).fetchone()
+            # Only the first step may restart on the backup; a later step's
+            # accounting row must never open a second failover window.
             count = db.execute(
-                "SELECT COUNT(*) FROM chat_call_attempts WHERE run_id=?",
+                "SELECT COUNT(*) FROM chat_call_attempts WHERE run_id=? AND step=1",
                 (run_id,),
             ).fetchone()[0]
             backup = policy["fallback_profile_id"]
@@ -262,12 +264,12 @@ class ChatFailover:
                 },
             )
 
-    def begin_attempt(self, run_id: str, attempt: int, profile_id: str) -> None:
+    def begin_attempt(self, run_id: str, step: int, attempt: int, profile_id: str) -> None:
         with self.app.database.transaction() as db:
             db.execute(
-                "INSERT INTO chat_call_attempts(run_id,attempt,profile_id,status,started_at) "
-                "VALUES (?,?,?,'running',?)",
-                (run_id, attempt, profile_id, utc_now()),
+                "INSERT INTO chat_call_attempts(run_id,step,attempt,profile_id,status,started_at) "
+                "VALUES (?,?,?,?,'running',?)",
+                (run_id, step, attempt, profile_id, utc_now()),
             )
 
     def finish_attempt(self, run_id: str, status: str, code: str | None = None, http_status=None):
@@ -278,14 +280,17 @@ class ChatFailover:
                 (status, code, http_status, utc_now(), run_id),
             )
 
-    def usage(self, run_id: str, attempt: int, usage: Usage | None) -> None:
+    def usage(self, run_id: str, step: int, attempt: int, usage: Usage | None) -> None:
         if usage is None:
             return
         with self.app.database.transaction() as db:
             row = db.execute(
-                "SELECT profile_id,usage FROM chat_call_attempts WHERE run_id=? AND attempt=?",
-                (run_id, attempt),
+                "SELECT profile_id,usage FROM chat_call_attempts "
+                "WHERE run_id=? AND step=? AND attempt=?",
+                (run_id, step, attempt),
             ).fetchone()
+            if row is None:
+                return
             old = json.loads(row["usage"]) if row["usage"] is not None else None
             report = {f: getattr(usage, f) for f in USAGE_FIELDS}
             report["cost_usd"] = str(usage.cost_usd) if usage.cost_usd is not None else None
@@ -297,14 +302,15 @@ class ChatFailover:
             if report == old:
                 return
             db.execute(
-                "UPDATE chat_call_attempts SET usage=? WHERE run_id=? AND attempt=?",
-                (json.dumps(report), run_id, attempt),
+                "UPDATE chat_call_attempts SET usage=? WHERE run_id=? AND step=? AND attempt=?",
+                (json.dumps(report), run_id, step, attempt),
             )
             self.store.append(
                 run_id,
                 "usage",
                 {
                     "run_id": run_id,
+                    "step": step,
                     "attempt": attempt,
                     "profile_id": row["profile_id"],
                     "snapshot": True,
@@ -320,7 +326,7 @@ class ChatFailover:
                 (run_id,),
             ).fetchone()
             rows = db.execute(
-                "SELECT * FROM chat_call_attempts WHERE run_id=? ORDER BY attempt",
+                "SELECT * FROM chat_call_attempts WHERE run_id=? ORDER BY step,attempt",
                 (run_id,),
             ).fetchall()
         attempts = [

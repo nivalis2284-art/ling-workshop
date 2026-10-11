@@ -30,12 +30,25 @@ class GuideInput(Input):
     text: str = Field(min_length=1, max_length=8000)
 
 
+class ConfirmationInput(Input):
+    """The owner's answer to a pending side-effect confirmation."""
+
+    approved: bool
+
+
 def _runtime(request: Request) -> ChatRuntime:
     """Return the lifespan-owned runtime; never create an untracked worker here."""
     runtime = getattr(request.app.state, "chat_runtime", None)
     if runtime is None:
         raise HTTPException(503, "Chat runtime is not ready.")
     return runtime
+
+
+def _confirmations(request: Request):
+    confirmations = getattr(request.app.state.services, "confirmations", None)
+    if confirmations is None:
+        raise HTTPException(503, "Confirmations are not ready.")
+    return confirmations
 
 
 def _sse(event: dict) -> bytes:
@@ -115,3 +128,17 @@ async def resume(run_id: str, request: Request):
 async def guide(run_id: str, value: GuideInput, request: Request):
     """Queue a mid-run instruction, injected at the next step boundary."""
     return _runtime(request).guide(run_id, value.text)
+
+
+@router.get("/runs/{run_id}/confirmations")
+async def confirmations(run_id: str, request: Request):
+    """List the side-effecting calls still waiting for the owner's decision."""
+    _runtime(request).get_run(run_id)
+    return _confirmations(request).pending(run_id)
+
+
+@router.post("/runs/{run_id}/confirmations/{fingerprint}")
+async def decide(run_id: str, fingerprint: str, value: ConfirmationInput, request: Request):
+    """Approve or reject one pending side-effecting call, unblocking the loop."""
+    _runtime(request).get_run(run_id)
+    return _confirmations(request).decide(run_id, fingerprint, approved=value.approved)

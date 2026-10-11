@@ -22,7 +22,9 @@ from lingnexus.maintenance.automatic import AutomaticBackups
 from lingnexus.maintenance.service import MaintenanceService
 from lingnexus.permissions.hooks import AppAuthorization, permission_hook
 from lingnexus.permissions.service import Permissions
+from lingnexus.runtime.confirmations import ConfirmationService, confirmation_hook
 from lingnexus.runtime.hooks import HookEvent, HookRegistry
+from lingnexus.runtime.store import RunStore
 from lingnexus.storage.db import Database
 from lingnexus.tasks.sandbox import SandboxService
 
@@ -43,9 +45,30 @@ class Application:
         self.conversations = Conversations(self.database)
         self.permissions = Permissions(self.database)
         # Policy is injected through hooks, never written into a loop body. The
-        # permission hook is the only authorization gate for every tool call.
+        # permission hook is the only authorization gate for every tool call; the
+        # confirmation hook adds the real-time owner gate for side-effecting calls.
         self.hooks = HookRegistry()
         self.hooks.register(HookEvent.BEFORE_TOOL, permission_hook(AppAuthorization(self)))
+        self.confirmations = ConfirmationService()
+        run_store = RunStore(self.database)
+
+        async def _notify_confirmation(run_id: str, fingerprint: str, summary: dict) -> None:
+            run_store.append(
+                run_id,
+                "notice",
+                {
+                    "run_id": run_id,
+                    "code": "confirmation_required",
+                    "fingerprint": fingerprint,
+                    "tool": summary["tool"],
+                    "message": "该操作有现实副作用，等待所有者确认。",
+                },
+            )
+
+        self.hooks.register(
+            HookEvent.BEFORE_TOOL,
+            confirmation_hook(self.confirmations, notifier=_notify_confirmation),
+        )
         self.actions = Actions(self)
         self.sandbox = SandboxService(self.database)
         self.browser: BrowserService | None = None

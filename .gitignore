@@ -18,6 +18,7 @@ node_modules/
 .artifacts/
 .ling-data/
 .workbuddy/
+.workbuddy-ai/
 .tools/
 packaging/installer/
 packaging/smoke-*/

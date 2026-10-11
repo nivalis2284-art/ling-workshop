@@ -32,6 +32,7 @@ export function ChatHarness({
       session={session}
       conversations={conversations}
       openSettings={() => {}}
+      openBrowser={() => {}}
     />
   );
 }

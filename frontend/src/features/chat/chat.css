@@ -615,6 +615,22 @@
   line-height: 1.7;
   margin: 0 0 18px;
 }
+/* 暂存工作副本：内容较多，用可滚动的宽卡片承载。 */
+.chat-workspace-card {
+  width: 100%;
+  max-width: 860px;
+  max-height: 86vh;
+  overflow-y: auto;
+  padding: 22px 26px 26px;
+}
+.chat-workspace-card .management-page {
+  padding: 0;
+}
+.chat-workspace-card .chat-head-title,
+.chat-workspace-card > .section-heading h2 {
+  font-size: 16px;
+  margin: 0;
+}
 
 /* --- 对话循环：工具调用 / 运行控制 / 副作用确认 --- */
 .chat-tools {

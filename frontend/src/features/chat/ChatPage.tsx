@@ -12,6 +12,7 @@ import { ChatTranscript } from "./ChatTranscript";
 import { ChatSession, isPending } from "./session";
 import type { ConversationList } from "./useConversations";
 import { useChatAttachments } from "./useChatAttachments";
+import { TasksPage } from "../tasks/TasksPage";
 import "./chat.css";
 
 export function ChatPage({
@@ -20,17 +21,20 @@ export function ChatPage({
   session: agentSession,
   conversations,
   openSettings,
+  openBrowser,
 }: {
   api: LingApi;
   agent: Agent;
   session: ChatSession;
   conversations: ConversationList;
   openSettings: () => void;
+  openBrowser: () => void;
 }) {
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [selecting, setSelecting] = useState(false);
   const [picked, setPicked] = useState(new Set<string>());
   const [confirming, setConfirming] = useState<string[]>([]);
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const list = conversations.list;
   const unresolved =
     isPending(agentSession.getSnapshot().turns.at(-1)) &&
@@ -131,6 +135,7 @@ export function ChatPage({
           canSelect={!!userTurns && !disabled}
           onSelectTurns={() => (selecting ? stopSelecting() : setSelecting(true))}
           onOpenSettings={openSettings}
+          onOpenWorkspace={() => setWorkspaceOpen(true)}
           disabled={locked}
         />
         <div className="chat-column">
@@ -387,6 +392,36 @@ export function ChatPage({
                 确认删除
               </button>
             </div>
+          </section>
+        </div>
+      )}
+      {workspaceOpen && (
+        <div
+          className="chat-confirm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="chat-workspace-heading"
+        >
+          <section className="panel chat-workspace-card">
+            <div className="section-heading">
+              <h2 id="chat-workspace-heading">任务工作副本</h2>
+              <button
+                className="text-button"
+                onClick={() => setWorkspaceOpen(false)}
+              >
+                关闭
+              </button>
+            </div>
+            <p className="muted small">
+              日常多步工作直接在对话里说即可，不必另建任务。这里保留"先看变更再写回"的流程：
+              需要审阅文件改动、确认后再写回项目时，在此创建任务并查看实际执行记录。
+            </p>
+            <TasksPage
+              api={api}
+              agent={agent}
+              openBrowser={openBrowser}
+              embedded
+            />
           </section>
         </div>
       )}

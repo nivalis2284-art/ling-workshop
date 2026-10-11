@@ -13,10 +13,13 @@ export function TasksPage({
   api,
   agent,
   openBrowser,
+  embedded = false,
 }: {
   api: LingApi;
   agent: Agent;
   openBrowser?: () => void;
+  /** 嵌入对话内的"任务工作副本"面板时，不再渲染整页页头（避免重复标题）。 */
+  embedded?: boolean;
 }) {
   const load = useCallback(
     (signal: AbortSignal) => tasksApi(api).list(agent.id, signal),
@@ -27,20 +30,21 @@ export function TasksPage({
   const [browserReview, setBrowserReview] = useState(false);
   return (
     <div className="management-page">
-      <PageHeader
-        eyebrow={agent.name + "的空间"}
-        title="任务"
-        description="把目标交给灵，查看实际执行记录、结果与文件改动。离开页面后，任务仍由本地服务管理。"
-        action={
-          <button
-            className="button secondary"
-            onClick={() => void resource.refresh()}
-          >
-            刷新任务
-          </button>
-        }
-      />
-      <TaskForm
+      {!embedded && (
+        <PageHeader
+          eyebrow={agent.name + "的空间"}
+          title="任务"
+          description="把目标交给灵，查看实际执行记录、结果与文件改动。离开页面后，任务仍由本地服务管理。"
+          action={
+            <button
+              className="button secondary"
+              onClick={() => void resource.refresh()}
+            >
+              刷新任务
+            </button>
+          }
+        />
+      )}      <TaskForm
         key={agent.id}
         api={api}
         agentId={agent.id}

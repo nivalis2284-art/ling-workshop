@@ -108,6 +108,28 @@ test("the sidebar no longer lists chats and offers no way to create one", async 
   ).not.toBeInTheDocument();
 });
 
+test("对话是唯一入口：侧栏不再有「任务」，改为对话内的任务工作副本", async () => {
+  backend();
+  await openChat();
+  const nav = screen.getByRole("navigation", { name: "主要导航" });
+  // 任务不再是顶层导航项——C 阶段起对话是唯一入口。
+  expect(within(nav).queryByText("任务")).not.toBeInTheDocument();
+  // 但任务路径被收进对话：⋯ 菜单里的次级入口承载工作副本流程。
+  await userEvent.click(screen.getByRole("button", { name: "对话选项" }));
+  await userEvent.click(
+    await screen.findByRole("button", { name: "任务工作副本" }),
+  );
+  const dialog = await screen.findByRole("dialog");
+  expect(
+    within(dialog).getByRole("heading", { name: "任务工作副本" }),
+  ).toBeVisible();
+  expect(within(dialog).getByText(/先看变更再写回/)).toBeVisible();
+  // 嵌入态不再重复渲染整页的"任务"页头。
+  expect(
+    within(dialog).queryByRole("heading", { name: "任务", level: 1 }),
+  ).not.toBeInTheDocument();
+});
+
 test("deleting one round asks first and then drops it with its reply", async () => {
   const server = backend();
   await openChat();

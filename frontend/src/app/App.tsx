@@ -9,7 +9,6 @@ import { CreateAgent } from "../features/onboarding/CreateAgent";
 import { OverviewPage } from "../features/overview/OverviewPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { ContentPage } from "../features/content/ContentPage";
-import { TasksPage } from "../features/tasks/TasksPage";
 import { BrowserPage } from "../features/browser/BrowserPage";
 import { BackgroundPage } from "../features/background/BackgroundPage";
 import { ChatPage } from "../features/chat/ChatPage";
@@ -66,16 +65,10 @@ function AgentWorkspace({
             session={chatSession}
             conversations={conversations}
             openSettings={() => setPage("settings")}
-          />
-        )}
-        {page === "content" && <ContentPage api={api} agent={agent} />}
-        {page === "tasks" && (
-          <TasksPage
-            api={api}
-            agent={agent}
             openBrowser={() => setPage("browser")}
           />
         )}
+        {page === "content" && <ContentPage api={api} agent={agent} />}
         {page === "browser" && <BrowserPage api={api} agent={agent} />}
         {page === "background" && <BackgroundPage api={api} agent={agent} />}
         {page === "settings" && (

@@ -8,6 +8,7 @@ export function ChatHeader({
   canSelect,
   onSelectTurns,
   onOpenSettings,
+  onOpenWorkspace,
   disabled,
 }: {
   title: string;
@@ -15,6 +16,7 @@ export function ChatHeader({
   canSelect: boolean;
   onSelectTurns: () => void;
   onOpenSettings: () => void;
+  onOpenWorkspace: () => void;
   disabled: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -68,6 +70,16 @@ export function ChatHeader({
               }}
             >
               {selecting ? "退出批量删除" : "批量删除"}
+            </button>
+            <button
+              type="button"
+              className="chat-head-action"
+              onClick={() => {
+                onOpenWorkspace();
+                setOpen(false);
+              }}
+            >
+              任务工作副本
             </button>
             <button
               type="button"

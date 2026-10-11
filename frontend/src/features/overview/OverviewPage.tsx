@@ -1,4 +1,4 @@
-import { ArrowRight, Files, Globe, ListTodo, MessageCircle, Sprout } from "lucide-react";
+import { ArrowRight, Files, Globe, MessageCircle, Sprout } from "lucide-react";
 import type { Agent } from "../../api/types";
 import type { PageId } from "../../app/navigation";
 import { PageHeader } from "../../shared/ui";
@@ -14,7 +14,7 @@ export function OverviewPage({
     {
       page: "chat",
       title: "对话",
-      body: "和灵聊一聊。消息会保存在本地服务，随时可以继续或重新生成。",
+      body: "和灵聊一聊。让灵读文件、改文件、跑命令都在这里完成，多步工作也不用另外建任务。",
       icon: MessageCircle,
     },
     {
@@ -22,12 +22,6 @@ export function OverviewPage({
       title: "资料",
       body: "上传文件作为可查阅的资料，并在对话中把它们发给灵。",
       icon: Files,
-    },
-    {
-      page: "tasks",
-      title: "任务",
-      body: "把多步工作交给灵执行，随时查看进度与产物。",
-      icon: ListTodo,
     },
     {
       page: "browser",
@@ -54,7 +48,7 @@ export function OverviewPage({
             和灵一起做事。
           </h2>
           <p>
-            对话、资料、任务与网页浏览都在这台电脑上完成，
+            对话、资料与网页浏览都在这台电脑上完成，
             <br className="desktop-break" />
             不需要把内容送到别处。
           </p>

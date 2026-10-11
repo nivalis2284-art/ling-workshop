@@ -3,13 +3,11 @@
 from contextlib import aclosing
 from copy import deepcopy
 
-from lingnexus.actions.catalog import descriptors
+from lingnexus.actions.catalog import registry
 from lingnexus.common.errors import Conflict, PermissionDenied
-from lingnexus.dependencies import DependencyCandidate
 from lingnexus.dependencies.policy import package_parts
 from lingnexus.models import APIFamily
 
-from .browser import descriptors as browser_descriptors
 from .store import encode
 from .workspace import authorize
 
@@ -53,33 +51,8 @@ def safe_usage(value) -> dict:
 
 
 def catalog():
-    return [
-        *descriptors(),
-        *browser_descriptors(),
-        {
-            "name": "request_dependencies",
-            "description": "Request exact registry versions as data for owner configuration. Never installs, approves or enables network access.",
-            "parameters": DependencyCandidate.model_json_schema(),
-        },
-        {
-            "name": "run_command",
-            "description": "Execute argv in the owner-selected offline project snapshot. Use verify for checks.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "argv": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "minItems": 1,
-                        "maxItems": 100,
-                    },
-                    "purpose": {"type": "string", "enum": ["work", "verify"]},
-                },
-                "required": ["argv", "purpose"],
-                "additionalProperties": False,
-            },
-        },
-    ]
+    """Every declared tool, read from the single registry and nowhere else."""
+    return registry.schema()
 
 
 def initial(profile, objective, system_rules, workspace):

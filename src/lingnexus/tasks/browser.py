@@ -1,64 +1,11 @@
-"""Task adapters to the parent's browser boundary; never owner authority."""
+"""Task adapters to the parent's browser boundary; never owner authority.
 
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field
+The browser tool declarations live in the single registry
+(``lingnexus.actions.catalog``); this module only keeps the executor that talks
+to the parent browser service.
+"""
 
 from lingnexus.common.errors import PermissionDenied
-
-
-class State(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-
-class Goto(State):
-    origin_revision: int = Field(ge=0)
-    url: str = Field(min_length=1, max_length=8192)
-
-
-class Page(State):
-    origin_revision: int = Field(ge=0)
-    page_version: str = Field(min_length=1, max_length=256)
-
-
-class Read(Page):
-    max_chars: int = Field(default=8000, ge=1, le=20000)
-    expected_text: str | None = Field(default=None, min_length=1, max_length=4000)
-
-
-class Target(Page):
-    selector: str = Field(min_length=1, max_length=1000)
-
-
-class Fill(Target):
-    value: str = Field(max_length=20000)
-
-
-class Click(Target):
-    action: Literal["click", "submit", "send", "publish"] = "click"
-
-
-SCHEMAS = {
-    "browser_state": State,
-    "browser_goto": Goto,
-    "browser_read": Read,
-    "browser_fill": Fill,
-    "browser_request_click": Click,
-}
-
-
-def descriptors():
-    descriptions = {
-        "browser_state": "Inspect current owner-granted origins and page_version. Does not grant access or prove an outcome.",
-        "browser_goto": "Navigate to an already granted URL using the inspected origin_revision.",
-        "browser_read": "Read bounded visible DOM at the current page_version. Supply expected_text to verify the actual visible confirmation after a click.",
-        "browser_fill": "Fill a permitted field at the current page_version; never submits.",
-        "browser_request_click": "Request click/submit/send/publish for separate owner approval. Never approves or dispatches the effect.",
-    }
-    return [
-        {"name": name, "description": descriptions[name], "parameters": schema.model_json_schema()}
-        for name, schema in SCHEMAS.items()
-    ]
 
 
 class BrowserTools:

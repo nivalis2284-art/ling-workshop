@@ -1,27 +1,28 @@
-"""Task tool dispatch and evidence accounting; owner approvals are never tools."""
+"""Task tool dispatch and evidence accounting; owner approvals are never tools.
+
+Dispatch itself lives in one place — ``lingnexus.actions.dispatch`` — shared by
+every loop. This module only adapts one task step to that dispatcher (the
+``TaskToolScope``) and keeps the task-side evidence accounting that decides
+whether a delivered task outcome was actually verified.
+"""
 
 import asyncio
 import json
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
-from lingnexus.actions.catalog import SCHEMAS
-from lingnexus.common.errors import DomainError, PermissionDenied
-from lingnexus.dependencies import DependencyCandidate, DependencyService
+from lingnexus.actions.catalog import registry as TOOL_REGISTRY
+from lingnexus.actions.dispatch import ToolDispatcher
+from lingnexus.common.errors import PermissionDenied
+from lingnexus.dependencies import DependencyService
 from lingnexus.tools import ExecutionLimits
 
-from .browser import SCHEMAS as BROWSER_SCHEMAS
 from .browser import BrowserTools
 from .store import encode
 from .workspace import authorize, digest, make_parents, scan, tools
 
-
-class Command(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-    argv: list[str] = Field(min_length=1, max_length=100)
-    purpose: str
+BROWSER_NAMES = frozenset(s.name for s in TOOL_REGISTRY.specs() if s.kind == "browser")
 
 
 def successful(name, result):
@@ -69,7 +70,7 @@ def account(state, call, result):
     if state["command_used"] or (state.get("coding_workspace") and state["writes"]):
         # File reads cannot replace current test evidence.
         state["verified"] = state.get("command_verified", False)
-    if name in BROWSER_SCHEMAS and name != "browser_state":
+    if name in BROWSER_NAMES and name != "browser_state":
         state["browser_used"] = True
         state["browser_verified"] = bool(
             okay and name == "browser_read" and result.get("verification_passed")
@@ -90,27 +91,120 @@ def account(state, call, result):
         )
 
 
+class TaskToolScope:
+    """Adapts one task step to the environment the shared dispatcher needs."""
+
+    def __init__(self, app, store, snapshots, task, step, limits, browser):
+        self.app, self.store, self.snapshots = app, store, snapshots
+        self.task, self.step, self.limits, self.browser_tools = task, step, limits, browser
+        self.agent_id = task["agent_id"]
+        self.effect = step["id"]
+        self._base = f"task:{task['id']}:{task['step_count']}:{step['call_id']}"
+        self._snapshot = bool(task["workspace"])
+
+    @property
+    def workdir(self) -> Path | None:
+        return self.snapshots.path(self.task["id"]) if self._snapshot else None
+
+    @property
+    def roots(self) -> tuple[Path, ...]:
+        if self._snapshot:
+            return (self.snapshots.path(self.task["id"]),)
+        return tuple(Path(p) for p in self.app.permissions.current(self.agent_id)["readable"])
+
+    def read(self, raw: str) -> tuple[dict, str | None]:
+        if self._snapshot:
+            root = self.snapshots.path(self.task["id"])
+            text = tools(root).read_text(self.snapshots.file_path(self.task["id"], raw))
+            return {"status": "completed", "result": {"text": text}, "effect_id": self.effect}, self.effect
+        result = self.app.actions.execute(
+            self.agent_id, self._base + ":read", "read_file", {"path": raw}
+        )
+        result = json.loads(encode(result))
+        return result, result.get("id")
+
+    def write(self, raw: str, text: str, *, create: bool) -> tuple[dict, str | None]:
+        if self._snapshot:
+            root = self.snapshots.path(self.task["id"])
+            path = self.snapshots.file_path(self.task["id"], raw)
+            access = tools(root)
+            if create:
+                make_parents(root, path.relative_to(root))
+                access.create_text(path, text)
+            else:
+                access.write_text(path, text)
+            path.chmod(0o666)
+            scan(root)
+            payload = {
+                "status": "completed",
+                "result": {"path": raw, "written": True},
+                "effect_id": self.effect,
+            }
+            return payload, self.effect
+        name = "create_file" if create else "write_file"
+        result = self.app.actions.execute(
+            self.agent_id, self._base + ":write", name, {"path": raw, "text": text}
+        )
+        result = json.loads(encode(result))
+        return result, result.get("id")
+
+    def read_path(self, path: Path) -> str:
+        if self._snapshot:
+            return tools(self.snapshots.path(self.task["id"])).read_text(path)
+        return self.app.permissions.read_text(self.agent_id, path)
+
+    async def run(self, argv: list[str], purpose: str) -> tuple[dict, str | None]:
+        if not self._snapshot:
+            raise PermissionDenied("Command requires an authorized snapshot.")
+        authorize(self.app, self.agent_id, self.task["workspace"])
+        root = self.snapshots.path(self.task["id"])
+        scan(root)
+        # The tier is chosen by the sandbox service; no engine is hard-coded.
+        runner = self.app.sandbox.executor(
+            root, image=self.task["docker_image"], writable=True, limits=self.limits
+        )
+        result = asdict(await asyncio.to_thread(runner.execute, list(argv)))
+        try:
+            scan(root)
+        except (PermissionError, OSError, ValueError):
+            # The execution result remains authoritative even when generated
+            # artifacts fail validation. Never lose exit/output/cleanup flags.
+            result["artifact_error"] = "unsafe_or_oversized_snapshot"
+        result["verification_passed"] = bool(purpose == "verify" and successful("run_command", result))
+        return result, self.effect
+
+    async def browser(self, name: str, args: dict) -> tuple[dict, str | None]:
+        result = await self.browser_tools.execute(self.task, self.step, name, args)
+        return result, result.get("id") or self.effect
+
+    def meta(self, name: str, args: dict) -> tuple[dict, str | None]:
+        if name == "request_dependencies":
+            result = {
+                "status": "completed",
+                "dependency_candidate": DependencyService.propose(**args),
+                "dependency_status": "pending_owner",
+                "effect_id": self.effect,
+            }
+            return result, self.effect
+        raise ValueError("Unknown meta tool")
+
+
 class ToolExecutor:
     def __init__(self, app, store, snapshots, limits=None):
         self.app, self.store, self.snapshots = app, store, snapshots
         self.limits = limits or ExecutionLimits()
         self.browser = BrowserTools(app, store)
+        self.dispatcher = ToolDispatcher(TOOL_REGISTRY)
 
     async def execute(self, task, call):
         tid, name, args = task["id"], call["name"], call["arguments"]
-        result: dict[str, Any]
-        intent = None
         step = self.store.step(tid, task["step_count"], call)
         if step["status"] in {"completed", "failed", "unknown"}:
             return step["result"]
-        request_id = f"task:{tid}:{task['step_count']}:{call['id']}"
-        use_actions = name in SCHEMAS and (not task["workspace"] or "path" not in args)
-        if (
-            step["status"] == "executing"
-            and not use_actions
-            and name not in BROWSER_SCHEMAS
-            and name != "request_dependencies"
-        ):
+        spec = self.dispatcher.registry.get(name)
+        actions_path = spec is not None and spec.kind == "file" and not task["workspace"]
+        replay_safe = spec is not None and spec.kind in {"browser", "meta"}
+        if step["status"] == "executing" and not (actions_path or replay_safe):
             result = {
                 "status": "unknown",
                 "error_code": "effect_needs_review",
@@ -118,107 +212,23 @@ class ToolExecutor:
             }
             self.store.result(step["id"], result, "unknown")
             return result
-        try:
-            if (
-                name not in SCHEMAS
-                and name not in BROWSER_SCHEMAS
-                and name not in {"run_command", "request_dependencies"}
-            ):
-                raise ValueError
-            if name in BROWSER_SCHEMAS:
-                args = BROWSER_SCHEMAS[name].model_validate(args).model_dump()
-            elif name == "run_command":
-                validated = Command.model_validate(args)
-                if (
-                    validated.purpose not in {"work", "verify"}
-                    or any("\0" in a or len(a) > 16_384 for a in validated.argv)
-                    or sum(map(len, validated.argv)) > 65_536
-                ):
-                    raise ValueError
-            elif name == "request_dependencies":
-                args = DependencyCandidate.model_validate(args).model_dump()
-            else:
-                args = SCHEMAS[name].model_validate(args).model_dump()
-            if use_actions:
-                intent = self.app.actions.prepare(task["agent_id"], request_id, name, args)
-                self.store.executing(step["id"], intent["id"])
-            else:
-                self.store.executing(step["id"])
-            self.store.event(
-                tid,
-                "tool_started",
-                {
-                    "step_id": step["id"],
-                    "name": name,
-                    "call_id": call["id"],
-                    "purpose": step["purpose"],
-                },
-            )
-            if name in BROWSER_SCHEMAS:
-                result = await self.browser.execute(task, step, name, args)
-            elif name == "request_dependencies":
-                result = {
-                    "status": "completed",
-                    "dependency_candidate": DependencyService.propose(**args),
-                    "dependency_status": "pending_owner",
-                    "effect_id": step["id"],
-                }
-            elif name == "run_command":
-                if not task["workspace"]:
-                    raise PermissionDenied("Command requires an authorized snapshot.")
-                authorize(self.app, task["agent_id"], task["workspace"])
-                root = self.snapshots.path(tid)
-                scan(root)
-                # The tier is chosen by the sandbox service; no engine is hard-coded.
-                runner = self.app.sandbox.executor(
-                    root, image=task["docker_image"], writable=True, limits=self.limits
-                )
-                result = asdict(
-                    await asyncio.to_thread(runner.execute, list(args["argv"]))
-                )
-                try:
-                    scan(root)
-                except (PermissionError, OSError, ValueError):
-                    # The execution result remains authoritative even when generated
-                    # artifacts fail validation. Never lose exit/output/cleanup flags.
-                    result["artifact_error"] = "unsafe_or_oversized_snapshot"
-                result["verification_passed"] = bool(
-                    args["purpose"] == "verify" and successful(name, result)
-                )
-            elif use_actions:
-                if intent is None:
-                    raise ValueError("Action intent was not prepared.")
-                result = self.app.actions.execute(task["agent_id"], request_id, name, args)
-                # Source references are serialized, never credential objects.
-                result = json.loads(encode(result))
-            else:
-                authorize(self.app, task["agent_id"], task["workspace"])
-                root = self.snapshots.path(tid)
-                path = self.snapshots.file_path(tid, args["path"])
-                access = tools(root)
-                if name == "read_file":
-                    value = {"text": access.read_text(path)}
-                else:
-                    if name == "create_file":
-                        make_parents(root, path.relative_to(root))
-                        access.create_text(path, args["text"])
-                    else:
-                        access.write_text(path, args["text"])
-                    path.chmod(0o666)
-                    value = {"path": args["path"], "written": True}
-                    scan(root)
-                result = {"status": "completed", "result": value, "effect_id": step["id"]}
-        except (PermissionDenied, PermissionError):
-            result = {"status": "failed", "error_code": "permission_denied"}
-        except (ValueError, ValidationError, DomainError, UnicodeError):
-            result = {"status": "failed", "error_code": "invalid_tool_request"}
-        except OSError:
-            result = {
-                "status": "unknown"
-                if name in {"create_file", "write_file", "run_command"}
-                else "failed",
-                "error_code": "tool_operation_failed",
-            }
+        self.store.executing(step["id"])
+        self.store.event(
+            tid,
+            "tool_started",
+            {
+                "step_id": step["id"],
+                "name": name,
+                "call_id": call["id"],
+                "purpose": step["purpose"],
+            },
+        )
+        scope = TaskToolScope(self.app, self.store, self.snapshots, task, step, self.limits, self.browser)
+        outcome = await self.dispatcher.execute(name, args, scope)
+        result: dict[str, Any] = outcome.data
+        if outcome.effect_id and outcome.effect_id != step["id"]:
+            with self.app.database.transaction():
+                self.store.effect(step["id"], outcome.effect_id)
         status = (
             "waiting_owner"
             if result.get("status") == "prepared" and result.get("approval_id")

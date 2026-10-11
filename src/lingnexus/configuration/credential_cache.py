@@ -3,10 +3,11 @@
 import ctypes
 import json
 import os
-import stat
 import tempfile
 from ctypes import wintypes
 from pathlib import Path
+
+from lingnexus.tools._paths import is_link
 
 MAX_CACHE_BYTES = 1024 * 1024
 
@@ -51,7 +52,7 @@ def _plain(path: Path) -> None:
             info = part.lstat()
         except FileNotFoundError:
             continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+        if is_link(info):
             raise OSError("密钥缓存路径不能使用链接或重解析点。")
 
 

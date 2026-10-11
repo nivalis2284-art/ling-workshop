@@ -32,8 +32,21 @@ def local_path(value: str | os.PathLike[str]) -> Path:
     return Path(raw.replace("\\", "/"))
 
 
+def is_link(info: os.stat_result) -> bool:
+    """True for any alias that redirects elsewhere.
+
+    ``S_ISLNK`` alone misses Windows junctions and mount points: those report as
+    ordinary directories (``S_ISDIR``) and only betray themselves through
+    ``FILE_ATTRIBUTE_REPARSE_POINT``. Both halves are required, so this is the one
+    predicate every containment check should share.
+    """
+    return bool(
+        stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400
+    )
+
+
 def reject_link(info: os.stat_result) -> None:
-    if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+    if is_link(info):
         raise FileAccessDenied("Symlinks, junctions and reparse points are not allowed")
 
 

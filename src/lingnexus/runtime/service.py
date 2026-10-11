@@ -3,19 +3,37 @@
 import asyncio
 import hashlib
 import json
+import time
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import httpx
 
+from lingnexus.actions.dispatch import ToolDispatcher
 from lingnexus.common.errors import Conflict, DomainError
 from lingnexus.common.types import new_id, utc_now
-from lingnexus.models import APIFamily, ModelGateway, ModelProfile, RuntimeCredentials
+from lingnexus.models import (
+    APIFamily,
+    ModelEvent,
+    ModelGateway,
+    ModelProfile,
+    RuntimeCredentials,
+    ToolCall,
+)
 
 from . import attachments
 from .failover import ChatFailover, FailoverBlocked
-from .payload import build_payload
+from .hooks import HookEvent
+from .payload import (
+    append_tool_calls,
+    append_tool_results,
+    append_user_message,
+    build_payload,
+    declare_tools,
+)
+from .scope import ChatToolScope
 from .secret_guard import CredentialEcho, SecretGuard
 from .store import MAX_EVENT_CURSOR, RunStore
 from .types import ChatRequest
@@ -40,7 +58,7 @@ ERROR_MESSAGES = {
     "context_unavailable": "The backup cannot fit the required chat context.",
     "context_invalidated": "The chat context changed while the response was generating.",
     "invalid_tool_arguments": "The provider returned an invalid tool request.",
-    "tools_unsupported": "Tools are not supported by chat yet.",
+    "step_budget_exhausted": "The run reached its step limit before finishing.",
     "credential_in_response": "The service returned sensitive runtime material; this response was discarded.",
     "runtime_error": "The chat run could not be completed.",
     "cancelled": "The owner cancelled this run.",
@@ -53,6 +71,46 @@ COMPLETE_REASONS = {
     APIFamily.OPENAI_RESPONSES: ("completed",),
 }
 
+DEFAULT_MAX_STEPS = 40
+MAX_STEPS_SETTING = "chat.max_steps"
+_PREVIEW_CHARS = 800
+
+
+@dataclass
+class _Turn:
+    """One model call's collected result within a step."""
+
+    text: str = ""
+    calls: list[ToolCall] = field(default_factory=list)
+    finish_reason: str | None = None
+    error: ModelEvent | None = None
+    eof: bool = False
+
+
+@dataclass
+class _RunControl:
+    """Owner intervention for one active run: pause, resume and mid-run guidance."""
+
+    pause_requested: bool = False
+    guides: list[str] = field(default_factory=list)
+    resume_event: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+def _tool_text(result) -> str:
+    """The model-facing text for one tool result; structured payloads become JSON."""
+    content = result.content
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list) and len(content) == 1:
+        return json.dumps(content[0], ensure_ascii=False)
+    if content is None:
+        return json.dumps({"status": result.status}, ensure_ascii=False)
+    return json.dumps(content, ensure_ascii=False)
+
+
+def _preview(text: str) -> str:
+    return text if len(text) <= _PREVIEW_CHARS else text[:_PREVIEW_CHARS] + "…"
+
 
 class ChatRuntime:
     """One manager per database/process, used on the server's asyncio loop.
@@ -64,17 +122,31 @@ class ChatRuntime:
     terminal runs, without another model call or requiring credentials. Different
     input or an overlapping turn for that agent raises Conflict (409).
 
+    One turn is a bounded loop: each step calls the model with the accumulated
+    messages, collects every tool_call, runs each one through the BEFORE_TOOL /
+    dispatch / AFTER_TOOL sequence, appends the native results, and repeats until
+    the model stops asking for tools or the step budget runs out. Tools are only
+    declared when the profile supports them; a run that exhausts its budget is
+    reported as unfinished, never as completed. All policy lives in hooks.
+
     events(run_id, after=0) yields durable {id, event, data} records. id is a
     positive per-run sequence, and after is exclusive. started carries
-    {run_id, conversation_id}; text/thinking carry {run_id, text}; usage carries
+    {run_id, conversation_id}; step_started carries {run_id, step}; tool_started
+    and tool_result carry {run_id, step, name, call_id, ...}; paused/resumed carry
+    {run_id}; text/thinking carry {run_id, text}; usage carries
     {run_id, attempt, profile_id, snapshot: true, usage}; complete
     carries {run_id, status: completed, assistant_message_id}; error carries
     {run_id, code, message}. Only complete/error end a subscriber. Thinking is
     provider-returned visible display material, never an assistant message.
     notice carries a safe code/message (model_switch, context_truncated,
-    effort_omitted); model_switch carries
+    effort_omitted, step_budget_exhausted); model_switch carries
     {run_id, from_profile, to_profile, restart: true}. Subscribers must reset
     both visible buffers at that marker. Earlier partial events stay replayable.
+
+    pause/resume/guide act at step boundaries and never kill an in-flight tool.
+    A guide is injected as a user turn before the next step. Tool activity is kept
+    as replayable run events; only user and final assistant text is persisted to
+    the conversation.
 
     cancel(run_id) is idempotent and terminal. Closing/cancelling events() only
     detaches its subscriber. aclose() interrupts active runs and closes owned
@@ -95,9 +167,11 @@ class ChatRuntime:
         self.app = application
         self.store = RunStore(application.database)
         self.failover = ChatFailover(application, self.store)
+        self.dispatcher = ToolDispatcher()
         self._client = client
         self._owns_client = client is None
         self._tasks: dict[str, asyncio.Task] = {}
+        self._control: dict[str, _RunControl] = {}
         self._closed = False
         with self.app.database.transaction() as db:
             pending = db.execute("SELECT id FROM chat_runs WHERE status='running'").fetchall()
@@ -209,11 +283,12 @@ class ChatRuntime:
                 )
             self.failover.save_selection(run_id, selected)
             effort = self.failover.effort(run_id, profile_id, profile, value.effort)
+        self._control[run_id] = _RunControl()
         task = loop.create_task(
             self._execute(run_id, profile, selected.credentials, payload, effort, value.effort)
         )
         self._tasks[run_id] = task
-        task.add_done_callback(lambda _: self._tasks.pop(run_id, None))
+        task.add_done_callback(lambda _: self._finish_task(run_id))
         return self.get_run(run_id)
 
     async def events(self, run_id: str, *, after: int = 0) -> AsyncGenerator[dict, None]:
@@ -237,6 +312,34 @@ class ChatRuntime:
             task.cancel()
         return self.get_run(run_id)
 
+    def pause(self, run_id: str) -> dict:
+        """Request a pause at the next step boundary; a running tool is never killed."""
+        self.get_run(run_id)
+        control = self._control.get(run_id)
+        if control is None:
+            raise Conflict("该对话回合不在进行中，无法暂停。")
+        control.pause_requested = True
+        return {"run_id": run_id, "paused": True}
+
+    def resume(self, run_id: str) -> dict:
+        """Resume a paused run; the loop continues from the same step boundary."""
+        self.get_run(run_id)
+        control = self._control.get(run_id)
+        if control is None:
+            raise Conflict("该对话回合不在进行中，无法恢复。")
+        control.pause_requested = False
+        control.resume_event.set()
+        return {"run_id": run_id, "paused": False}
+
+    def guide(self, run_id: str, text: str) -> dict:
+        """Queue a mid-run instruction, injected as a user turn at the next boundary."""
+        self.get_run(run_id)
+        control = self._control.get(run_id)
+        if control is None:
+            raise Conflict("该对话回合不在进行中，无法提交指导。")
+        control.guides.append(text)
+        return {"run_id": run_id, "queued": len(control.guides)}
+
     async def aclose(self) -> None:
         """Interrupt pending runs before the application closes its runtime credentials."""
         self._closed = True
@@ -247,6 +350,10 @@ class ChatRuntime:
         await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
         if self._owns_client and self._client is not None:
             await self._client.aclose()
+
+    def _finish_task(self, run_id: str) -> None:
+        self._tasks.pop(run_id, None)
+        self._control.pop(run_id, None)
 
     async def _execute(
         self,
@@ -260,67 +367,59 @@ class ChatRuntime:
         try:
             if self._client is None:
                 self._client = httpx.AsyncClient()
-            profile_id = self.store.get(run_id)["profile_id"]
-            # Exactly two possible native calls; each has its own gateway/parser.
-            for attempt in (1, 2):
+            run = self.store.get(run_id)
+            scope = ChatToolScope(self.app, run["agent_id"])
+            state = {
+                "profile": profile,
+                "credentials": credentials,
+                "payload": payload,
+                "effort": effort,
+            }
+            declare_tools(state["payload"], profile, self.dispatcher.registry.schema())
+            max_steps = self._max_steps()
+            step = 1
+            while True:
                 if self.store.get(run_id)["status"] != "running":
                     return
-                self.failover.begin_attempt(run_id, attempt, profile_id)
-                text: list[str] = []
-                guards = {"text":SecretGuard(credentials.api_key),"thinking":SecretGuard(credentials.api_key)}
-                failure = None
-                gateway = ModelGateway(self._client)
-                async with aclosing(
-                    gateway.stream(profile, payload, credentials=credentials, effort=effort)
-                ) as stream:
-                    async for event in stream:
-                        if self.store.get(run_id)["status"] != "running":
-                            return
-                        self.failover.usage(run_id, attempt, event.usage)
-                        if event.type in ("text_delta", "thinking_delta"):
-                            kind = "text" if event.type == "text_delta" else "thinking"
-                            safe_text = guards[kind].feed(event.text or "")
-                            if kind == "text":
-                                text.append(safe_text)
-                            if safe_text:
-                                self.store.append(run_id,kind,{"run_id":run_id,"text":safe_text})
-                        elif event.type in ("tool_call", "tool_call_delta"):
-                            self._fail(run_id, "tools_unsupported")
-                            return
-                        elif event.type == "error":
-                            failure = event
-                            break
-                        elif event.type == "complete":
-                            for channel,guard in guards.items():
-                                remaining=guard.finish()
-                                if remaining:
-                                    self.store.append(run_id,channel,{"run_id":run_id,"text":remaining})
-                                    if channel=="text":text.append(remaining)
-                            if event.finish_reason in ("tool_calls", "tool_use", "function_call"):
-                                self._fail(run_id, "tools_unsupported")
-                            elif event.finish_reason in COMPLETE_REASONS[profile.api_family]:
-                                self._complete(run_id, "".join(text))
-                            else:
-                                self._fail(run_id, "incomplete_response")
-                            return
-                if failure is None:
-                    self._fail(run_id, "unexpected_eof")
+                await self._control_gate(run_id, state)
+                if self.store.get(run_id)["status"] != "running":
                     return
-                code = failure.error.code if failure.error else "runtime_error"
-                self.failover.finish_attempt(
-                    run_id,
-                    "failed",
-                    code,
-                    failure.error.status_code if failure.error else None,
+                if step > max_steps:
+                    self.store.append(
+                        run_id,
+                        "notice",
+                        {
+                            "run_id": run_id,
+                            "code": "step_budget_exhausted",
+                            "max_steps": max_steps,
+                            "message": f"已达到步数上限（{max_steps} 步），任务尚未完成。",
+                        },
+                    )
+                    self._fail(run_id, "step_budget_exhausted")
+                    return
+                self.store.append(run_id, "step_started", {"run_id": run_id, "step": step})
+                turn = await self._step_call(run_id, step, state, requested_effort)
+                if turn is None:
+                    return
+                if not turn.calls:
+                    if turn.finish_reason in COMPLETE_REASONS[state["profile"].api_family]:
+                        await self._before_turn_end(run_id, turn.text)
+                        self._complete(run_id, turn.text)
+                    else:
+                        self._fail(run_id, "incomplete_response")
+                    return
+                results = [
+                    await self._run_tool(run_id, step, call, scope) for call in turn.calls
+                ]
+                append_tool_calls(state["payload"], state["profile"], turn.calls, turn.text)
+                append_tool_results(
+                    state["payload"],
+                    state["profile"],
+                    [(call, text) for call, text, _ in results],
                 )
-                replacement = self.failover.retry(run_id, failure)
-                if replacement is None:
-                    self._fail(run_id, code)
-                    return
-                profile_id, profile, credentials, payload = replacement
-                effort = self.failover.effort(run_id, profile_id, profile, requested_effort)
+                step += 1
         except CredentialEcho:
-            self._fail(run_id,"credential_in_response")
+            self._fail(run_id, "credential_in_response")
         except FailoverBlocked as exc:
             self._fail(run_id, exc.code)
         except asyncio.CancelledError:
@@ -329,6 +428,217 @@ class ChatRuntime:
         except Exception:  # noqa: BLE001 - background boundary must sanitize every failure
             # Never serialize/log exception strings or provider continuation.
             self._fail(run_id, "runtime_error")
+
+    async def _control_gate(self, run_id: str, state: dict) -> None:
+        """Honor pause/resume and inject guidance — only ever at a step boundary."""
+        control = self._control.get(run_id)
+        if control is None:
+            return
+        if control.pause_requested:
+            self.store.append(run_id, "paused", {"run_id": run_id})
+            while control.pause_requested:
+                control.resume_event.clear()
+                await control.resume_event.wait()
+            self.store.append(run_id, "resumed", {"run_id": run_id})
+        while control.guides:
+            append_user_message(state["payload"], state["profile"], control.guides.pop(0))
+
+    async def _step_call(
+        self, run_id: str, step: int, state: dict, requested_effort: str | None
+    ) -> _Turn | None:
+        """Run one model call; step one keeps the primary→backup restart policy."""
+        if step > 1:
+            turn = await self._stream_turn(
+                run_id, state["profile"], state["payload"], state["credentials"], state["effort"]
+            )
+            if turn is None:
+                return None
+            if turn.eof:
+                self._fail(run_id, "unexpected_eof")
+                return None
+            if turn.error is not None:
+                code = turn.error.error.code if turn.error.error else "runtime_error"
+                self._fail(run_id, code)
+                return None
+            return turn
+        for attempt in (1, 2):
+            if self.store.get(run_id)["status"] != "running":
+                return None
+            profile_id = self.store.get(run_id)["profile_id"]
+            self.failover.begin_attempt(run_id, attempt, profile_id)
+            turn = await self._stream_turn(
+                run_id,
+                state["profile"],
+                state["payload"],
+                state["credentials"],
+                state["effort"],
+                attempt=attempt,
+            )
+            if turn is None:
+                return None
+            if turn.eof:
+                self._fail(run_id, "unexpected_eof")
+                return None
+            if turn.error is None:
+                return turn
+            error = turn.error.error
+            code = error.code if error else "runtime_error"
+            self.failover.finish_attempt(
+                run_id, "failed", code, error.status_code if error else None
+            )
+            replacement = self.failover.retry(run_id, turn.error)
+            if replacement is None:
+                self._fail(run_id, code)
+                return None
+            profile_id, profile, credentials, payload = replacement
+            state.update(profile=profile, credentials=credentials, payload=payload)
+            state["effort"] = self.failover.effort(run_id, profile_id, profile, requested_effort)
+            declare_tools(state["payload"], profile, self.dispatcher.registry.schema())
+        return None
+
+    async def _stream_turn(
+        self,
+        run_id: str,
+        profile: ModelProfile,
+        payload: dict,
+        credentials: RuntimeCredentials,
+        effort: str | None,
+        attempt: int | None = None,
+    ) -> _Turn | None:
+        """One native model stream reduced to text, tool calls and a finish marker."""
+        text: list[str] = []
+        calls: list[ToolCall] = []
+        guards = {
+            "text": SecretGuard(credentials.api_key),
+            "thinking": SecretGuard(credentials.api_key),
+        }
+        gateway = ModelGateway(self._client)
+        async with aclosing(
+            gateway.stream(profile, payload, credentials=credentials, effort=effort)
+        ) as stream:
+            async for event in stream:
+                if self.store.get(run_id)["status"] != "running":
+                    return None
+                if attempt is not None:
+                    self.failover.usage(run_id, attempt, event.usage)
+                if event.type in ("text_delta", "thinking_delta"):
+                    kind = "text" if event.type == "text_delta" else "thinking"
+                    safe_text = guards[kind].feed(event.text or "")
+                    if kind == "text":
+                        text.append(safe_text)
+                    if safe_text:
+                        self.store.append(run_id, kind, {"run_id": run_id, "text": safe_text})
+                elif event.type == "tool_call":
+                    if event.tool_call is not None:
+                        calls.append(event.tool_call)
+                elif event.type == "tool_call_delta":
+                    continue
+                elif event.type == "error":
+                    return _Turn(text="".join(text), calls=calls, error=event)
+                elif event.type == "complete":
+                    for channel, guard in guards.items():
+                        remaining = guard.finish()
+                        if remaining:
+                            self.store.append(run_id, channel, {"run_id": run_id, "text": remaining})
+                            if channel == "text":
+                                text.append(remaining)
+                    return _Turn(
+                        text="".join(text), calls=calls, finish_reason=event.finish_reason
+                    )
+        return _Turn(text="".join(text), calls=calls, eof=True)
+
+    async def _run_tool(
+        self, run_id: str, step: int, call: ToolCall, scope: ChatToolScope
+    ) -> tuple[ToolCall, str, str]:
+        """One tool call through BEFORE_TOOL → dispatch → AFTER_TOOL.
+
+        A rejected call never runs; its reason travels back to the model as the
+        tool result so it can adapt. The permission decision lives entirely in the
+        hook, never here.
+        """
+        self.store.append(
+            run_id,
+            "tool_started",
+            {
+                "run_id": run_id,
+                "step": step,
+                "name": call.name,
+                "call_id": call.id,
+                "arguments": call.arguments,
+            },
+        )
+        context = {"agent_id": scope.agent_id, "command_available": scope.command_available}
+        started = time.monotonic()
+        decision = await self.app.hooks.run(
+            HookEvent.BEFORE_TOOL,
+            {"name": call.name, "arguments": call.arguments, "context": context},
+        )
+        if not decision.allow:
+            reason = decision.reason or "该工具调用被策略拒绝。"
+            text = json.dumps(
+                {"blocked": True, "tool": call.name, "reason": reason}, ensure_ascii=False
+            )
+            status = "blocked"
+        else:
+            result = await self.dispatcher.execute(call.name, call.arguments, scope)
+            text = _tool_text(result)
+            status = result.status
+            await self.app.hooks.run(
+                HookEvent.AFTER_TOOL,
+                {
+                    "name": call.name,
+                    "arguments": call.arguments,
+                    "status": status,
+                    "content": text,
+                    "started_at": started,
+                    "context": context,
+                },
+            )
+        self.store.append(
+            run_id,
+            "tool_result",
+            {
+                "run_id": run_id,
+                "step": step,
+                "name": call.name,
+                "call_id": call.id,
+                "status": status,
+                "preview": _preview(text),
+            },
+        )
+        return call, text, status
+
+    async def _before_turn_end(self, run_id: str, text: str) -> None:
+        """Trigger the turn-end mount point before anything is persisted.
+
+        No handler is attached this round; the call is real so future long-term
+        memory can hang off it without touching this loop.
+        """
+        run = self.store.get(run_id)
+        await self.app.hooks.run(
+            HookEvent.BEFORE_TURN_END,
+            {
+                "run_id": run_id,
+                "conversation_id": run["conversation_id"],
+                "agent_id": run["agent_id"],
+                "text": text,
+            },
+        )
+
+    def _max_steps(self) -> int:
+        with self.app.database.transaction() as db:
+            row = db.execute(
+                "SELECT value FROM settings WHERE key=?", (MAX_STEPS_SETTING,)
+            ).fetchone()
+        if row is None:
+            return DEFAULT_MAX_STEPS
+        try:
+            value = json.loads(row[0])
+        except (TypeError, ValueError):
+            return DEFAULT_MAX_STEPS
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return value
+        return DEFAULT_MAX_STEPS
 
     def _complete(self, run_id: str, text: str) -> None:
         with self.app.database.transaction() as db:

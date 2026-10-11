@@ -20,7 +20,9 @@ from lingnexus.conversations.service import Conversations
 from lingnexus.dependencies import DependencyService
 from lingnexus.maintenance.automatic import AutomaticBackups
 from lingnexus.maintenance.service import MaintenanceService
+from lingnexus.permissions.hooks import AppAuthorization, permission_hook
 from lingnexus.permissions.service import Permissions
+from lingnexus.runtime.hooks import HookEvent, HookRegistry
 from lingnexus.storage.db import Database
 from lingnexus.tasks.sandbox import SandboxService
 
@@ -40,6 +42,10 @@ class Application:
         self.attachments = Attachments(self.database)
         self.conversations = Conversations(self.database)
         self.permissions = Permissions(self.database)
+        # Policy is injected through hooks, never written into a loop body. The
+        # permission hook is the only authorization gate for every tool call.
+        self.hooks = HookRegistry()
+        self.hooks.register(HookEvent.BEFORE_TOOL, permission_hook(AppAuthorization(self)))
         self.actions = Actions(self)
         self.sandbox = SandboxService(self.database)
         self.browser: BrowserService | None = None

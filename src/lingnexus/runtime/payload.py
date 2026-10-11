@@ -1,9 +1,15 @@
-"""Native model payloads from one selected conversation branch and its attachments."""
+"""Native model payloads from one selected conversation branch and its attachments.
+
+This module also owns the native shape of a tool exchange, because only the
+protocol family knows how a declaration and a result are spelled. The loop
+declares tools once, then appends the assistant's tool calls and their results
+after every step — in the family's own format, never a normalized one.
+"""
 
 from typing import TYPE_CHECKING
 
 from lingnexus.context.builder import BudgetPolicy
-from lingnexus.models import APIFamily, ModelProfile
+from lingnexus.models import APIFamily, ModelProfile, ToolCall
 
 from . import attachments
 
@@ -94,3 +100,128 @@ def build_payload(
             "max_completion_tokens": output,
         }
     return payload, manifest
+
+
+def _messages(payload: dict, profile: ModelProfile) -> list:
+    """The mutable native turn list for this family (Responses uses ``input``)."""
+    return payload["input"] if profile.api_family == APIFamily.OPENAI_RESPONSES else payload["messages"]
+
+
+def declare_tools(payload: dict, profile: ModelProfile, schema: list[dict]) -> None:
+    """Add the tool declarations in this family's native shape, when supported.
+
+    A profile that does not declare tool support never receives declarations —
+    the gateway rejects a request that carries tools without that capability.
+    """
+    if not schema or not profile.capabilities.tools:
+        return
+    if profile.api_family == APIFamily.ANTHROPIC_MESSAGES:
+        payload["tools"] = [
+            {
+                "name": item["name"],
+                "description": item["description"],
+                "input_schema": item["parameters"],
+            }
+            for item in schema
+        ]
+    elif profile.api_family == APIFamily.OPENAI_RESPONSES:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "name": item["name"],
+                "description": item["description"],
+                "parameters": item["parameters"],
+            }
+            for item in schema
+        ]
+    else:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": item["name"],
+                    "description": item["description"],
+                    "parameters": item["parameters"],
+                },
+            }
+            for item in schema
+        ]
+
+
+def append_tool_calls(
+    payload: dict, profile: ModelProfile, calls: list[ToolCall], text: str = ""
+) -> None:
+    """Append the assistant's tool-call turn in this family's native shape."""
+    items = _messages(payload, profile)
+    if profile.api_family == APIFamily.ANTHROPIC_MESSAGES:
+        blocks: list[dict] = []
+        if text:
+            blocks.append({"type": "text", "text": text})
+        blocks.extend(
+            {"type": "tool_use", "id": call.id, "name": call.name, "input": call.arguments}
+            for call in calls
+        )
+        items.append({"role": "assistant", "content": blocks})
+    elif profile.api_family == APIFamily.OPENAI_RESPONSES:
+        if text:
+            items.append({"role": "assistant", "content": text})
+        items.extend(
+            {
+                "type": "function_call",
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": call.arguments_json,
+            }
+            for call in calls
+        )
+    else:
+        items.append(
+            {
+                "role": "assistant",
+                "content": text or None,
+                "tool_calls": [
+                    {
+                        "id": call.id,
+                        "type": "function",
+                        "function": {"name": call.name, "arguments": call.arguments_json},
+                    }
+                    for call in calls
+                ],
+            }
+        )
+
+
+def append_tool_results(
+    payload: dict, profile: ModelProfile, results: list[tuple[ToolCall, str]]
+) -> None:
+    """Append one result per call in this family's native shape.
+
+    ``results`` is an ordered list of ``(call, content_text)``; a rejection is
+    carried as ordinary content so the model learns why a call did not run.
+    """
+    items = _messages(payload, profile)
+    if profile.api_family == APIFamily.ANTHROPIC_MESSAGES:
+        items.append(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": call.id, "content": text}
+                    for call, text in results
+                ],
+            }
+        )
+    elif profile.api_family == APIFamily.OPENAI_RESPONSES:
+        items.extend(
+            {"type": "function_call_output", "call_id": call.id, "output": text}
+            for call, text in results
+        )
+    else:
+        items.extend(
+            {"role": "tool", "tool_call_id": call.id, "content": text}
+            for call, text in results
+        )
+
+
+def append_user_message(payload: dict, profile: ModelProfile, text: str) -> None:
+    """Inject a mid-run guidance message as an ordinary user turn."""
+    _messages(payload, profile).append({"role": "user", "content": text})

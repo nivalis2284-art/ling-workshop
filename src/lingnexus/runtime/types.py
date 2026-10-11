@@ -1,6 +1,6 @@
-"""Public input for a tool-free turn on a selected conversation branch."""
+"""Public input for a tool-capable turn on a selected conversation branch."""
 
-from typing import Annotated, Any
+from typing import Annotated
 
 from pydantic import (
     Field,
@@ -24,7 +24,8 @@ class ChatRequest(Value):
     Replay fingerprints preserve the optional input, never the resolved selection.
     Attachment IDs are ordered user-file selections. Omitted/empty lists keep
     legacy fingerprints; regeneration with an empty list reuses the original files.
-    Tools and native request bodies are unsupported.
+    The model chooses whether to call tools inside the run; callers never send
+    native request bodies.
     """
 
     agent_id: str = Field(min_length=1, max_length=128)
@@ -60,15 +61,6 @@ class ChatRequest(Value):
         if self.regenerate_message_id is not None and self.conversation_id is None:
             raise DomainError("Regeneration requires an explicit conversation_id.")
         return self
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_tools(cls, value: Any) -> Any:
-        if isinstance(value, dict) and any(
-            key in value for key in ("tools", "tool_choice", "functions", "function_call")
-        ):
-            raise DomainError("Tools are not supported by chat yet.")
-        return value
 
     @field_validator(
         "agent_id",

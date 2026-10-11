@@ -14,12 +14,20 @@ from contextlib import aclosing
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import Field
 
+from lingnexus.api.schemas import Input
 from lingnexus.api.security import require_owner
 from lingnexus.runtime import ChatRequest, ChatRuntime
 from lingnexus.runtime.store import MAX_EVENT_CURSOR
 
 router = APIRouter(prefix="/chat", dependencies=[Depends(require_owner)])
+
+
+class GuideInput(Input):
+    """A mid-run instruction injected at the next step boundary."""
+
+    text: str = Field(min_length=1, max_length=8000)
 
 
 def _runtime(request: Request) -> ChatRuntime:
@@ -89,3 +97,21 @@ async def status(run_id: str, request: Request):
 async def cancel(run_id: str, request: Request):
     """Explicitly cancel a running turn; subscriber disconnects never call this."""
     return _runtime(request).cancel(run_id)
+
+
+@router.post("/runs/{run_id}/pause")
+async def pause(run_id: str, request: Request):
+    """Pause at the next step boundary; an in-flight tool is never killed."""
+    return _runtime(request).pause(run_id)
+
+
+@router.post("/runs/{run_id}/resume")
+async def resume(run_id: str, request: Request):
+    """Resume a paused turn from the same step boundary."""
+    return _runtime(request).resume(run_id)
+
+
+@router.post("/runs/{run_id}/guide")
+async def guide(run_id: str, value: GuideInput, request: Request):
+    """Queue a mid-run instruction, injected at the next step boundary."""
+    return _runtime(request).guide(run_id, value.text)

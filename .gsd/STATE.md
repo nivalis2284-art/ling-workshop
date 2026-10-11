@@ -2,9 +2,9 @@
 
 ## Current Position
 - **Milestone**: v0.2.0 (系统瘦身与架构简化：拆两大部分，第一部分先做合格)
-- **Active Phase**: **F（能力扩展）进行中**——技能包 + MCP 最小集（D 已于 2026-10-11 完成）
-- **Status**: 🟢 A（边界隔离 `fa556ba`）、B（沙箱分层 `45a3813`）、C（统一循环 `13fd8ce`）、D（任务收尾 `3efc06c`）全部完成并验证；🚧 F 进行中
-- **Next Step**: 推进 F——先冻结契约，再做技能包（内置基础技能 + 扫描外部目录）与 MCP 最小集（连服务器/列工具/调工具/版本协商，必须可选、不成为前置门槛）；之后可选 E（常数对账与文档对齐）；G 待梳理
+- **Active Phase**: **F（能力扩展）已完成**（技能包 `01d4a84` + MCP 最小集 `33d4ebf`，2026-10-11）
+- **Status**: 🟢 A（边界隔离 `fa556ba`）、B（沙箱分层 `45a3813`）、C（统一循环 `13fd8ce`）、D（任务收尾 `3efc06c`）、F（能力扩展 `33d4ebf`）全部完成并验证
+- **Next Step**: 待所有者选择——E（常数对账与文档对齐，部分已做）或 G（逐条加回第二部分，需先梳理）；F 的两条硬约束（可选、不扩权）已在契约 §四 验收对照中留证
 
 ## Requirements Progress
 - REQ-SCOPE-01: Implemented
@@ -20,6 +20,8 @@
 - REQ-HOOKS-01: Implemented（C 阶段：BEFORE_TOOL/AFTER_TOOL/BEFORE_TURN_END 三事件钩子，策略不进循环体）
 - REQ-CONFIRM-01: Implemented（C 阶段：副作用实时确认闸门 + 每步独立记账）
 - REQ-ENTRY-01: Implemented（D 阶段：对话是唯一入口，任务路径收进对话为次级「任务工作副本」，`13fd8ce`）
+- REQ-SKILLPACK-01: Implemented（F 阶段：技能包三处扫描 + 三级披露 + 受限资源读取，`01d4a84`）
+- REQ-MCP-01: Implemented（F 阶段：MCP 最小集，可选且不扩权，远端工具走同一钩子路径，`33d4ebf`）
 
 ## Acceptance Tooling
 - 后端验收 = 冒烟层：`tests/test_smoke.py` + `tests/test_smoke_learning.py`（34 项，约 20 秒）。

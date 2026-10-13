@@ -30,9 +30,9 @@
 
 ## 权威资料与环境
 
-上层01/02：H:/文档/LingNexus/docs/。完整计划 docs/计划/2026-10-08-完整Windows首版.md。有效结论见讨论笔记，历史研究在docs/研究，使用说明在docs/使用说明.md，逐项A-G验收在docs/验证/2026-10-09-首版交付验收.md。
+上层01/02：docs/愿景/（仓库内副本）。完整计划 docs/归档/首版与第一部分改造/计划/2026-10-08-完整Windows首版.md。有效结论见讨论笔记，历史研究在 docs/归档/首版与第一部分改造/研究，使用说明在 docs/使用说明.md，逐项A-G验收在 docs/归档/首版与第一部分改造/验证/2026-10-09-首版交付验收.md。
 
-开发工作树 H:/文档/LingNexus/Ling/.worktrees/m0-continuity，feature/m0-continuity。主目录 H:/文档/LingNexus/Ling的main已快进到同一源码，工作区干净。工作树保留.venv/node_modules/.tools和测试产物供后续开发，均不进入Git；根目录交付dist安装包/说明。
+开发工作树 .worktrees/m0-continuity（feature/m0-continuity）。主目录（本仓库）的 main 已快进到同一源码，工作区干净。工作树保留 .venv/node_modules/.tools 和测试产物供后续开发，均不进入 Git；根目录交付 dist 安装包/说明。
 
 ## 只留一段对话，移除场景交流（2026-10-09，用户要求）
 

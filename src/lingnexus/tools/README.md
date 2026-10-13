@@ -16,7 +16,7 @@ from lingnexus.tools import (
 )
 
 # All paths must be caller-authorized, existing test directories.
-worktree = Path("C:/temporary/approved-worktree")
+worktree = Path("approved-worktree").resolve()
 files = WorkspaceTools(
     worktree,
     FilePermissions(

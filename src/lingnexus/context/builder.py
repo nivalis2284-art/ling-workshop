@@ -1,9 +1,10 @@
-"""Request opening: owner instructions + individual name + a recent transcript tail.
+"""Request opening: owner instructions + name + environment facts + a recent tail.
 
 The context no longer carries a current self state or recalled memories. What is
-sent is: the owner-written system rules, the individual's name, as much of the
-recent raw transcript as fits, and (added by the caller) attachments. When the
-budget is exceeded the oldest messages are dropped and reported, never a failure.
+sent is: the owner-written system rules, the individual's name, the caller's
+environment facts, as much of the recent raw transcript as fits, and (added by
+the caller) attachments. When the budget is exceeded the oldest messages are
+dropped and reported, never a failure.
 """
 
 from dataclasses import dataclass, field
@@ -74,19 +75,20 @@ class ContextBuilder:
         messages: list[dict],
         budget: BudgetPolicy | None = None,
         extra_header: str = "",
+        environment: str = "",
     ) -> ContextPacket:
         """Keep the newest contiguous tail of `messages` that fits the budget.
 
         Each message is `{role, text, ...}`; `extra_tokens` (attachments, etc.) is
         counted when present and passed through untouched. The header is always
-        sent, and `extra_header` (the resident skill index, when tools are
-        available) rides with it *inside* the budget so it is never free tokens.
-        At least the newest message is kept so a turn never fails outright.
+        sent, and `environment` (the caller's machine facts) plus `extra_header`
+        (the resident skill index, when tools are available) ride with it *inside*
+        the budget so neither is ever free tokens. At least the newest message is
+        kept so a turn never fails outright.
         """
         budget = budget or BudgetPolicy()
-        instructions = self.header(agent_id)
-        if extra_header:
-            instructions = f"{instructions}\n\n{extra_header}"
+        blocks = [self.header(agent_id), environment, extra_header]
+        instructions = "\n\n".join(block for block in blocks if block)
         used = self.counter.count(instructions)
         limit = budget.input_limit
 

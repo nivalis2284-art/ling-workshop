@@ -6,6 +6,7 @@ declares tools once, then appends the assistant's tool calls and their results
 after every step — in the family's own format, never a normalized one.
 """
 
+import platform
 from typing import TYPE_CHECKING
 
 from lingnexus.context.builder import BudgetPolicy
@@ -53,6 +54,7 @@ def build_payload(
         messages=entries,
         budget=BudgetPolicy(context_limit=limit, output_reserve=output, tool_reserve=256),
         extra_header=_skill_index(app, profile),
+        environment=_environment_block(app, agent_id),
     )
     # Native attachments are bytes-bounded independently of the token estimate.
     selected = list(context.evidence)
@@ -101,6 +103,36 @@ def build_payload(
             "max_completion_tokens": output,
         }
     return payload, manifest
+
+
+def _environment_block(app, agent_id: str) -> str:
+    """Owner-granted machine facts; a statement of environment, never a policy."""
+    grants = app.permissions.current(agent_id)
+    writable = [str(path) for path in grants["writable"]]
+    readable = [str(path) for path in grants["readable"]]
+    lines = [
+        "运行环境：",
+        f"- 平台：{platform.system() or '未知'}",
+        "- 可写目录：" + ("；".join(writable) if writable else "无"),
+        "- 可读目录：" + ("；".join(readable) if readable else "无"),
+    ]
+    if writable:
+        lines.append("- 命令执行：可用（" + _sandbox_summary(app) + "）")
+    else:
+        lines.append("- 命令执行：不可用（没有已授权的可写目录）")
+    return "\n".join(lines)
+
+
+_ENVIRONMENT_COMMANDS = {
+    "local": "轻量受限执行：无 shell；有时限、输出与资源上限；不是文件系统或网络隔离",
+    "container": "容器隔离：只挂载工作目录、默认无网络",
+}
+
+
+def _sandbox_summary(app) -> str:
+    sandbox = getattr(app, "sandbox", None)
+    level = sandbox.level() if sandbox is not None else "local"
+    return _ENVIRONMENT_COMMANDS.get(level, _ENVIRONMENT_COMMANDS["local"])
 
 
 def _skill_index(app: "Application", profile: ModelProfile) -> str:

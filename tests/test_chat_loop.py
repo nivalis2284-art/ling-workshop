@@ -16,6 +16,7 @@ These are deterministic: no network, no real model, no container engine.
 
 import asyncio
 import json
+import re
 
 import httpx
 import pytest
@@ -357,3 +358,42 @@ def test_confirmation_routes_are_registered(client, headers):
     # The route reaches its handler: an unknown run is a 404 from the run store,
     # which a route miss could not distinguish on its own.
     assert client.get("/chat/runs/nope/confirmations", headers=headers).status_code == 404
+
+
+# --- the opening carries facts, the tail carries time -----------------------
+
+
+def test_opening_states_the_granted_environment(app, agent_id, tmp_path):
+    configure(app)
+    folder = tmp_path / "authorized"
+    _grant(app, agent_id, folder)
+    requests = []
+    result, _ = run_chat(
+        app,
+        [reply("好")],
+        {"agent_id": agent_id, "message": "你好", "request_id": "env-1"},
+        requests,
+    )
+    assert result["status"] == "completed"
+    system = requests[0]["messages"][0]["content"]
+    assert "运行环境：" in system
+    assert "- 平台：" in system
+    assert str(folder) in system
+    assert "命令执行：可用" in system
+    # The opening must never carry a moving clock; time belongs to the message tail.
+    assert not re.search(r"\d{4}-\d{2}-\d{2}", system)
+
+
+def test_opening_reports_unavailable_commands_without_grants(app, agent_id):
+    configure(app)
+    requests = []
+    run_chat(
+        app,
+        [reply("好")],
+        {"agent_id": agent_id, "message": "你好", "request_id": "env-2"},
+        requests,
+    )
+    system = requests[0]["messages"][0]["content"]
+    assert "- 可写目录：无" in system
+    assert "- 可读目录：无" in system
+    assert "命令执行：不可用" in system

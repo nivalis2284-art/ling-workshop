@@ -10,12 +10,11 @@ export function Mark({ small = false }: { small?: boolean }) {
 }
 
 export function PageHeader({
-  eyebrow,
   title,
   description,
   action,
 }: {
-  eyebrow: string;
+  eyebrow?: string;
   title: string;
   description: string;
   action?: ReactNode;
@@ -23,7 +22,6 @@ export function PageHeader({
   return (
     <header className="page-header">
       <div>
-        <p className="eyebrow">{eyebrow}</p>
         <h1 tabIndex={-1}>{title}</h1>
         <p className="muted">{description}</p>
       </div>

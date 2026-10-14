@@ -2,17 +2,43 @@
 @import "./styles/features.css";
 
 :root {
-  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
-  color: #293b35;
-  background: #f6f6f2;
+  font-family:
+    -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  color: #1c1c1e;
+  background: #f2f2f7;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
-  --ink: #293b35;
-  --muted: #6b7771;
-  --green: #315e4b;
-  --line: #e3e7df;
-  --paper: #fffefa;
+
+  /* Palette — the owner-picked light blue accent (design finalized 2026-10-15). */
+  --ink: #1c1c1e;
+  --muted: #6e6e73;
+  --faint: #8e8e93;
+  --bg: #f2f2f7;
+  --card: #ffffff;
+  --paper: #ffffff;
+  --soft: #f7f7fa;
+  --line: #e5e5ea;
+  --line-soft: #efeff3;
+  --accent: #63a6ec;
+  --accent-strong: #3f83d6;
+  --accent-soft: #eaf3fc;
+  --green: #34c759;
+  --green-deep: #248a3d;
+  --green-soft: #e9f7ef;
+  --orange: #ff9500;
+  --orange-deep: #9a6100;
+  --orange-soft: #fff4e5;
+  --red: #ff3b30;
+  --red-deep: #c22f26;
+  --red-soft: #fdeceb;
+
+  /* Motion tokens: micro 140ms / state 220ms / panel 320ms, exponential ease-out. */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-io: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-1: 140ms;
+  --dur-2: 220ms;
+  --dur-3: 320ms;
 }
 * {
   box-sizing: border-box;
@@ -23,12 +49,16 @@ body {
 }
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 button {
   cursor: pointer;
   color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
 }
 button,
 a,
@@ -39,20 +69,14 @@ summary {
 }
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.48;
-}
-button {
-  transition:
-    background 0.16s,
-    border-color 0.16s,
-    box-shadow 0.16s;
+  opacity: 0.45;
 }
 a {
-  color: var(--green);
+  color: var(--accent-strong);
 }
 :focus-visible {
-  outline: 3px solid #789584;
-  outline-offset: 4px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 h1:focus,
 h3:focus,
@@ -66,26 +90,26 @@ p {
   margin-top: 0;
 }
 h1 {
-  font-size: clamp(26px, 3vw, 34px);
-  line-height: 1.4;
-  letter-spacing: -0.8px;
+  font-size: 20px;
+  line-height: 1.5;
+  letter-spacing: -0.2px;
   font-weight: 600;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 h2 {
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 1.6;
-  margin-bottom: 14px;
-}
-h3 {
   font-size: 15px;
   font-weight: 600;
   line-height: 1.6;
   margin-bottom: 10px;
 }
+h3 {
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  margin-bottom: 8px;
+}
 p {
-  line-height: 1.85;
+  line-height: 1.75;
 }
 svg {
   flex-shrink: 0;
@@ -93,37 +117,38 @@ svg {
 }
 .muted {
   color: var(--muted);
-  font-size: 14px;
-}
-.small {
   font-size: 13px;
 }
-.metadata {
-  color: var(--muted);
+.small {
   font-size: 12px;
+}
+.metadata {
+  color: var(--faint);
+  font-size: 11.5px;
   line-height: 1.7;
 }
 .eyebrow {
   font-size: 11px;
-  letter-spacing: 2px;
-  color: #6c8275;
-  font-weight: 600;
-  margin-bottom: 12px;
+  color: var(--faint);
+  font-weight: 500;
+  margin-bottom: 6px;
 }
+
+/* --- cards ------------------------------------------------------------- */
 .panel {
-  background: var(--paper);
-  border: 1px solid var(--line);
+  background: var(--card);
+  border: 0.5px solid var(--line);
   border-radius: 16px;
 }
 .section-panel {
-  padding: 28px;
+  padding: 18px;
 }
 .section-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 .section-heading h2,
 .section-heading h3,
@@ -136,65 +161,78 @@ svg {
   gap: 8px;
 }
 .outside {
-  margin-top: 34px;
+  margin-top: 20px;
 }
+
+/* --- buttons ----------------------------------------------------------- */
 .button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
-  padding: 11px 17px;
-  min-height: 42px;
-  border: 1px solid transparent;
-  border-radius: 9px;
+  gap: 7px;
+  padding: 0 14px;
+  min-height: 34px;
+  border: 0.5px solid var(--line);
+  border-radius: 10px;
   font-size: 13px;
   font-weight: 500;
   line-height: 1.5;
+  background: var(--card);
+  transition:
+    background var(--dur-1) var(--ease-out),
+    border-color var(--dur-1) var(--ease-out),
+    color var(--dur-1) var(--ease-out),
+    transform var(--dur-1) var(--ease-out);
+}
+.button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .primary {
-  color: #fffefa;
-  background: var(--green);
-  border-color: var(--green);
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
 }
 .primary:hover:not(:disabled) {
-  background: #254b3b;
+  background: var(--accent);
+  filter: brightness(0.96);
 }
 .secondary {
-  color: #475f52;
-  background: var(--paper);
-  border-color: #dce2d8;
+  color: var(--ink);
+  background: var(--card);
+  border-color: var(--line);
 }
 .secondary:hover:not(:disabled) {
-  background: #edf1e9;
-  border-color: #b5c4b6;
+  background: var(--soft);
 }
 .danger {
-  color: #fffefa;
-  background: #8c3b26;
-  border-color: #8c3b26;
+  color: #fff;
+  background: var(--red);
+  border-color: transparent;
 }
 .danger:hover:not(:disabled) {
-  background: #75311f;
+  filter: brightness(0.95);
 }
 .button-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .small-button {
-  padding: 8px 12px;
+  min-height: 28px;
+  padding: 0 10px;
   font-size: 12px;
+  border-radius: 8px;
 }
 .text-button {
   border: 0;
-  padding: 7px 0;
+  padding: 4px 0;
   background: transparent;
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  color: var(--green);
-  font-size: 13px;
+  gap: 6px;
+  color: var(--accent-strong);
+  font-size: 12.5px;
   line-height: 1.6;
 }
 .text-button:hover {
@@ -204,79 +242,85 @@ svg {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   background: transparent;
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  transition: background var(--dur-1) var(--ease-out), color var(--dur-1) var(--ease-out);
 }
-.icon-button:hover {
-  background: #e7ede2;
+.icon-button:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--ink);
 }
 .wide {
   width: 100%;
 }
+
+/* --- pills / notices / states ------------------------------------------ */
 .pill {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   font-size: 11px;
-  padding: 5px 10px;
-  border-radius: 6px;
-  background: #edf2e8;
-  color: #476551;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
   white-space: nowrap;
-  line-height: 1.4;
+  line-height: 1.5;
   font-weight: 500;
 }
 .pill.warm {
-  background: #f8efdf;
-  color: #87673a;
+  background: var(--orange-soft);
+  color: var(--orange-deep);
 }
 .status-dot {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #578566;
+  background: var(--accent-strong);
 }
 .notice {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 16px 18px;
-  background: #f1f4ed;
-  border: 1px solid #dfe6d9;
-  border-radius: 10px;
-  font-size: 13px;
-  margin: 16px 0;
-  line-height: 1.8;
+  gap: 10px;
+  padding: 12px 14px;
+  background: var(--soft);
+  border: 0.5px solid var(--line);
+  border-radius: 12px;
+  font-size: 12.5px;
+  margin: 12px 0;
+  line-height: 1.7;
 }
 .notice > svg {
-  margin-top: 3px;
+  margin-top: 2px;
 }
 .notice p {
   margin: 0;
 }
 .notice.error {
-  background: #fdf0ea;
-  color: #93462f;
-  border-color: #efd7cd;
+  background: var(--red-soft);
+  color: var(--red-deep);
+  border-color: transparent;
 }
 .notice.success {
-  background: #edf4e9;
-  color: #3c613e;
+  background: var(--green-soft);
+  color: var(--green-deep);
+  border-color: transparent;
 }
 .loading {
   display: flex;
-  gap: 11px;
+  gap: 10px;
   align-items: center;
   justify-content: center;
-  padding: 52px 16px;
+  padding: 44px 16px;
   color: var(--muted);
-  font-size: 14px;
+  font-size: 13px;
 }
 .spin {
-  animation: spin 1.2s linear infinite;
+  animation: spin 1.1s linear infinite;
 }
 @keyframes spin {
   to {
@@ -285,60 +329,82 @@ svg {
 }
 .empty-state {
   text-align: center;
-  padding: 40px 20px;
-  color: #758776;
+  padding: 36px 18px;
+  color: var(--muted);
 }
 .empty-state svg {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+  color: var(--faint);
 }
 .empty-state h3 {
-  color: #4c6052;
+  color: var(--ink);
   font-weight: 500;
 }
 .empty-state p {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12.5px;
   margin: 0 auto;
-  max-width: 460px;
+  max-width: 440px;
 }
+
+/* --- forms ------------------------------------------------------------- */
 label,
 .field-label {
   display: block;
   font-size: 12px;
   font-weight: 500;
-  margin-bottom: 10px;
-  color: #5d7162;
+  margin-bottom: 8px;
+  color: var(--muted);
 }
 input,
-select {
+select,
+textarea {
   width: 100%;
   min-width: 0;
-  background: #fffefb;
-  border: 1px solid #d7dfd3;
+  background: var(--soft);
+  border: 0.5px solid var(--line);
   color: var(--ink);
-  padding: 12px 14px;
-  border-radius: 8px;
-  font-size: 14px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  font-size: 13px;
+  transition: border-color var(--dur-1) var(--ease-out), box-shadow var(--dur-1) var(--ease-out);
 }
-input::placeholder {
-  color: #818b81;
+textarea {
+  resize: vertical;
+  line-height: 1.7;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--faint);
   font-size: 12px;
 }
+input[type="checkbox"] {
+  width: auto;
+  min-width: 0;
+  accent-color: var(--accent-strong);
+}
 .field-help {
-  color: var(--muted);
+  color: var(--faint);
   font-size: 11px;
-  line-height: 1.8;
-  margin: 9px 0 20px;
+  line-height: 1.7;
+  margin: 7px 0 14px;
 }
 summary {
   cursor: pointer;
-  font-size: 13px;
-  color: #4c6955;
-  padding: 8px 0;
+  font-size: 12.5px;
+  color: var(--accent-strong);
+  padding: 6px 0;
 }
 .stack {
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 .preserve-text,
 .break-anywhere {
@@ -363,19 +429,62 @@ summary {
   top: -80px;
   left: 16px;
   z-index: 100;
-  background: white;
-  padding: 15px;
-  border-radius: 8px;
+  background: var(--card);
+  padding: 12px 16px;
+  border-radius: 10px;
+  border: 0.5px solid var(--line);
 }
 .skip-link:focus {
   top: 16px;
+}
+
+/* --- motion layer ------------------------------------------------------- */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes pageIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.rise {
+  animation: rise var(--dur-3) var(--ease-out) both;
 }
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
-    animation: none !important;
-    transition: none !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
 }

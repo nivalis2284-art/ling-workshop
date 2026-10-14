@@ -1,11 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import {
-  CircleHelp,
-  LockKeyhole,
-  PanelLeftClose,
-  PanelLeftOpen,
-} from "lucide-react";
+import { LockKeyhole, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import type { Agent } from "../api/types";
 import { Mark } from "../shared/ui";
 import { navigation } from "./navigation";
@@ -13,6 +8,13 @@ import type { PageId } from "./navigation";
 
 const collapseKey = "lingnexus.shell.collapsed";
 
+/** The shell: a collapsible sidebar and the content surface beside it.
+ *
+ * Two states only, and they morph into each other (width, fades, sliding
+ * labels — never `display` swaps, which made the old collapse twitch):
+ * expanded shows the brand row with the collapse control; collapsed shows the
+ * rail where the brand mark itself becomes the expand button.
+ */
 export function Shell({
   agents,
   agent,
@@ -55,19 +57,31 @@ export function Shell({
     });
   };
   return (
-    <div className={"app-shell" + (collapsed ? " collapsed" : "")}>
+    <div
+      className={
+        "app-shell" +
+        (collapsed ? " collapsed" : "") +
+        (page === "chat" ? " workspace-chat" : "")
+      }
+    >
       <a className="skip-link" href="#main-content">
         跳到主要内容
       </a>
-      <aside className={"sidebar" + (collapsed ? " collapsed" : "")}>
+      <aside className="sidebar">
         <div className="sidebar-head">
-          <div className="brand">
+          <button
+            type="button"
+            className="brand-mark"
+            aria-label={collapsed ? "展开侧栏" : "LingNexus"}
+            title={collapsed ? "展开侧栏" : undefined}
+            tabIndex={collapsed ? 0 : -1}
+            onClick={() => {
+              if (collapsed) toggle();
+            }}
+          >
             <Mark small />
-            <div>
-              <strong>LingNexus</strong>
-              <span>与灵，一起生长</span>
-            </div>
-          </div>
+          </button>
+          <strong className="brand-name">LingNexus</strong>
           <button
             type="button"
             className="icon-button sidebar-toggle"
@@ -82,15 +96,6 @@ export function Shell({
               <PanelLeftClose size={16} aria-hidden="true" />
             )}
           </button>
-        </div>
-        <div className="agent-card">
-          <span className="avatar" aria-hidden="true">
-            {agent.name.slice(0, 1)}
-          </span>
-          <div>
-            <strong>{agent.name}</strong>
-            <span>我的灵 · 本地空间</span>
-          </div>
         </div>
         {agents.length > 1 && (
           <label className="agent-select">
@@ -117,39 +122,22 @@ export function Shell({
               title={collapsed ? item.label : undefined}
               onClick={() => onNavigate(item.id)}
             >
-              <item.icon size={19} strokeWidth={1.7} aria-hidden="true" />
+              <item.icon size={17} strokeWidth={1.7} aria-hidden="true" />
               <span className="nav-label">{item.label}</span>
-              {page === item.id && (
-                <span className="nav-dot" aria-hidden="true" />
-              )}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
           <div className="local-note">
-            <LockKeyhole size={15} aria-hidden="true" />
+            <LockKeyhole size={13} aria-hidden="true" />
             <span>本机会话 · 仅当前浏览器</span>
           </div>
-          <p title="每一次变化，都有迹可循。">
-            <CircleHelp size={14} aria-hidden="true" />
-            <span>每一次变化，都有迹可循。</span>
-          </p>
         </div>
       </aside>
-      <div className={"workspace" + (page === "chat" ? " workspace-chat" : "")}>
-        <div className="topbar">
-          <span>
-            我的空间 <span className="crumb">/</span>{" "}
-            {navigation.find((item) => item.id === page)?.label}
-          </span>
-          <span className="version-tag">持续开发中</span>
-        </div>
+      <div className="workspace">
         <main id="main-content" ref={main} tabIndex={-1}>
-          {children}
+          <div className="page-surface">{children}</div>
         </main>
-        <footer className="workspace-footer">
-          LingNexus <span>让经历留下来，让理解慢慢生长。</span>
-        </footer>
       </div>
     </div>
   );

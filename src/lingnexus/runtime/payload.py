@@ -4,9 +4,14 @@ This module also owns the native shape of a tool exchange, because only the
 protocol family knows how a declaration and a result are spelled. The loop
 declares tools once, then appends the assistant's tool calls and their results
 after every step — in the family's own format, never a normalized one.
+
+The opening carries the caller's environment facts, and every user message
+carries its own stored send time: the cache prefix stays stable and only the
+tail moves.
 """
 
 import platform
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from lingnexus.context.builder import BudgetPolicy
@@ -41,12 +46,15 @@ def build_payload(
             else []
         )
         plans_by_message[message["id"]] = plans
+        stamp = _sent_time(message.get("created_at")) if message["role"] == "user" else ""
         entries.append(
             {
                 "id": message["id"],
                 "role": message["role"],
                 "text": message["text"],
-                "extra_tokens": sum(plan.estimated_tokens for plan in plans),
+                "stamp": stamp,
+                "extra_tokens": sum(plan.estimated_tokens for plan in plans)
+                + len(stamp.encode("utf-8")),
             }
         )
     context = app.context.build(
@@ -75,12 +83,15 @@ def build_payload(
         plans = plans_by_message[message["id"]]
         attachment_tokens += sum(plan.estimated_tokens for plan in plans)
         attachment_manifest.extend(plan.manifest(message["id"]) for plan in plans)
-        native.append(
-            {
-                "role": message["role"],
-                "content": attachments.content(app, profile, message["text"], plans),
-            }
-        )
+        content = attachments.content(app, profile, message["text"], plans)
+        stamp = str(message.get("stamp") or "")
+        if stamp:
+            content = (
+                f"{content}\n{stamp}"
+                if isinstance(content, str)
+                else [*content, attachments.text_block(profile, stamp)]
+            )
+        native.append({"role": message["role"], "content": content})
     manifest = {
         "agent_id": agent_id,
         "sent_messages": len(selected),
@@ -133,6 +144,22 @@ def _sandbox_summary(app) -> str:
     sandbox = getattr(app, "sandbox", None)
     level = sandbox.level() if sandbox is not None else "local"
     return _ENVIRONMENT_COMMANDS.get(level, _ENVIRONMENT_COMMANDS["local"])
+
+
+def _sent_time(value: str | None) -> str:
+    """The stamped send time for one stored user message; "" when unusable.
+
+    Derived from the message's own stored ``created_at``, so the bytes of a
+    message never change between turns and a cache prefix only breaks where
+    something actually changed. The newest message's stamp is the current time.
+    """
+    if not value:
+        return ""
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return ""
+    return "（发送时间：" + moment.astimezone().strftime("%Y-%m-%d %H:%M") + "）"
 
 
 def _skill_index(app: "Application", profile: ModelProfile) -> str:

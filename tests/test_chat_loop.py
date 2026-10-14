@@ -397,3 +397,28 @@ def test_opening_reports_unavailable_commands_without_grants(app, agent_id):
     assert "- 可写目录：无" in system
     assert "- 可读目录：无" in system
     assert "命令执行：不可用" in system
+
+
+def test_user_messages_carry_their_stored_send_time(app, agent_id):
+    configure(app)
+    requests = []
+    run_chat(
+        app,
+        [reply("一")],
+        {"agent_id": agent_id, "message": "第一问", "request_id": "stamp-1"},
+        requests,
+    )
+    run_chat(
+        app,
+        [reply("二")],
+        {"agent_id": agent_id, "message": "第二问", "request_id": "stamp-2"},
+        requests,
+    )
+    first_user = requests[0]["messages"][1]["content"]
+    assert "第一问" in first_user
+    assert re.search(r"发送时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}", first_user)
+    # A historical message is byte-identical on the next turn (cache stability).
+    assert requests[1]["messages"][1]["content"] == first_user
+    latest = requests[1]["messages"][-1]["content"]
+    assert "第二问" in latest
+    assert "发送时间：" in latest

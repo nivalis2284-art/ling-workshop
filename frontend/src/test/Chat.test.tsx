@@ -642,7 +642,12 @@ async function savedRound(
     3,
   );
   await waitFor(
-    () => expect(screen.getByRole("button", { name: "删除这一轮" })).toBeVisible(),
+    () => {
+      // 新界面里用户消息与回复都带「删除这一轮」（同一轮，锚定用户消息）。
+      const buttons = screen.getAllByRole("button", { name: "删除这一轮" });
+      expect(buttons.length).toBeGreaterThan(0);
+      expect(buttons[0]).toBeVisible();
+    },
     { timeout: 4000 },
   );
 }
@@ -656,7 +661,9 @@ test("deleting a turn removes it from the transcript and drops it from later req
   )!;
   await savedRound(server);
   expect(screen.getByText("你好！我是灵。")).toBeVisible();
-  await user.click(screen.getByRole("button", { name: "删除这一轮" }));
+  await user.click(
+    screen.getAllByRole("button", { name: "删除这一轮" })[0],
+  );
   const dialog = await screen.findByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
   await waitFor(() =>
@@ -670,8 +677,8 @@ test("deleting a turn removes it from the transcript and drops it from later req
     expect(screen.queryByText("你好！我是灵。")).not.toBeInTheDocument(),
   );
   expect(
-    screen.queryByRole("button", { name: "删除这一轮" }),
-  ).not.toBeInTheDocument();
+    screen.queryAllByRole("button", { name: "删除这一轮" }),
+  ).toHaveLength(0);
 });
 
 test("cancelling the confirmation keeps the turn and sends nothing", async () => {
@@ -680,7 +687,9 @@ test("cancelling the confirmation keeps the turn and sends nothing", async () =>
   await send(user, "你好");
   await savedRound(server);
   await screen.findByText("你好！我是灵。");
-  await user.click(screen.getByRole("button", { name: "删除这一轮" }));
+  await user.click(
+    screen.getAllByRole("button", { name: "删除这一轮" })[0],
+  );
   await user.click(
     within(await screen.findByRole("dialog")).getByRole("button", {
       name: "取消",

@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { Folder, Monitor, ShieldAlert } from "lucide-react";
+import { errorMessage } from "../../api/client";
 import type { LingApi } from "../../api/client";
 import type { Agent } from "../../api/types";
+import { ConfirmDialog } from "../../shared/ConfirmDialog";
 import { useResource } from "../../shared/useResource";
 import { ErrorNotice, Loading } from "../../shared/ui";
 import { ChatAttachments, attachmentProblem } from "./ChatAttachments";
@@ -36,6 +39,12 @@ export function ChatPage({
   const [confirming, setConfirming] = useState<string[]>([]);
   const [deciding, setDeciding] = useState<string[]>([]);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  // 完全访问（按对话）：读取失败按安全默认「逐条确认」显示，不打扰对话。
+  const [access, setAccess] = useState<"confirm" | "full">("confirm");
+  const [accessBusy, setAccessBusy] = useState(false);
+  const [accessPrompt, setAccessPrompt] = useState(false);
+  const [accessError, setAccessError] = useState("");
+  const [workdirName, setWorkdirName] = useState("");
   const list = conversations.list;
   const unresolved =
     isPending(agentSession.getSnapshot().turns.at(-1)) &&
@@ -59,6 +68,41 @@ export function ChatPage({
   );
   const models = useResource(load);
   useEffect(session.attach, [session]);
+  useEffect(() => {
+    let current = true;
+    api
+      .permissions(agent.id)
+      .then((value) => {
+        if (!current) return;
+        const root = value.writable[0] ?? value.readable[0];
+        setWorkdirName(
+          root ? (root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "") : "",
+        );
+      })
+      .catch(() => {
+        /* 读不到授权目录时省略这一枚标签。 */
+      });
+    return () => {
+      current = false;
+    };
+  }, [api, agent.id]);
+  useEffect(() => {
+    if (!conversationId) {
+      setAccess("confirm");
+      return;
+    }
+    const controller = new AbortController();
+    setAccessError("");
+    api
+      .conversationAccess(conversationId, controller.signal)
+      .then((value) => {
+        if (!controller.signal.aborted) setAccess(value.mode);
+      })
+      .catch(() => {
+        /* 读取失败按安全默认显示；真正的失败会在开启动作里如实报出。 */
+      });
+    return () => controller.abort();
+  }, [api, conversationId]);
   useEffect(() => {
     // An ID-less initial send adopts the backend's persistent default without
     // changing its request fingerprint or replacing its active subscriber.
@@ -124,6 +168,21 @@ export function ChatPage({
     const done = await session.deleteTurns(anchors);
     if (done) stopSelecting();
   };
+  const changeAccess = async (mode: "confirm" | "full"): Promise<boolean> => {
+    if (!conversationId || accessBusy) return false;
+    setAccessBusy(true);
+    setAccessError("");
+    try {
+      const value = await api.setConversationAccess(conversationId, mode);
+      setAccess(value.mode);
+      return true;
+    } catch (error) {
+      setAccessError(errorMessage(error));
+      return false;
+    } finally {
+      setAccessBusy(false);
+    }
+  };
   const decide = (fingerprint: string, approved: boolean) => {
     // 在途的同一指纹直接忽略；会话层还有已决策记账兜底，双击不会造成
     // 第二次决策请求（也就不会用 404 制造假错误横幅）。
@@ -152,6 +211,23 @@ export function ChatPage({
           onOpenWorkspace={() => setWorkspaceOpen(true)}
           disabled={locked}
         />
+        {access === "full" && (
+          <div className="chat-banner" role="status">
+            <ShieldAlert size={14} aria-hidden="true" />
+            <span>
+              完全访问已开启 · 本对话内命令与远程工具不再逐条确认（沙箱、审计与目录授权不变）
+            </span>
+            <button
+              type="button"
+              className="chat-banner-close"
+              disabled={accessBusy}
+              onClick={() => void changeAccess("confirm")}
+            >
+              立即关闭
+            </button>
+          </div>
+        )}
+        {accessError && <ErrorNotice message={accessError} />}
         <div className="chat-column">
         {models.status === "loading" && <Loading label="正在读取对话模型…" />}
         {models.status === "error" && (
@@ -361,6 +437,40 @@ export function ChatPage({
           canStop={!!last?.runId}
           cancelling={!!last?.cancelling}
           onStop={() => void session.stop()}
+          access={
+            <button
+              type="button"
+              className={"chat-access" + (access === "full" ? " on" : "")}
+              aria-pressed={access === "full"}
+              disabled={accessBusy || !conversationId}
+              title={
+                access === "full"
+                  ? "关闭完全访问"
+                  : "开启完全访问：本对话内命令与远程工具不再逐条确认"
+              }
+              onClick={() => {
+                if (access === "full") void changeAccess("confirm");
+                else setAccessPrompt(true);
+              }}
+            >
+              <ShieldAlert size={13} aria-hidden="true" />
+              完全访问
+            </button>
+          }
+          context={
+            <div className="chat-context-chips">
+              {workdirName && (
+                <span>
+                  <Folder size={12} aria-hidden="true" />
+                  {workdirName}
+                </span>
+              )}
+              <span>
+                <Monitor size={12} aria-hidden="true" />
+                本机
+              </span>
+            </div>
+          }
           controls={
             <ChatControls
               profiles={profiles}
@@ -408,6 +518,26 @@ export function ChatPage({
             </div>
           </section>
         </div>
+      )}
+      {accessPrompt && (
+        <ConfirmDialog
+          title="开启「完全访问」？"
+          confirmLabel="确认开启"
+          busy={accessBusy}
+          onCancel={() => setAccessPrompt(false)}
+          onConfirm={() => {
+            void changeAccess("full").then((saved) => {
+              if (saved) setAccessPrompt(false);
+            });
+          }}
+        >
+          <p>
+            开启后，本条对话内：执行命令、远程工具不再逐条向你确认。沙箱限制、审计记录、目录授权、浏览器点击审批保持不变。
+          </p>
+          <p>
+            风险：这道人工确认被移除后，若灵读到恶意指令，可能在本机已授权的范围内执行危险操作。建议用完立即关闭。
+          </p>
+        </ConfirmDialog>
       )}
       {workspaceOpen && (
         <div

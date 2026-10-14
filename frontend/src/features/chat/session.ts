@@ -680,7 +680,16 @@ export class ChatSession {
       case "tool_result":
         patch.tools = (turn.tools ?? []).map((tool) =>
           tool.call_id === event.data.call_id
-            ? { ...tool, status: event.data.status, preview: event.data.preview }
+            ? {
+                ...tool,
+                status: event.data.status,
+                preview: event.data.preview,
+                // A call released by full-access mode keeps that fact on the
+                // record so the transcript can mark it as unconfirmed.
+                ...(event.data.access === "full"
+                  ? { access: "full" as const }
+                  : {}),
+              }
             : tool,
         );
         break;

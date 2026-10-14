@@ -123,6 +123,14 @@ export interface Conversation {
   background?: string;
 }
 
+// Per-conversation access mode: "full" releases gated calls (commands, remote
+// tools) without waiting for a per-call owner confirmation; every other control
+// (sandbox, audit, grants) is unchanged. Absent setting reads back "confirm".
+export interface ConversationAccess {
+  conversation_id: string;
+  mode: "confirm" | "full";
+}
+
 // Messages hold their own text; the selected branch is the chain up to the head.
 export interface ConversationMessage {
   id: string;
@@ -145,7 +153,9 @@ export interface ChatUsage {
 }
 
 // One tool call inside the chat loop. It starts as "running" on tool_started and
-// is completed by the matching tool_result (same call_id).
+// is completed by the matching tool_result (same call_id). A call released
+// without a per-call confirmation by the conversation's full-access mode
+// carries access: "full".
 export interface ChatToolCall {
   step: number;
   name: string;
@@ -153,6 +163,7 @@ export interface ChatToolCall {
   arguments: Record<string, unknown>;
   status?: string;
   preview?: string;
+  access?: "full";
 }
 
 // A side-effecting call waiting for the owner's decision (run_command).
@@ -213,6 +224,7 @@ export type ChatEvent = { id: string } & (
         call_id: string;
         status: string;
         preview: string;
+        access?: "full";
       };
     }
   | { event: "paused" | "resumed"; data: { run_id: string } }

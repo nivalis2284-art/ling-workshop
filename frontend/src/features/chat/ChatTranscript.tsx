@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Check, Copy, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import type { ChatSnapshot, ChatTurn } from "./session";
 import type {
   Attachment,
@@ -47,25 +48,153 @@ function toolStatus(tool: ChatToolCall) {
   }
 }
 
+function toolMark(tool: ChatToolCall) {
+  if (tool.status === "completed") return <Check size={9} strokeWidth={3} aria-hidden="true" />;
+  if (tool.status === "blocked" || tool.status === "failed") return "!";
+  if (tool.status === "unknown") return "?";
+  return "…";
+}
+
+/** One turn's tool activity as a grouped record card. */
 function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
   if (!tools?.length) return null;
+  const settled = tools.filter(
+    (tool) => tool.status && tool.status !== "running",
+  ).length;
+  const finished = tools.filter((tool) => tool.status === "completed").length;
   return (
-    <ul className="chat-tools" aria-label="工具调用">
-      {tools.map((tool) => (
-        <li
-          key={tool.call_id}
-          className={"chat-tool" + (tool.status ? " " + tool.status : "")}
-        >
-          <div className="chat-tool-head">
+    <section className="chat-tools" aria-label="工具调用">
+      <div className="chat-tools-head">
+        <span className="chat-tools-title">工作记录</span>
+        <span className="chat-tools-meta">
+          {tools.length} 项
+          {settled < tools.length
+            ? " · 进行中"
+            : finished === tools.length
+              ? " · 全部完成"
+              : ""}
+        </span>
+      </div>
+      <ul className="chat-tools-list">
+        {tools.map((tool) => (
+          <li
+            key={tool.call_id}
+            className={"chat-tool" + (tool.status ? " " + tool.status : "")}
+          >
+            <span className="chat-tool-mark" aria-hidden="true">
+              {toolMark(tool)}
+            </span>
             <span className="chat-tool-name">{toolLabel(tool.name)}</span>
+            {tool.access === "full" && (
+              <span
+                className="chat-tool-access"
+                title="本条对话的完全访问模式放行，未逐条确认"
+              >
+                免确认
+              </span>
+            )}
             <span className="chat-tool-status">{toolStatus(tool)}</span>
-          </div>
-          {tool.preview && (
-            <pre className="chat-tool-preview">{tool.preview}</pre>
-          )}
-        </li>
-      ))}
-    </ul>
+            {tool.preview && (
+              <pre className="chat-tool-preview">{tool.preview}</pre>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Hover toolbar under one message: copy for everyone, edit for the owner's
+ * messages, regenerate for replies, and delete-the-turn on either side. */
+function MessageTools({
+  text,
+  user,
+  disabled,
+  canRegenerate,
+  deleteAnchor,
+  regenerateIssue,
+  onEdit,
+  onRegenerate,
+  onDeleteTurn,
+}: {
+  text: string;
+  user: boolean;
+  disabled: boolean;
+  canRegenerate: boolean;
+  deleteAnchor?: string;
+  regenerateIssue?: string;
+  onEdit: () => void;
+  onRegenerate: () => void;
+  onDeleteTurn?: (id: string) => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    try {
+      const clipboard = navigator.clipboard;
+      if (!clipboard?.writeText) return;
+      void clipboard.writeText(text).then(
+        () => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1400);
+        },
+        () => {},
+      );
+    } catch {
+      /* 剪贴板不可用时保持静默。 */
+    }
+  };
+  return (
+    <div className="chat-msgtools" role="toolbar" aria-label="消息操作">
+      <button
+        type="button"
+        className="chat-msgbtn"
+        aria-label="复制消息"
+        title={copied ? "已复制" : "复制"}
+        onClick={copy}
+      >
+        {copied ? (
+          <Check size={13} aria-hidden="true" />
+        ) : (
+          <Copy size={13} aria-hidden="true" />
+        )}
+      </button>
+      {user && (
+        <button
+          type="button"
+          className="chat-msgbtn"
+          aria-label="编辑消息"
+          title="编辑"
+          disabled={disabled}
+          onClick={onEdit}
+        >
+          <Pencil size={13} aria-hidden="true" />
+        </button>
+      )}
+      {!user && canRegenerate && (
+        <button
+          type="button"
+          className="chat-msgbtn"
+          aria-label="重新生成"
+          title={regenerateIssue ?? "重新生成"}
+          disabled={disabled || !!regenerateIssue}
+          onClick={onRegenerate}
+        >
+          <RefreshCw size={13} aria-hidden="true" />
+        </button>
+      )}
+      {onDeleteTurn && deleteAnchor && (
+        <button
+          type="button"
+          className="chat-msgbtn danger"
+          aria-label="删除这一轮"
+          title="删除这一轮"
+          disabled={disabled}
+          onClick={() => onDeleteTurn(deleteAnchor)}
+        >
+          <Trash2 size={13} aria-hidden="true" />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -80,9 +209,9 @@ function Reply({ turn }: { turn: ChatTurn }) {
       )}
       <ToolCalls tools={turn.tools} />
       {turn.text ? (
-        <p className="preserve-text">{turn.text}</p>
+        <p className="preserve-text chat-bubble">{turn.text}</p>
       ) : (
-        <p className="muted">
+        <p className="muted chat-hint">
           {turn.status === "connecting"
             ? "正在连接…"
             : turn.status === "streaming"
@@ -144,6 +273,7 @@ function SavedMessage({
   onToggleSelect,
   attachments,
   regenerateIssue,
+  deleteAnchor,
 }: {
   message: ConversationMessage;
   name: string;
@@ -158,6 +288,7 @@ function SavedMessage({
   onToggleSelect: (id: string) => void;
   attachments: Attachment[];
   regenerateIssue?: string;
+  deleteAnchor?: string;
 }) {
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(message.text);
@@ -168,114 +299,98 @@ function SavedMessage({
       aria-label={user ? "你的消息" : name + "的回复"}
       data-message-id={message.id}
     >
-      <div className="chat-message-head">
-        {selecting && user && (
-          <label className="chat-select">
-            <input
-              type="checkbox"
-              checked={selected}
-              disabled={disabled}
-              aria-label={"选择这一轮：" + message.text.slice(0, 24)}
-              onChange={() => onToggleSelect(message.id)}
-            />
-          </label>
-        )}
-        <span className="chat-speaker">{user ? "你" : name}</span>
-      </div>
-      {user && (
-        <AttachmentNames
-          ids={message.attachment_ids ?? []}
-          attachments={attachments}
-        />
-      )}
-      {editing ? (
-        <form
-          className="chat-edit"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (!disabled && content.trim())
-              void onEdit(message.id, content).then((saved) => {
-                if (saved) setEditing(false);
-              });
-          }}
-        >
-          <label htmlFor={"edit-" + message.id}>编辑你的消息</label>
-          <textarea
-            id={"edit-" + message.id}
-            value={content}
-            onChange={(event) => setContent(event.target.value)}
+      {selecting && user && (
+        <label className="chat-select">
+          <input
+            type="checkbox"
+            checked={selected}
             disabled={disabled}
-            autoFocus
+            aria-label={"选择这一轮：" + message.text.slice(0, 24)}
+            onChange={() => onToggleSelect(message.id)}
           />
-          <p className="metadata">
-            保存会从这里重新生成回复，原来的说法仍保留在记录中。
-          </p>
-          <div className="chat-message-actions">
-            <button
-              className="button secondary"
-              type="submit"
-              disabled={disabled || !content.trim()}
-            >
-              保存为新分支
-            </button>
-            <button
-              className="text-button"
-              type="button"
-              disabled={disabled}
-              onClick={() => setEditing(false)}
-            >
-              取消编辑
-            </button>
-          </div>
-        </form>
-      ) : (
-        <>
-          {turn ? (
-            <Reply turn={{ ...turn, text: message.text }} />
-          ) : (
-            <p className="preserve-text">{message.text}</p>
-          )}
-          <div className="chat-message-actions">
-            {user ? (
-              <>
-                <button
-                  className="text-button"
-                  disabled={disabled}
-                  onClick={() => {
-                    setContent(message.text);
-                    setEditing(true);
-                  }}
-                >
-                  编辑消息
-                </button>
-                {onDeleteTurn && (
-                  <button
-                    className="text-button danger"
-                    disabled={disabled}
-                    onClick={() => onDeleteTurn(message.id)}
-                  >
-                    删除这一轮
-                  </button>
-                )}
-              </>
-            ) : (
-              canRegenerate && (
-                <button
-                  className="text-button"
-                  disabled={disabled || !!regenerateIssue}
-                  title={regenerateIssue}
-                  onClick={() => onRegenerate(message.id)}
-                >
-                  重新生成
-                </button>
-              )
-            )}
-          </div>
-          {!user && regenerateIssue && (
-            <p className="metadata">{regenerateIssue}</p>
-          )}
-        </>
+        </label>
       )}
+      <div className="chat-row">
+        {!user && (
+          <span className="chat-avatar" aria-hidden="true">
+            {name.slice(0, 1)}
+          </span>
+        )}
+        <div className="chat-stack">
+          {user && (
+            <AttachmentNames
+              ids={message.attachment_ids ?? []}
+              attachments={attachments}
+            />
+          )}
+          {editing ? (
+            <form
+              className="chat-edit"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (!disabled && content.trim())
+                  void onEdit(message.id, content).then((saved) => {
+                    if (saved) setEditing(false);
+                  });
+              }}
+            >
+              <label htmlFor={"edit-" + message.id}>编辑你的消息</label>
+              <textarea
+                id={"edit-" + message.id}
+                value={content}
+                onChange={(event) => setContent(event.target.value)}
+                disabled={disabled}
+                autoFocus
+              />
+              <p className="metadata">
+                保存会从这里重新生成回复，原来的说法仍保留在记录中。
+              </p>
+              <div className="chat-message-actions">
+                <button
+                  className="button secondary"
+                  type="submit"
+                  disabled={disabled || !content.trim()}
+                >
+                  保存为新分支
+                </button>
+                <button
+                  className="text-button"
+                  type="button"
+                  disabled={disabled}
+                  onClick={() => setEditing(false)}
+                >
+                  取消编辑
+                </button>
+              </div>
+            </form>
+          ) : (
+            <>
+              {turn ? (
+                <Reply turn={{ ...turn, text: message.text }} />
+              ) : (
+                <p className="preserve-text chat-bubble">{message.text}</p>
+              )}
+              {!user && regenerateIssue && (
+                <p className="metadata">{regenerateIssue}</p>
+              )}
+              <MessageTools
+                text={message.text}
+                user={user}
+                disabled={disabled}
+                canRegenerate={canRegenerate}
+                deleteAnchor={deleteAnchor}
+                regenerateIssue={regenerateIssue}
+                onEdit={() => {
+                  setContent(message.text);
+                  setEditing(true);
+                }}
+                onRegenerate={() => onRegenerate(message.id)}
+                onDeleteTurn={onDeleteTurn}
+              />
+            </>
+          )}
+        </div>
+      </div>
     </article>
   );
 }
@@ -352,61 +467,65 @@ export function ChatTranscript({
           从一条消息开始。对话会保存在本地服务，重新打开后可继续。
         </EmptyState>
       )}
-      {state.messages.map((message) => (
-        <SavedMessage
-          key={message.id}
-          message={message}
-          name={name}
-          disabled={disabled}
-          turn={state.turns.find(
-            (turn) => turn.assistantMessageId === message.id,
-          )}
-          canRegenerate={
-            canRegenerate &&
-            state.messages.some(
-              (user) => user.id === message.parent_id && user.role === "user",
-            )
-          }
-          onEdit={onEdit}
-          onRegenerate={onRegenerate}
-          onDeleteTurn={onDeleteTurn}
-          selecting={selecting}
-          selected={selected.has(message.id)}
-          onToggleSelect={onToggleSelect}
-          attachments={attachments}
-          regenerateIssue={
-            message.role === "assistant" &&
-            state.messages.some(
-              (user) => user.id === message.parent_id && user.role === "user",
-            )
-              ? regenerateProblem?.(
-                  state.messages.find(
-                    (user) =>
-                      user.id === message.parent_id && user.role === "user",
-                  )!,
-                )
-              : undefined
-          }
-        />
-      ))}
+      {state.messages.map((message) => {
+        const parentUser = state.messages.find(
+          (item) => item.id === message.parent_id && item.role === "user",
+        );
+        return (
+          <SavedMessage
+            key={message.id}
+            message={message}
+            name={name}
+            disabled={disabled}
+            turn={state.turns.find(
+              (turn) => turn.assistantMessageId === message.id,
+            )}
+            canRegenerate={canRegenerate && !!parentUser}
+            onEdit={onEdit}
+            onRegenerate={onRegenerate}
+            onDeleteTurn={onDeleteTurn}
+            selecting={selecting}
+            selected={selected.has(message.id)}
+            onToggleSelect={onToggleSelect}
+            attachments={attachments}
+            deleteAnchor={message.role === "user" ? message.id : parentUser?.id}
+            regenerateIssue={
+              message.role === "assistant" && parentUser
+                ? regenerateProblem?.(parentUser)
+                : undefined
+            }
+          />
+        );
+      })}
       {live && (
         <div className="chat-turn" key={live.request.request_id}>
           {!userVisible && (
             <article className="chat-message chat-user" aria-label="你的消息">
-              <span className="chat-speaker">你</span>
-              <AttachmentNames
-                ids={live.request.attachment_ids ?? []}
-                attachments={attachments}
-              />
-              <p className="preserve-text">{live.request.message}</p>
+              <div className="chat-row">
+                <div className="chat-stack">
+                  <AttachmentNames
+                    ids={live.request.attachment_ids ?? []}
+                    attachments={attachments}
+                  />
+                  <p className="preserve-text chat-bubble">
+                    {live.request.message}
+                  </p>
+                </div>
+              </div>
             </article>
           )}
           <article
             className="chat-message chat-assistant"
             aria-label={name + "的回复"}
           >
-            <span className="chat-speaker">{name}</span>
-            <Reply turn={live} />
+            <div className="chat-row">
+              <span className="chat-avatar" aria-hidden="true">
+                {name.slice(0, 1)}
+              </span>
+              <div className="chat-stack">
+                <Reply turn={live} />
+              </div>
+            </div>
           </article>
         </div>
       )}

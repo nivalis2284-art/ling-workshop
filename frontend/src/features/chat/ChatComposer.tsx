@@ -15,6 +15,8 @@ export function ChatComposer({
   attachmentsOpen,
   onToggleAttachments,
   controls,
+  access,
+  context,
 }: {
   draft: string;
   onDraft: (value: string) => void;
@@ -28,6 +30,8 @@ export function ChatComposer({
   attachmentsOpen: boolean;
   onToggleAttachments: () => void;
   controls?: ReactNode;
+  access?: ReactNode;
+  context?: ReactNode;
 }) {
   const composing = useRef(false);
   const ready = !disabled && !pending && !!draft.trim();
@@ -40,6 +44,7 @@ export function ChatComposer({
       }}
     >
       {attachments}
+      {context}
       <div className="chat-composer-box">
         <textarea
           aria-label="消息"
@@ -77,6 +82,7 @@ export function ChatComposer({
           >
             <Plus size={18} aria-hidden="true" />
           </button>
+          {access}
           <div className="chat-composer-buttons">
             {controls}
             {pending ? (

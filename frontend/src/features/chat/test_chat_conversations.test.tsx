@@ -576,14 +576,13 @@ test("deleting a round asks first, then removes it with its reply", async () => 
   await screen.findByText("原回复");
   await secondRound(user, server);
   const log = screen.getByRole("log");
-  // Only the owner's messages offer deletion; a reply is removed with its round.
+  // 新界面两边都提供「删除这一轮」（回复上的按钮同样锚定本轮的用户消息）；
   // 空回复的完成会保留一个占位回合，所以回复文章可能不止一篇。
   expect(
     within(log)
       .getAllByRole("article", { name: "灵的回复" })
-      .every(
-        (article) =>
-          !within(article).queryByRole("button", { name: "删除这一轮" }),
+      .some((article) =>
+        within(article).queryByRole("button", { name: "删除这一轮" }),
       ),
   ).toBe(true);
   const mine = within(log).getAllByRole("article", { name: "你的消息" });

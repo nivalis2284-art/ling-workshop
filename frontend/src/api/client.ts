@@ -8,6 +8,7 @@ import type {
   ChatRequest,
   ChatRun,
   Conversation,
+  ConversationAccess,
   ConversationMessage,
   ConversationBranch,
   ModelInput,
@@ -280,6 +281,16 @@ export class LingApi {
     this.post<Conversation>(
       "/conversations/" + encodeURIComponent(id) + "/delete-turns",
       { anchors },
+    );
+  conversationAccess = (id: string, signal?: AbortSignal) =>
+    this.request<ConversationAccess>(
+      "/conversations/" + encodeURIComponent(id) + "/access",
+      { signal },
+    );
+  setConversationAccess = (id: string, mode: ConversationAccess["mode"]) =>
+    this.post<ConversationAccess>(
+      "/conversations/" + encodeURIComponent(id) + "/access",
+      { mode },
     );
   chatEvents = (runId: string, after: string, signal: AbortSignal) =>
     this.response(

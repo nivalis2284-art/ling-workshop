@@ -60,6 +60,7 @@ export function ChatHeader({
         </button>
         {open && (
           <div className="chat-head-popup">
+            <p className="chat-head-caption">对话选项</p>
             <button
               type="button"
               className="chat-head-action"

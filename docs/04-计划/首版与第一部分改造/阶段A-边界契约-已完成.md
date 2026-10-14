@@ -105,7 +105,7 @@ history, identity, memory, development, segments, skills, activities
 | **WS-前端** | `frontend/src/` |
 | **WS-测试**（第三轮） | `tests/` |
 
-**硬性禁止**：任何工作流都不得修改第二部分模块自身的文件（`history/` `memory/` `identity/` `learning/` `skills/` `development/` `activities/`），也不得删除它们。
+**硬性禁止**（隔离期的当时约定，随开发调整）：任何工作流都不得修改第二部分模块自身的文件（`history/` `memory/` `identity/` `learning/` `skills/` `development/` `activities/`），也不得删除它们。
 
 ---
 
@@ -126,7 +126,7 @@ history, identity, memory, development, segments, skills, activities
 
 ---
 
-## 五、禁令
+## 五、禁令（隔离期的当时约定，随开发调整）
 
 - **不删除**第二部分模块的任何文件与任何数据库表/数据。
 - **不修改**第二部分模块内部逻辑（保持原样，以便将来加回）。

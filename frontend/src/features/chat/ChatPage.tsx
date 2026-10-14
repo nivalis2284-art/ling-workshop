@@ -91,6 +91,8 @@ export function ChatPage({
       setAccess("confirm");
       return;
     }
+    // 切换对话时先回到安全默认：新对话读取失败也不会沿用上一段的显示（复核发现-1）。
+    setAccess("confirm");
     const controller = new AbortController();
     setAccessError("");
     api

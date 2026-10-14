@@ -422,3 +422,28 @@ def test_user_messages_carry_their_stored_send_time(app, agent_id):
     latest = requests[1]["messages"][-1]["content"]
     assert "第二问" in latest
     assert "发送时间：" in latest
+
+
+def test_default_work_way_rule_heads_the_opening_and_yields_to_custom_rules(app, agent_id):
+    configure(app)
+    assert app.instructions.view(agent_id)["customized"] is False
+    requests = []
+    run_chat(
+        app,
+        [reply("好")],
+        {"agent_id": agent_id, "message": "你好", "request_id": "rules-1"},
+        requests,
+    )
+    assert "完成任务前先验证结果" in requests[0]["messages"][0]["content"]
+    # A customized list replaces the defaults entirely and is never merged.
+    app.instructions.replace(agent_id, ["自定义规则"])
+    requests = []
+    run_chat(
+        app,
+        [reply("好")],
+        {"agent_id": agent_id, "message": "再来", "request_id": "rules-2"},
+        requests,
+    )
+    system = requests[0]["messages"][0]["content"]
+    assert "自定义规则" in system
+    assert "完成任务前先验证结果" not in system

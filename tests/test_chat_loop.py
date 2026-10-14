@@ -17,6 +17,7 @@ These are deterministic: no network, no real model, no container engine.
 import asyncio
 import json
 import re
+import threading
 
 import httpx
 import pytest
@@ -26,6 +27,7 @@ from lingnexus.models import APIFamily, ModelProfile
 from lingnexus.permissions.hooks import AppAuthorization, permission_hook
 from lingnexus.runtime.confirmations import ConfirmationService, confirmation_hook
 from lingnexus.runtime.hooks import HookEvent, HookRegistry
+from lingnexus.runtime.scope import ChatToolScope
 from lingnexus.runtime.types import ChatRequest
 
 # --- shared builders (shape matches tests/test_smoke.py) -------------------
@@ -447,3 +449,107 @@ def test_default_work_way_rule_heads_the_opening_and_yields_to_custom_rules(app,
     system = requests[0]["messages"][0]["content"]
     assert "自定义规则" in system
     assert "完成任务前先验证结果" not in system
+
+
+# --- read-only calls overlap; everything else keeps its order ---------------
+
+
+def test_read_only_calls_in_one_step_run_concurrently(app, agent_id, tmp_path, monkeypatch):
+    configure(app)
+    folder = tmp_path / "authorized"
+    _grant(app, agent_id, folder)
+    left, right = folder / "a.txt", folder / "b.txt"
+    left.write_text("alpha", encoding="utf-8")
+    right.write_text("beta", encoding="utf-8")
+    # Both reads must be in flight at once or the barrier times out.
+    barrier = threading.Barrier(2, timeout=15)
+    original = ChatToolScope.read
+
+    def probe(self, raw):
+        barrier.wait()
+        return original(self, raw)
+
+    monkeypatch.setattr(ChatToolScope, "read", probe)
+    replies = [
+        tool_reply(
+            calls=[
+                ("r1", "read_file", {"path": str(left)}),
+                ("r2", "read_file", {"path": str(right)}),
+            ]
+        ),
+        reply("两个都读完了。"),
+    ]
+    result, events = run_chat(
+        app,
+        replies,
+        {"agent_id": agent_id, "message": "读两个文件", "request_id": "par-1"},
+    )
+    assert result["status"] == "completed"
+    results = [event for event in events if event["event"] == "tool_result"]
+    assert [event["data"]["call_id"] for event in results] == ["r1", "r2"]
+    assert all(event["data"]["status"] == "completed" for event in results)
+
+
+def test_side_effecting_calls_stay_sequential_and_ordered(app, agent_id, tmp_path):
+    configure(app)
+    folder = tmp_path / "authorized"
+    _grant(app, agent_id, folder)
+    first, second = folder / "one.txt", folder / "two.txt"
+    replies = [
+        tool_reply(
+            calls=[
+                ("w1", "create_file", {"path": str(first), "text": "1"}),
+                ("w2", "create_file", {"path": str(second), "text": "2"}),
+            ]
+        ),
+        reply("写好两个文件。"),
+    ]
+    result, events = run_chat(
+        app,
+        replies,
+        {"agent_id": agent_id, "message": "写两个文件", "request_id": "ser-1"},
+    )
+    assert result["status"] == "completed"
+    sequence = [
+        (event["event"], event["data"]["call_id"])
+        for event in events
+        if event["event"] in ("tool_started", "tool_result")
+    ]
+    assert sequence == [
+        ("tool_started", "w1"),
+        ("tool_result", "w1"),
+        ("tool_started", "w2"),
+        ("tool_result", "w2"),
+    ]
+
+
+def test_mixed_batch_keeps_request_order_for_native_results(app, agent_id, tmp_path):
+    configure(app)
+    folder = tmp_path / "authorized"
+    _grant(app, agent_id, folder)
+    left, right = folder / "a.txt", folder / "b.txt"
+    left.write_text("alpha", encoding="utf-8")
+    right.write_text("beta", encoding="utf-8")
+    target = folder / "out.txt"
+    requests = []
+    replies = [
+        tool_reply(
+            calls=[
+                ("r1", "read_file", {"path": str(left)}),
+                ("r2", "read_file", {"path": str(right)}),
+                ("w1", "create_file", {"path": str(target), "text": "combined"}),
+            ]
+        ),
+        reply("完成。"),
+    ]
+    result, _ = run_chat(
+        app,
+        replies,
+        {"agent_id": agent_id, "message": "读两个再写一个", "request_id": "mix-1"},
+        requests,
+    )
+    assert result["status"] == "completed"
+    tool_messages = [
+        message for message in requests[1]["messages"] if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in tool_messages] == ["r1", "r2", "w1"]

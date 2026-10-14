@@ -75,6 +75,8 @@ COMPLETE_REASONS = {
 DEFAULT_MAX_STEPS = 40
 MAX_STEPS_SETTING = "chat.max_steps"
 _PREVIEW_CHARS = 800
+_READ_ONLY_TOOLS = frozenset({"read_file", "search"})
+"""Calls safe to overlap: they only read granted locations and hold no state."""
 
 
 @dataclass
@@ -113,6 +115,27 @@ def _preview(text: str) -> str:
     return text if len(text) <= _PREVIEW_CHARS else text[:_PREVIEW_CHARS] + "…"
 
 
+def _call_batches(calls: list[ToolCall]) -> list[list[tuple[ToolCall, int]]]:
+    """Group consecutive read-only calls so the batch can run concurrently.
+
+    Side-effecting calls stay singleton batches: their order against reads,
+    owner confirmations and file effects must never change under concurrency.
+    """
+    batches: list[list[tuple[ToolCall, int]]] = []
+    concurrent: list[tuple[ToolCall, int]] = []
+    for position, call in enumerate(calls):
+        if call.name in _READ_ONLY_TOOLS:
+            concurrent.append((call, position))
+            continue
+        if concurrent:
+            batches.append(concurrent)
+            concurrent = []
+        batches.append([(call, position)])
+    if concurrent:
+        batches.append(concurrent)
+    return batches
+
+
 class ChatRuntime:
     """One manager per database/process, used on the server's asyncio loop.
 
@@ -126,9 +149,11 @@ class ChatRuntime:
     One turn is a bounded loop: each step calls the model with the accumulated
     messages, collects every tool_call, runs each one through the BEFORE_TOOL /
     dispatch / AFTER_TOOL sequence, appends the native results, and repeats until
-    the model stops asking for tools or the step budget runs out. Tools are only
-    declared when the profile supports them; a run that exhausts its budget is
-    reported as unfinished, never as completed. All policy lives in hooks.
+    the model stops asking for tools or the step budget runs out. Adjacent
+    read-only calls (read_file, search) run concurrently; every other call keeps
+    its order, and events stay in request order. Tools are only declared when the
+    profile supports them; a run that exhausts its budget is reported as
+    unfinished, never as completed. All policy lives in hooks.
 
     events(run_id, after=0) yields durable {id, event, data} records. id is a
     positive per-run sequence, and after is exclusive. started carries
@@ -413,9 +438,7 @@ class ChatRuntime:
                     else:
                         self._fail(run_id, "incomplete_response")
                     return
-                results = [
-                    await self._run_tool(run_id, step, call, scope) for call in turn.calls
-                ]
+                results = await self._run_tools(run_id, step, turn.calls, scope)
                 append_tool_calls(state["payload"], state["profile"], turn.calls, turn.text)
                 append_tool_results(
                     state["payload"],
@@ -575,15 +598,78 @@ class ChatRuntime:
                     )
         return _Turn(text="".join(text), calls=calls, eof=True)
 
-    async def _run_tool(
+    async def _run_tools(
+        self, run_id: str, step: int, calls: list[ToolCall], scope: ChatToolScope
+    ) -> list[tuple[ToolCall, str, str]]:
+        """Run this step's calls in request order; adjacent read-only calls fan out.
+
+        Every call still passes BEFORE_TOOL → dispatch → AFTER_TOOL, and the
+        started/result events are appended in request order, so a run always
+        replays as one deterministic transcript whatever order work finished in.
+        """
+        outcomes: dict[int, tuple[ToolCall, str, str]] = {}
+        for batch in _call_batches(calls):
+            for call, _ in batch:
+                self._emit_tool_started(run_id, step, call)
+            if len(batch) == 1:
+                call, position = batch[0]
+                outcomes[position] = await self._invoke_tool(run_id, step, call, scope)
+            else:
+                settled = await asyncio.gather(
+                    *(self._invoke_tool(run_id, step, call, scope) for call, _ in batch)
+                )
+                for (_, position), outcome in zip(batch, settled):
+                    outcomes[position] = outcome
+            for call, position in batch:
+                _, text, status = outcomes[position]
+                self._emit_tool_result(run_id, step, call, text, status)
+        return [outcomes[position] for position in range(len(calls))]
+
+    async def _invoke_tool(
         self, run_id: str, step: int, call: ToolCall, scope: ChatToolScope
     ) -> tuple[ToolCall, str, str]:
         """One tool call through BEFORE_TOOL → dispatch → AFTER_TOOL.
 
         A rejected call never runs; its reason travels back to the model as the
         tool result so it can adapt. The permission decision lives entirely in the
-        hook, never here.
+        hook, never here. The call identity is environment plumbing for the scope
+        (a deterministic effect id), never a policy decision.
         """
+        bound = scope.bound(step, call.id)
+        context = {
+            "agent_id": bound.agent_id,
+            "command_available": bound.command_available,
+            "run_id": run_id,
+            "step": step,
+            "call_id": call.id,
+        }
+        started = time.monotonic()
+        decision = await self.app.hooks.run(
+            HookEvent.BEFORE_TOOL,
+            {"name": call.name, "arguments": call.arguments, "context": context},
+        )
+        if not decision.allow:
+            reason = decision.reason or "该工具调用被策略拒绝。"
+            text = json.dumps(
+                {"blocked": True, "tool": call.name, "reason": reason}, ensure_ascii=False
+            )
+            return call, text, "blocked"
+        result = await self.dispatcher.execute(call.name, call.arguments, bound)
+        text = _tool_text(result)
+        await self.app.hooks.run(
+            HookEvent.AFTER_TOOL,
+            {
+                "name": call.name,
+                "arguments": call.arguments,
+                "status": result.status,
+                "content": text,
+                "started_at": started,
+                "context": context,
+            },
+        )
+        return call, text, result.status
+
+    def _emit_tool_started(self, run_id: str, step: int, call: ToolCall) -> None:
         self.store.append(
             run_id,
             "tool_started",
@@ -595,42 +681,10 @@ class ChatRuntime:
                 "arguments": call.arguments,
             },
         )
-        context = {
-            "agent_id": scope.agent_id,
-            "command_available": scope.command_available,
-            "run_id": run_id,
-            "step": step,
-            "call_id": call.id,
-        }
-        # The call identity is environment plumbing for the scope (a deterministic
-        # effect id), never a policy decision — policy stays in the hooks.
-        scope.bind(step, call.id)
-        started = time.monotonic()
-        decision = await self.app.hooks.run(
-            HookEvent.BEFORE_TOOL,
-            {"name": call.name, "arguments": call.arguments, "context": context},
-        )
-        if not decision.allow:
-            reason = decision.reason or "该工具调用被策略拒绝。"
-            text = json.dumps(
-                {"blocked": True, "tool": call.name, "reason": reason}, ensure_ascii=False
-            )
-            status = "blocked"
-        else:
-            result = await self.dispatcher.execute(call.name, call.arguments, scope)
-            text = _tool_text(result)
-            status = result.status
-            await self.app.hooks.run(
-                HookEvent.AFTER_TOOL,
-                {
-                    "name": call.name,
-                    "arguments": call.arguments,
-                    "status": status,
-                    "content": text,
-                    "started_at": started,
-                    "context": context,
-                },
-            )
+
+    def _emit_tool_result(
+        self, run_id: str, step: int, call: ToolCall, text: str, status: str
+    ) -> None:
         self.store.append(
             run_id,
             "tool_result",
@@ -643,7 +697,6 @@ class ChatRuntime:
                 "preview": _preview(text),
             },
         )
-        return call, text, status
 
     async def _before_turn_end(self, run_id: str, text: str) -> None:
         """Trigger the turn-end mount point before anything is persisted.

@@ -45,14 +45,18 @@ class ChatToolScope:
         self._step = 0
         self._call_id = ""
 
-    def bind(self, step: int, call_id: str) -> None:
-        """Remember this call's identity so an effect id is deterministic.
+    def bound(self, step: int, call_id: str) -> ChatToolScope:
+        """A per-call copy carrying this call's deterministic effect id.
 
         This is environment plumbing (a stable id for later reconciliation), not
-        a policy decision — every allow/deny still comes from a hook.
+        a policy decision — every allow/deny still comes from a hook. Calls in
+        one step may run concurrently, so each call gets its own copy instead of
+        sharing one mutable binding.
         """
-        self._step = step
-        self._call_id = call_id
+        view = ChatToolScope(self.app, self.agent_id, self.run_id)
+        view._step = step
+        view._call_id = call_id
+        return view
 
     @property
     def _effect_id(self) -> str:

@@ -149,7 +149,9 @@ class ToolDispatcher:
 
     async def _file(self, name: str, args: dict, scope: ToolScope) -> ToolResult:
         if name == "read_file":
-            return self._wrap(*scope.read(args["path"]))
+            # Off the event loop: a parallel read batch must genuinely overlap,
+            # and one slow read must not stall every other run's stream.
+            return self._wrap(*(await asyncio.to_thread(scope.read, args["path"])))
         if name in {"create_file", "write_file"}:
             return self._wrap(
                 *scope.write(args["path"], args["text"], create=name == "create_file")
@@ -157,7 +159,7 @@ class ToolDispatcher:
         if name == "edit_file":
             return self._wrap(*self._edit(args, scope))
         if name == "search":
-            return self._wrap(self._search(args, scope), None)
+            return self._wrap(await asyncio.to_thread(self._search, args, scope), None)
         return self._fail("invalid_tool_request")
 
     def _edit(self, args: dict, scope: ToolScope) -> tuple[dict, str | None]:

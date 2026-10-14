@@ -24,7 +24,7 @@ LingNexus 是由所有者掌握发展方向的**长期个人 AI 系统**；「�
 | `src/lingnexus/` | 后端（Python / FastAPI / SQLite，模块化单体） |
 | `frontend/` | 界面（React / TypeScript / Vite） |
 | `docs/` | 项目文档：地图 / 里程碑 / 计划 / 审查记录 / 交接 / 愿景 |
-| `.agents/` | 给开发 AI 的文档写法技能（自动发现） |
+| `.agents/` | 给开发 AI 的技能：文档写法 + 工作方法（自动发现） |
 | `tests/` | 后端测试（精简冒烟层） |
 | `packaging/` | Windows 打包脚本 |
 | `.ling-data/` | 运行数据（不进 Git） |

@@ -19,7 +19,8 @@ import threading
 from pydantic import BaseModel, ConfigDict
 
 from lingnexus.actions.registry import ToolSpec
-from lingnexus.configuration.settings import read_json
+from lingnexus.common.errors import DomainError
+from lingnexus.configuration.settings import read_json, write_json
 
 from .client import HttpTransport, McpConnection, StdioTransport
 from .protocol import McpError, remote_tool_name, split_remote_tool
@@ -120,6 +121,63 @@ class McpService:
             return parse_servers(value)
         except (TypeError, ValueError):
             return []
+
+    def view(self) -> list[dict]:
+        """The stored server entries for the owner's settings view.
+
+        Entries are returned as stored, including the disabled ``enabled:
+        False`` flag and any configured ``env``/``headers``: this list is
+        local, single-owner configuration, never a model input.
+        """
+        value = read_json(self._database, SETTINGS_KEY, None)
+        if isinstance(value, dict):
+            value = value.get("servers")
+        if not isinstance(value, list):
+            return []
+        return [dict(item) for item in value if isinstance(item, dict)]
+
+    def configure(self, servers: list[dict]) -> list[dict]:
+        """Validate and store the list, failing loud; the next use re-reads it.
+
+        Unlike startup parsing (which skips broken entries), an owner edit must
+        be told exactly what is wrong — a half-saved server list is worse than
+        a rejected one. Stored entries are canonical; unknown keys are dropped.
+        """
+        cleaned: list[dict] = []
+        seen: set[str] = set()
+        for item in servers:
+            if not isinstance(item, dict):
+                raise DomainError("每个服务器条目都必须是一个对象。")
+            raw = dict(item)
+            raw.setdefault("enabled", True)
+            try:
+                config = ServerConfig(raw)
+            except (KeyError, TypeError, ValueError) as error:
+                raise DomainError(f"服务器配置无效：{error}") from None
+            if config.name in seen:
+                raise DomainError("服务器名不能重复：" + config.name)
+            seen.add(config.name)
+            entry: dict = {
+                "name": config.name,
+                "transport": config.transport,
+                "enabled": raw.get("enabled") is not False,
+            }
+            if config.transport == "http":
+                entry["url"] = config.url
+                if config.headers:
+                    entry["headers"] = config.headers
+            else:
+                entry["command"] = config.command
+                if config.args:
+                    entry["args"] = config.args
+                if config.env:
+                    entry["env"] = config.env
+                if config.cwd:
+                    entry["cwd"] = config.cwd
+            cleaned.append(entry)
+        write_json(self._database, SETTINGS_KEY, {"servers": cleaned})
+        self.reload()
+        return cleaned
 
     # --- discovery ----------------------------------------------------------
 

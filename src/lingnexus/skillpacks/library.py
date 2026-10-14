@@ -151,6 +151,10 @@ class SkillLibrary:
             )
         self._skills = skills
 
+    def roots(self) -> list[tuple[str, Path]]:
+        """The scanned folders as (label, path), for the owner's settings view."""
+        return list(self._roots)
+
     def index(self) -> list[Skill]:
         return sorted(self._skills.values(), key=lambda item: item.name)
 

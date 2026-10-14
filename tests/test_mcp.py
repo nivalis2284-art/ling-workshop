@@ -474,3 +474,60 @@ def test_close_stops_server_processes(app):
 
     assert process is not None
     assert process.poll() is not None
+
+
+# --- the owner manages the list over the local API ------------------------
+
+
+def test_mcp_settings_endpoints_roundtrip_and_fail_loud(client, headers):
+    empty = client.get("/mcp/servers", headers=headers)
+    assert empty.status_code == 200
+    assert empty.json() == {"servers": []}
+
+    entry = {
+        "name": "fixture",
+        "transport": "stdio",
+        "command": sys.executable,
+        "args": [str(FIXTURE)],
+    }
+    saved = client.put("/mcp/servers", headers=headers, json={"servers": [entry]})
+    assert saved.status_code == 200
+    stored = saved.json()["servers"]
+    assert stored == [entry | {"enabled": True}]
+    assert client.get("/mcp/servers", headers=headers).json()["servers"] == stored
+
+    # A disabled server keeps its flag instead of being silently dropped.
+    disabled = entry | {"name": "off", "enabled": False}
+    kept = client.put(
+        "/mcp/servers", headers=headers, json={"servers": [entry, disabled]}
+    ).json()["servers"]
+    assert [item["name"] for item in kept] == ["fixture", "off"]
+    assert kept[1]["enabled"] is False
+
+    # Invalid or duplicate entries are refused with a reason and the old list
+    # stays in place — a rejected edit never half-replaces the configuration.
+    bad = client.put(
+        "/mcp/servers",
+        headers=headers,
+        json={"servers": [{"name": "broken", "transport": "stdio"}]},
+    )
+    assert bad.status_code == 422
+    assert client.get("/mcp/servers", headers=headers).json()["servers"] == kept
+    duplicated = client.put(
+        "/mcp/servers", headers=headers, json={"servers": [entry, entry]}
+    )
+    assert duplicated.status_code == 422
+
+    cleared = client.put("/mcp/servers", headers=headers, json={"servers": []})
+    assert cleared.status_code == 200
+    assert cleared.json() == {"servers": []}
+
+
+def test_skillpacks_endpoint_reports_roots_and_skills(client, headers):
+    payload = client.get("/skillpacks", headers=headers).json()
+    assert {root["source"] for root in payload["roots"]} == {"project", "user", "bundled"}
+    assert all("path" in root and "exists" in root for root in payload["roots"])
+    assert isinstance(payload["skills"], list)
+    assert all(
+        {"name", "description", "source"} <= set(skill) for skill in payload["skills"]
+    )

@@ -20,9 +20,11 @@ from lingnexus.api import (
     conversations,
     dependencies,
     maintenance,
+    mcp,
     models,
     permissions,
     sandbox,
+    skillpacks,
     system,
     tasks,
     usage,
@@ -190,6 +192,8 @@ def create_app(
     server.include_router(dependencies.router)
     server.include_router(sandbox.router)
     server.include_router(system.router)
+    server.include_router(mcp.router)
+    server.include_router(skillpacks.router)
     for router in (
         agents.router,
         maintenance.router,
@@ -205,6 +209,8 @@ def create_app(
         dependencies.router,
         sandbox.router,
         system.router,
+        mcp.router,
+        skillpacks.router,
     ):
         server.include_router(router, prefix="/api")
     bundled = getattr(sys, "_MEIPASS", None)

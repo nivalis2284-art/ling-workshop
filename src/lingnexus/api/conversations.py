@@ -26,6 +26,10 @@ class DeleteTurnsInput(Input):
     anchors: list[str] = Field(min_length=1)
 
 
+class AccessInput(Input):
+    mode: str
+
+
 @router.get("/agents/{agent_id}/conversations")
 def list_conversations(agent_id: str, request: Request):
     return request.app.state.services.conversations.list(agent_id)
@@ -68,3 +72,13 @@ def delete_turns(conversation_id: str, value: DeleteTurnsInput, request: Request
     return request.app.state.services.conversations.delete_turns(
         conversation_id, value.anchors
     )
+
+
+@router.get("/conversations/{conversation_id}/access")
+def read_access(conversation_id: str, request: Request):
+    return request.app.state.services.access.get(conversation_id)
+
+
+@router.post("/conversations/{conversation_id}/access")
+def set_access(conversation_id: str, value: AccessInput, request: Request):
+    return request.app.state.services.access.set(conversation_id, value.mode)

@@ -17,12 +17,13 @@ These are deterministic: no network, no real model, no container engine.
 import asyncio
 import json
 import re
+import sys
 import threading
 
 import httpx
 import pytest
 
-from lingnexus.common.errors import NotFound
+from lingnexus.common.errors import DomainError, NotFound
 from lingnexus.models import APIFamily, ModelProfile
 from lingnexus.permissions.hooks import AppAuthorization, permission_hook
 from lingnexus.runtime.confirmations import ConfirmationService, confirmation_hook
@@ -553,3 +554,202 @@ def test_mixed_batch_keeps_request_order_for_native_results(app, agent_id, tmp_p
         message for message in requests[1]["messages"] if message.get("role") == "tool"
     ]
     assert [message["tool_call_id"] for message in tool_messages] == ["r1", "r2", "w1"]
+
+
+# --- per-conversation full access ------------------------------------------
+
+
+def test_access_mode_defaults_to_confirm_and_stays_per_conversation(app, agent_id):
+    first = app.conversations.create(agent_id, "甲")
+    second = app.conversations.create(agent_id, "乙")
+    assert app.access.mode(first["id"]) == "confirm"
+    assert app.access.set(first["id"], "full") == {
+        "conversation_id": first["id"],
+        "mode": "full",
+    }
+    assert app.access.mode(first["id"]) == "full"
+    # Isolation: the other conversation keeps its own (default) answer.
+    assert app.access.mode(second["id"]) == "confirm"
+    # Switching back takes effect immediately.
+    assert app.access.set(first["id"], "confirm")["mode"] == "confirm"
+    assert app.access.mode(first["id"]) == "confirm"
+    with pytest.raises(DomainError):
+        app.access.set(first["id"], "wild")
+    with pytest.raises(NotFound):
+        app.access.set("missing", "full")
+    with pytest.raises(NotFound):
+        app.access.get("missing")
+
+
+def test_access_mode_survives_a_restart(app_factory, app, agent_id):
+    conversation = app.conversations.create(agent_id, "重启后")
+    app.access.set(conversation["id"], "full")
+    again = app_factory(app.database.path)
+    try:
+        assert again.access.mode(conversation["id"]) == "full"
+    finally:
+        again.close()
+
+
+def test_full_access_releases_the_gate_and_confirm_mode_still_waits(app, agent_id):
+    quiet = app.conversations.create(agent_id, "常规")
+    open_conv = app.conversations.create(agent_id, "全权")
+    app.access.set(open_conv["id"], "full")
+
+    async def scenario():
+        hook = confirmation_hook(app.confirmations, access=app.access)
+        released = await hook(
+            {
+                "name": "run_command",
+                "arguments": {"argv": ["echo", "hi"], "purpose": "work"},
+                "context": {"run_id": "r-full", "conversation_id": open_conv["id"]},
+            }
+        )
+        assert released is not None and released.allow is True
+        assert released.replacement and released.replacement.get("full_access") is True
+        # Released without ever queuing a question for the owner.
+        assert app.confirmations.pending("r-full") == []
+
+        # Remote tools ride the same rule.
+        remote = await hook(
+            {
+                "name": "mcp__echo__say",
+                "arguments": {},
+                "context": {"run_id": "r-full", "conversation_id": open_conv["id"]},
+            }
+        )
+        assert remote is not None and remote.replacement.get("full_access") is True
+
+        # A confirm-mode conversation keeps waiting, exactly as before.
+        waiting = asyncio.create_task(
+            hook(
+                {
+                    "name": "run_command",
+                    "arguments": {"argv": ["echo", "hi"], "purpose": "work"},
+                    "context": {"run_id": "r-quiet", "conversation_id": quiet["id"]},
+                }
+            )
+        )
+        await asyncio.sleep(0.01)
+        assert not waiting.done()
+        pending = app.confirmations.pending("r-quiet")
+        assert [item["tool"] for item in pending] == ["run_command"]
+        app.confirmations.decide("r-quiet", pending[0]["fingerprint"], approved=False)
+        denied = await waiting
+        assert denied is not None and denied.allow is False
+
+    asyncio.run(scenario())
+
+
+def test_full_access_runs_command_without_confirmation_and_marks_the_record(
+    app, agent_id, tmp_path
+):
+    configure(app)
+    folder = tmp_path / "authorized"
+    _grant(app, agent_id, folder)
+    conversation = app.conversations.create(agent_id, "全权对话")
+    app.access.set(conversation["id"], "full")
+    instructions = [sys.executable, "-c", "print('full-access-ran')"]
+    replies = [
+        tool_reply(calls=[("c1", "run_command", {"argv": instructions, "purpose": "work"})]),
+        reply("命令跑完了。"),
+    ]
+    result, events = run_chat(
+        app,
+        replies,
+        {
+            "agent_id": agent_id,
+            "message": "跑一条命令",
+            "request_id": "full-1",
+            "conversation_id": conversation["id"],
+        },
+    )
+    assert result["status"] == "completed"
+    tool_result = next(event for event in events if event["event"] == "tool_result")
+    assert tool_result["data"]["status"] == "completed", tool_result["data"]["preview"]
+    assert tool_result["data"]["access"] == "full"
+    assert "full-access-ran" in tool_result["data"]["preview"]
+    # Released without asking: no confirmation notice was ever emitted.
+    assert not any(
+        event["event"] == "notice" and event["data"].get("code") == "confirmation_required"
+        for event in events
+    )
+
+
+def test_confirm_mode_loop_still_waits_for_the_owner(app, agent_id, tmp_path):
+    configure(app)
+    folder = tmp_path / "authorized"
+    _grant(app, agent_id, folder)
+    conversation = app.conversations.create(agent_id, "常规对话")
+    instructions = [sys.executable, "-c", "print('approved-ran')"]
+    replies = [
+        tool_reply(calls=[("c1", "run_command", {"argv": instructions, "purpose": "work"})]),
+        reply("收到。"),
+    ]
+
+    async def scenario():
+        from lingnexus.runtime import ChatRuntime
+
+        async with mock_client(list(replies)) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(
+                ChatRequest(
+                    agent_id=agent_id,
+                    message="需要批准",
+                    request_id="confirm-again",
+                    conversation_id=conversation["id"],
+                )
+            )
+            pending = []
+            for _ in range(300):
+                pending = app.confirmations.pending(run["id"])
+                if pending:
+                    break
+                await asyncio.sleep(0.01)
+            assert pending, "confirm mode must park the call for the owner"
+            app.confirmations.decide(run["id"], pending[0]["fingerprint"], approved=True)
+            events = [event async for event in runtime.events(run["id"])]
+            result = runtime.get_run(run["id"])
+            await runtime.aclose()
+            return result, events
+
+    result, events = asyncio.run(scenario())
+    assert result["status"] == "completed"
+    tool_result = next(event for event in events if event["event"] == "tool_result")
+    assert tool_result["data"]["status"] == "completed"
+    assert "access" not in tool_result["data"]
+    codes = [event["data"].get("code") for event in events if event["event"] == "notice"]
+    assert "confirmation_required" in codes
+
+
+def test_access_routes_roundtrip_and_refuse_bad_input(client, headers):
+    agent = client.post("/agents", headers=headers, json={"name": "接口"}).json()
+    conversation = client.post(
+        "/conversations",
+        headers=headers,
+        json={"agent_id": agent["id"], "title": "接口对话"},
+    ).json()
+    cid = conversation["id"]
+    first = client.get(f"/conversations/{cid}/access", headers=headers)
+    assert first.status_code == 200
+    assert first.json() == {"conversation_id": cid, "mode": "confirm"}
+    saved = client.post(
+        f"/conversations/{cid}/access", headers=headers, json={"mode": "full"}
+    )
+    assert saved.status_code == 200
+    assert saved.json()["mode"] == "full"
+    assert client.get(f"/conversations/{cid}/access", headers=headers).json()["mode"] == "full"
+    back = client.post(
+        f"/conversations/{cid}/access", headers=headers, json={"mode": "confirm"}
+    )
+    assert back.json()["mode"] == "confirm"
+    # Invalid modes are refused as invalid input, unknown conversations as 404.
+    wild = client.post(
+        f"/conversations/{cid}/access", headers=headers, json={"mode": "wild"}
+    )
+    assert wild.status_code == 422
+    assert client.get("/conversations/nope/access", headers=headers).status_code == 404
+    missing = client.post(
+        "/conversations/nope/access", headers=headers, json={"mode": "full"}
+    )
+    assert missing.status_code == 404

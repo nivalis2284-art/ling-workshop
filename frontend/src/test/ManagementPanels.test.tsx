@@ -73,6 +73,19 @@ function backend(
         limitations: ["不能阻止被诱导后主动外传数据"],
         image: "python:3.12-slim",
       });
+    if (path === "/api/background")
+      return json({
+        enabled: true,
+        working: false,
+        last_result: null,
+        interval_seconds: 60,
+      });
+    if (path === "/api/mcp/servers") return json({ servers: [] });
+    if (path === "/api/skillpacks")
+      return json({
+        roots: [{ source: "bundled", path: "/builtin", exists: true }],
+        skills: [],
+      });
     if (path === "/api/agents/ling-2/permissions")
       return json({
         agent_id: "ling-2",

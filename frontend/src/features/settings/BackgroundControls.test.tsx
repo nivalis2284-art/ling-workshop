@@ -1,10 +1,10 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test } from "vitest";
-import { BackgroundPage } from "./BackgroundPage";
+import { BackgroundControls } from "./BackgroundControls";
 import { agent, backend } from "../tasks/test/fixtures";
 
-test("后台只保留自动备份：开关与立即检查使用现有路由并报告实际结果", async () => {
+test("后台并入设置后保留同一组操作：开关与立即检查使用现有路由并报告实际结果", async () => {
   let enabled = true;
   let runResult: Record<string, unknown> = { status: "foreground_busy" };
   const { api, requests } = backend(({ path, method, body }) => {
@@ -20,7 +20,7 @@ test("后台只保留自动备份：开关与立即检查使用现有路由并�
     if (path.endsWith("/run-once")) return runResult;
   });
   const user = userEvent.setup();
-  render(<BackgroundPage api={api} agent={agent} />);
+  render(<BackgroundControls api={api} agent={agent} />);
   await user.click(await screen.findByRole("button", { name: "暂停后台" }));
   await user.click(await screen.findByRole("button", { name: "启用后台" }));
   expect(requests.filter((r) => r.method === "PUT").map((r) => r.body)).toEqual(

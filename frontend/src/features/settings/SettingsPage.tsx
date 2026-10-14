@@ -11,6 +11,9 @@ import { InstructionsSettings } from "./InstructionsSettings";
 import { UsagePanel } from "./UsagePanel";
 import { SandboxSettings } from "./SandboxSettings";
 import { SystemSettings } from "./SystemSettings";
+import { BackgroundControls } from "./BackgroundControls";
+import { McpSettings } from "./McpSettings";
+import { SkillsSettings } from "./SkillsSettings";
 
 type Operation = "export" | "backup";
 const operations = {
@@ -99,6 +102,13 @@ export function SettingsPage({
       <UsagePanel key={"usage-" + agent.id} api={api} agent={agent} />
       <SandboxSettings api={api} />
       <SystemSettings api={api} />
+      <BackgroundControls
+        key={"background-" + agent.id}
+        api={api}
+        agent={agent}
+      />
+      <McpSettings api={api} />
+      <SkillsSettings api={api} />
       <section className="panel section-panel">
         <div className="section-heading">
           <h2>数据维护</h2>

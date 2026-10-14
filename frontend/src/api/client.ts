@@ -13,10 +13,12 @@ import type {
   ConversationBranch,
   ModelInput,
   ModelSelection,
+  McpServerEntry,
   PendingConfirmation,
   SandboxLevel,
   SandboxStatus,
   SavedModel,
+  SkillpackView,
 } from "./types";
 
 export class ApiError extends Error {
@@ -292,6 +294,15 @@ export class LingApi {
       "/conversations/" + encodeURIComponent(id) + "/access",
       { mode },
     );
+  mcpServers = (signal?: AbortSignal) =>
+    this.request<{ servers: McpServerEntry[] }>("/mcp/servers", { signal });
+  saveMcpServers = (servers: McpServerEntry[]) =>
+    this.request<{ servers: McpServerEntry[] }>("/mcp/servers", {
+      method: "PUT",
+      body: JSON.stringify({ servers }),
+    });
+  skillpacks = (signal?: AbortSignal) =>
+    this.request<SkillpackView>("/skillpacks", { signal });
   chatEvents = (runId: string, after: string, signal: AbortSignal) =>
     this.response(
       "/chat/runs/" +

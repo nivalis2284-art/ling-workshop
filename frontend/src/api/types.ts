@@ -95,6 +95,34 @@ export interface ModelSelection {
   primary: string | null;
   fallback: string | null;
 }
+
+// One entry in the owner-managed MCP server list (the mcp.servers setting).
+// Disabled entries are kept with enabled: false; config changes take effect on
+// the next use (the service reloads).
+export interface McpServerEntry {
+  name: string;
+  transport: "stdio" | "http";
+  enabled?: boolean;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  cwd?: string;
+  url?: string;
+  headers?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export interface SkillpackSource {
+  source: string;
+  path: string;
+  exists: boolean;
+}
+
+// Read-only view of the scanned skill folders: what exists, where from.
+export interface SkillpackView {
+  roots: SkillpackSource[];
+  skills: { name: string; description: string; source: string }[];
+}
 export interface ModelInput {
   name: string;
   profile: ModelProfile;

@@ -1,4 +1,4 @@
-import { ArrowRight, Files, Globe, MessageCircle, Sprout } from "lucide-react";
+import { ArrowRight, Files, Globe, MessageCircle } from "lucide-react";
 import type { Agent } from "../../api/types";
 import type { PageId } from "../../app/navigation";
 import { PageHeader } from "../../shared/ui";
@@ -14,7 +14,7 @@ export function OverviewPage({
     {
       page: "chat",
       title: "对话",
-      body: "和灵聊一聊。让灵读文件、改文件、跑命令都在这里完成，多步工作也不用另外建任务。",
+      body: "让灵读文件、改文件、跑命令都在这里完成，多步工作也不用另外建任务。",
       icon: MessageCircle,
     },
     {
@@ -25,7 +25,7 @@ export function OverviewPage({
     },
     {
       page: "browser",
-      title: "网页",
+      title: "浏览器",
       body: "让灵浏览网页，并在执行敏感操作前请你确认。",
       icon: Globe,
     },
@@ -33,68 +33,44 @@ export function OverviewPage({
   return (
     <div className="page">
       <PageHeader
-        eyebrow="一个能独立运行的空间"
         title={agent.name + "的空间"}
         description="从一次真实的对话开始，把资料和任务交给灵来处理。"
       />
-      <section className="hero panel">
-        <div className="hero-copy">
-          <span className="pill">
-            <span className="status-dot" /> 本地空间
-          </span>
-          <h2>
-            在这里，
-            <br />
-            和灵一起做事。
-          </h2>
-          <p>
-            对话、资料与网页浏览都在这台电脑上完成，
-            <br className="desktop-break" />
-            不需要把内容送到别处。
-          </p>
-          <button className="button primary" onClick={() => navigate("chat")}>
-            开始对话 <ArrowRight size={16} aria-hidden="true" />
-          </button>
-        </div>
-        <div className="hero-art" aria-hidden="true">
-          <div className="orbit orbit-one" />
-          <div className="orbit orbit-two" />
-          <div className="art-core">
-            <Sprout strokeWidth={0.8} />
-          </div>
-          <span className="art-seed seed-one" />
-          <span className="art-seed seed-two" />
-          <span className="art-caption">一点一滴，从对话开始</span>
-        </div>
+      <section className="hero">
+        <span className="pill">
+          <span className="status-dot" />
+          本地空间
+        </span>
+        <h2>在这里，和灵一起做事。</h2>
+        <p>对话、资料与网页浏览都在这台电脑上完成，不需要把内容送到别处。</p>
+        <button className="button primary" onClick={() => navigate("chat")}>
+          开始对话 <ArrowRight size={15} aria-hidden="true" />
+        </button>
       </section>
       <div className="overview-grid">
         {entries.map((entry) => (
           <section className="panel overview-card" key={entry.page}>
             <div className="card-icon">
-              <entry.icon size={21} strokeWidth={1.5} />
+              <entry.icon size={18} strokeWidth={1.6} />
             </div>
-            <div className="section-heading">
-              <h2>{entry.title}</h2>
-            </div>
+            <h3>{entry.title}</h3>
             <p className="muted">{entry.body}</p>
             <button className="text-button" onClick={() => navigate(entry.page)}>
-              前往{entry.title} <ArrowRight size={15} />
+              前往{entry.title} <ArrowRight size={14} aria-hidden="true" />
             </button>
           </section>
         ))}
       </div>
-      <section className="readiness panel">
+      <section className="panel readiness">
         <div className="section-heading">
-          <div>
-            <p className="eyebrow">本地优先</p>
-            <h2>数据与设置</h2>
-          </div>
+          <h3>数据与设置</h3>
+          <span className="pill">本地优先</span>
         </div>
         <p className="readiness-note">
           资料保存在这台电脑上。模型连接、权限与备份都可以在设置中调整。
         </p>
         <button className="text-button" onClick={() => navigate("settings")}>
-          打开设置 <ArrowRight size={15} />
+          打开设置 <ArrowRight size={14} aria-hidden="true" />
         </button>
       </section>
     </div>

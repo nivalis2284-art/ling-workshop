@@ -169,6 +169,8 @@
 
 ## 后续不能忘记的边界
 
+> 注：本节为首版交付时的速记（非独立规则源）；与 [`02-架构`](../../02-架构/00-README.md)、[`90-使用说明`](../../90-使用说明.md) 的现行口径有出入时，以后者为准。
+
 Windows本机浏览器GUI，Linux/localmodel/multidevice/audio/video/imagegen以后。LLM会错误，词法查档不保证任意指代都命中；近期tail+相关卡+主动原文，没有每条省略raw的滚动摘要。缓存实际行为由渠道决定，不牺牲纠正换命中率。
 
 Task self/memory/source变动后新任务，不偷换旧检查点资料；现实副作用不因回退/恢复撤销，未知行动不自动重放。二进制/删除下载后手动应用，Node类型擦除不代替tsc。Chrome或Playwrightbrowser和DockerLinux镜像为相应功能依赖。

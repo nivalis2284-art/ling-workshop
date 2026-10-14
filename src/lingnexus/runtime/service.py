@@ -158,7 +158,9 @@ class ChatRuntime:
     events(run_id, after=0) yields durable {id, event, data} records. id is a
     positive per-run sequence, and after is exclusive. started carries
     {run_id, conversation_id}; step_started carries {run_id, step}; tool_started
-    and tool_result carry {run_id, step, name, call_id, ...}; paused/resumed carry
+    and tool_result carry {run_id, step, name, call_id, ...}; a tool_result
+    released without confirmation by full-access mode also carries
+    access: "full"; paused/resumed carry
     {run_id}; text/thinking carry {run_id, text}; usage carries
     {run_id, step, attempt, profile_id, snapshot: true, usage}; complete
     carries {run_id, status: completed, assistant_message_id}; error carries
@@ -438,12 +440,14 @@ class ChatRuntime:
                     else:
                         self._fail(run_id, "incomplete_response")
                     return
-                results = await self._run_tools(run_id, step, turn.calls, scope)
+                results = await self._run_tools(
+                    run_id, step, turn.calls, scope, run["conversation_id"]
+                )
                 append_tool_calls(state["payload"], state["profile"], turn.calls, turn.text)
                 append_tool_results(
                     state["payload"],
                     state["profile"],
-                    [(call, text) for call, text, _ in results],
+                    [(call, text) for call, text, _, _ in results],
                 )
                 step += 1
         except CredentialEcho:
@@ -599,47 +603,67 @@ class ChatRuntime:
         return _Turn(text="".join(text), calls=calls, eof=True)
 
     async def _run_tools(
-        self, run_id: str, step: int, calls: list[ToolCall], scope: ChatToolScope
-    ) -> list[tuple[ToolCall, str, str]]:
+        self,
+        run_id: str,
+        step: int,
+        calls: list[ToolCall],
+        scope: ChatToolScope,
+        conversation_id: str,
+    ) -> list[tuple[ToolCall, str, str, bool]]:
         """Run this step's calls in request order; adjacent read-only calls fan out.
 
         Every call still passes BEFORE_TOOL → dispatch → AFTER_TOOL, and the
         started/result events are appended in request order, so a run always
         replays as one deterministic transcript whatever order work finished in.
+        The four-tuple bundles the full-access release marker with the ordinary
+        result so the event record can carry it.
         """
-        outcomes: dict[int, tuple[ToolCall, str, str]] = {}
+        outcomes: dict[int, tuple[ToolCall, str, str, bool]] = {}
         for batch in _call_batches(calls):
             for call, _ in batch:
                 self._emit_tool_started(run_id, step, call)
             if len(batch) == 1:
                 call, position = batch[0]
-                outcomes[position] = await self._invoke_tool(run_id, step, call, scope)
+                outcomes[position] = await self._invoke_tool(
+                    run_id, step, call, scope, conversation_id
+                )
             else:
                 settled = await asyncio.gather(
-                    *(self._invoke_tool(run_id, step, call, scope) for call, _ in batch)
+                    *(
+                        self._invoke_tool(run_id, step, call, scope, conversation_id)
+                        for call, _ in batch
+                    )
                 )
                 for (_, position), outcome in zip(batch, settled):
                     outcomes[position] = outcome
             for call, position in batch:
-                _, text, status = outcomes[position]
-                self._emit_tool_result(run_id, step, call, text, status)
+                _, text, status, auto_full = outcomes[position]
+                self._emit_tool_result(run_id, step, call, text, status, auto_full)
         return [outcomes[position] for position in range(len(calls))]
 
     async def _invoke_tool(
-        self, run_id: str, step: int, call: ToolCall, scope: ChatToolScope
-    ) -> tuple[ToolCall, str, str]:
+        self,
+        run_id: str,
+        step: int,
+        call: ToolCall,
+        scope: ChatToolScope,
+        conversation_id: str,
+    ) -> tuple[ToolCall, str, str, bool]:
         """One tool call through BEFORE_TOOL → dispatch → AFTER_TOOL.
 
         A rejected call never runs; its reason travels back to the model as the
         tool result so it can adapt. The permission decision lives entirely in the
-        hook, never here. The call identity is environment plumbing for the scope
-        (a deterministic effect id), never a policy decision.
+        hooks, never here — including the full-access release: the hook carries
+        the marker back through its result and the loop only records it. The call
+        identity is environment plumbing for the scope (a deterministic effect
+        id), never a policy decision.
         """
         bound = scope.bound(step, call.id)
         context = {
             "agent_id": bound.agent_id,
             "command_available": bound.command_available,
             "run_id": run_id,
+            "conversation_id": conversation_id,
             "step": step,
             "call_id": call.id,
         }
@@ -653,7 +677,8 @@ class ChatRuntime:
             text = json.dumps(
                 {"blocked": True, "tool": call.name, "reason": reason}, ensure_ascii=False
             )
-            return call, text, "blocked"
+            return call, text, "blocked", False
+        auto_full = bool(decision.replacement and decision.replacement.get("full_access"))
         result = await self.dispatcher.execute(call.name, call.arguments, bound)
         text = _tool_text(result)
         await self.app.hooks.run(
@@ -667,7 +692,7 @@ class ChatRuntime:
                 "context": context,
             },
         )
-        return call, text, result.status
+        return call, text, result.status, auto_full
 
     def _emit_tool_started(self, run_id: str, step: int, call: ToolCall) -> None:
         self.store.append(
@@ -683,20 +708,27 @@ class ChatRuntime:
         )
 
     def _emit_tool_result(
-        self, run_id: str, step: int, call: ToolCall, text: str, status: str
+        self,
+        run_id: str,
+        step: int,
+        call: ToolCall,
+        text: str,
+        status: str,
+        auto_full: bool,
     ) -> None:
-        self.store.append(
-            run_id,
-            "tool_result",
-            {
-                "run_id": run_id,
-                "step": step,
-                "name": call.name,
-                "call_id": call.id,
-                "status": status,
-                "preview": _preview(text),
-            },
-        )
+        data = {
+            "run_id": run_id,
+            "step": step,
+            "name": call.name,
+            "call_id": call.id,
+            "status": status,
+            "preview": _preview(text),
+        }
+        if auto_full:
+            # Released by the conversation's full-access mode, not by the owner;
+            # the record stays honest about which calls skipped the gate.
+            data["access"] = "full"
+        self.store.append(run_id, "tool_result", data)
 
     async def _before_turn_end(self, run_id: str, text: str) -> None:
         """Trigger the turn-end mount point before anything is persisted.

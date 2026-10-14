@@ -17,6 +17,13 @@ remote tool does, so every ``mcp__*`` call is treated as side-effecting: it is
 the same unbounded, prompt-injectable class as ``run_command``. Being configured
 by the owner authorizes *connecting* the server, not silently carrying out each
 call. This is what keeps the "no extra authority" rule true rather than nominal.
+
+The owner can also hand one conversation a standing answer: when its access
+mode is ``full`` (owned by ``lingnexus.runtime.access``), gated calls in that
+conversation are released without waiting. The release travels back to the loop
+as a hook-result marker so the tool record stays honest about which calls
+skipped the gate; the sandbox, audit, directory grants and browser approvals
+are all unchanged.
 """
 
 from __future__ import annotations
@@ -110,12 +117,17 @@ def confirmation_hook(
     confirmations: ConfirmationService,
     *,
     gated: frozenset[str] = DEFAULT_GATED,
+    access=None,
     notifier=None,
 ) -> Handler:
     """Build the ``BEFORE_TOOL`` handler that enforces real-time confirmation.
 
-    ``notifier`` (optional) is awaited once per newly-pending call so the owner
-    can be told out of band; it must never change the decision.
+    ``access`` (optional) is the per-conversation access-mode service: for a
+    gated call whose conversation is in ``full`` mode the handler releases the
+    call immediately — no waiting, no notification — and marks the release in
+    the returned result for the loop to record. ``notifier`` (optional) is
+    awaited once per newly-pending call so the owner can be told out of band;
+    it must never change the decision.
     """
 
     async def handler(payload: dict) -> HookResult | None:
@@ -126,6 +138,16 @@ def confirmation_hook(
         run_id = context.get("run_id")
         if not run_id:
             return None
+        conversation_id = context.get("conversation_id")
+        if (
+            access is not None
+            and conversation_id
+            and access.mode(conversation_id) == "full"
+        ):
+            # The conversation's standing answer: release without waiting.
+            # The marker rides back through the result so the loop can label
+            # the record; nothing else about the call changes.
+            return HookResult.ok({**payload, "full_access": True})
         arguments = payload.get("arguments") or {}
         fingerprint = confirmations.fingerprint(name, arguments)
         summary = {"tool": name, "arguments": arguments}

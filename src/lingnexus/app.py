@@ -26,6 +26,7 @@ from lingnexus.maintenance.service import MaintenanceService
 from lingnexus.mcp import McpService
 from lingnexus.permissions.hooks import AppAuthorization, permission_hook
 from lingnexus.permissions.service import Permissions
+from lingnexus.runtime.access import ConversationAccess
 from lingnexus.runtime.confirmations import ConfirmationService, confirmation_hook
 from lingnexus.runtime.hooks import HookEvent, HookRegistry
 from lingnexus.runtime.store import RunStore
@@ -62,10 +63,12 @@ class Application:
         )
         # Policy is injected through hooks, never written into a loop body. The
         # permission hook is the only authorization gate for every tool call; the
-        # confirmation hook adds the real-time owner gate for side-effecting calls.
+        # confirmation hook adds the real-time owner gate for side-effecting calls,
+        # and the access-mode service lets the owner skip that gate per conversation.
         self.hooks = HookRegistry()
         self.hooks.register(HookEvent.BEFORE_TOOL, permission_hook(AppAuthorization(self)))
         self.confirmations = ConfirmationService()
+        self.access = ConversationAccess(self.database)
         run_store = RunStore(self.database)
 
         async def _notify_confirmation(run_id: str, fingerprint: str, summary: dict) -> None:
@@ -83,7 +86,9 @@ class Application:
 
         self.hooks.register(
             HookEvent.BEFORE_TOOL,
-            confirmation_hook(self.confirmations, notifier=_notify_confirmation),
+            confirmation_hook(
+                self.confirmations, access=self.access, notifier=_notify_confirmation
+            ),
         )
         # Optional MCP servers, read from the `mcp.servers` setting on first use.
         # With nothing configured this stays completely inert: no connection, no

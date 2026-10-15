@@ -68,6 +68,9 @@ ERROR_MESSAGES = {
     "cancelled": "The owner cancelled this run.",
     "interrupted": "The server stopped before this run completed.",
     "context_limit": "完整工具交换已超出模型窗口，请拆分任务；本阶段暂未提供上下文压缩。",
+    "command_session_active": "命令在模型准备结束时仍处于活动状态；已请求停止，请核对命令结果后新建请求。",
+    "command_session_unknown": "命令清理状态未知；请人工核对命令与工作目录后再继续。",
+    "command_cleanup_unknown": "取消后命令清理未能确认；请人工核对命令与工作目录。",
 }
 
 COMPLETE_REASONS = {
@@ -204,6 +207,8 @@ class ChatRuntime:
         self._client = client
         self._owns_client = client is None
         self._tasks: dict[str, asyncio.Task] = {}
+        self._stop_requested: set[str] = set()
+        self._stop_operations: dict[str, asyncio.Task] = {}
         self._control: dict[str, _RunControl] = {}
         self._evidence: dict[str, dict] = {}
         self.checkpoints = RunCheckpoints(application.database)
@@ -363,12 +368,54 @@ class ChatRuntime:
             if not events:
                 await asyncio.sleep(0.05)
 
-    def cancel(self, run_id: str) -> dict:
-        """Explicit owner stop. Cancelling a terminal run leaves its result untouched."""
-        self._fail(run_id, "cancelled", status="cancelled")
-        if task := self._tasks.get(run_id):
-            task.cancel()
+    async def cancel(self, run_id: str) -> dict:
+        """Cancel the model worker and wait boundedly for its owned commands."""
+        self.get_run(run_id)
+        operation = self._stop_operations.get(run_id)
+        if operation is None:
+            operation = asyncio.create_task(self._cancel_and_drain(run_id))
+            self._stop_operations[run_id] = operation
+            operation.add_done_callback(
+                lambda done: self._stop_operations.pop(run_id, None)
+                if self._stop_operations.get(run_id) is done else None
+            )
+        await asyncio.shield(operation)
         return self.get_run(run_id)
+
+    async def _cancel_and_drain(self, run_id: str) -> None:
+        was_running = self.get_run(run_id)["status"] == "running"
+        # A model error can end the worker after a tool returned `running`.
+        # The owner can still cancel that orphaned command session.
+        self._stop_requested.add(run_id)
+        if (task := self._tasks.get(run_id)) and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        run = self.store.get(run_id)
+        sessions = await self.app.sandbox.stop_run_sessions(
+            run["agent_id"], run_id, "chat", timeout=5.0
+        )
+        unresolved = any(
+            item["status"] in {"running", "cancelling", "unknown"} for item in sessions
+        )
+        if unresolved:
+            self._mark_command_uncertain(run_id, "owner_cancel_cleanup_unconfirmed")
+            if was_running:
+                self._fail(run_id, "command_cleanup_unknown", status="failed")
+        elif was_running:
+            self._fail(run_id, "cancelled", status="cancelled")
+        self._stop_requested.discard(run_id)
+
+    def _mark_command_uncertain(self, run_id: str, reason: str) -> None:
+        checkpoint = self.checkpoints.load(run_id)
+        if not checkpoint:
+            return
+        evidence = checkpoint.setdefault("evidence", initial(coding=True))
+        failures = evidence.setdefault("unknown_failures", {})
+        failures["command_lifecycle"] = reason
+        evidence["verified"] = False
+        evidence.setdefault("failures", {})["command_lifecycle"] = reason
+        checkpoint["phase"] = "command_lifecycle_unresolved"
+        self.checkpoints.save(run_id, checkpoint)
 
     def pause(self, run_id: str) -> dict:
         """Request a pause at the next step boundary; a running tool is never killed."""
@@ -393,6 +440,9 @@ class ChatRuntime:
         if self._closed or type(additional_steps) is not int or not 0 <= additional_steps <= 1000:
             raise Conflict("无法恢复或步数扩额无效。")
         run = self.get_run(run_id)
+        sessions = self.app.sandbox.run_sessions(run["agent_id"], run_id, "chat")
+        if any(item["status"] in {"running", "cancelling", "unknown"} for item in sessions):
+            raise Conflict("命令仍活动或清理状态未知；请人工核对后新建请求。")
         if run["status"] == "running":
             return run
         if not run["recoverable"]:
@@ -452,9 +502,31 @@ class ChatRuntime:
         self._closed = True
         tasks = list(self._tasks.items())
         for run_id, task in tasks:
-            self._fail(run_id, "interrupted", status="interrupted")
+            self._stop_requested.add(run_id)
             task.cancel()
         await asyncio.gather(*(task for _, task in tasks), return_exceptions=True)
+        chat_runs = {(run_id, self.store.get(run_id)["agent_id"]) for run_id, _ in tasks}
+        chat_runs.update(
+            (record["run_id"], record["agent_id"])
+            for record in self.app.sandbox.sessions_for_kind("chat")
+            if record["status"] in {"running", "cancelling", "unknown"}
+            and record.get("run_id") and record.get("agent_id")
+        )
+        for run_id, agent_id in chat_runs:
+            sessions = await self.app.sandbox.stop_run_sessions(
+                agent_id, run_id, "chat", timeout=5.0
+            )
+            unresolved = any(
+                item["status"] in {"running", "cancelling", "unknown"} for item in sessions
+            )
+            if unresolved:
+                self._mark_command_uncertain(run_id, "shutdown_cleanup_unconfirmed")
+                if self.store.get(run_id)["status"] == "running":
+                    self._fail(run_id, "command_cleanup_unknown", status="failed")
+            else:
+                if self.store.get(run_id)["status"] == "running":
+                    self._fail(run_id, "interrupted", status="interrupted")
+            self._stop_requested.discard(run_id)
         if self._owns_client and self._client is not None:
             await self._client.aclose()
 
@@ -534,7 +606,7 @@ class ChatRuntime:
                 self.store.append(run_id, "step_started", {"run_id": run_id, "step": step})
                 state.update(step=step, phase="model_inflight")
                 self._save_checkpoint(run_id, state)
-                if step > 1 and self.app.context.counter.count(json.dumps(state["payload"], ensure_ascii=False)) + (
+                if self.app.context.counter.count(json.dumps(state["payload"], ensure_ascii=False)) + (
                     state["profile"].max_output_tokens or 4096
                 ) > (state["profile"].context_window_tokens or 32768):
                     self._fail(run_id, "context_limit")
@@ -552,7 +624,7 @@ class ChatRuntime:
                 if not turn.calls:
                     if turn.finish_reason in COMPLETE_REASONS[state["profile"].api_family]:
                         await self._before_turn_end(run_id, turn.text)
-                        self._complete(run_id, turn.text)
+                        await self._complete(run_id, turn.text)
                     else:
                         self._fail(run_id, "incomplete_response")
                     return
@@ -576,7 +648,8 @@ class ChatRuntime:
         except FailoverBlocked as exc:
             self._fail(run_id, exc.code)
         except asyncio.CancelledError:
-            self._fail(run_id, "interrupted", status="interrupted")
+            if run_id not in self._stop_requested:
+                self._fail(run_id, "interrupted", status="interrupted")
             raise
         except Exception:  # noqa: BLE001 - background boundary must sanitize every failure
             # Never serialize/log exception strings or provider continuation.
@@ -900,8 +973,24 @@ class ChatRuntime:
             self.app.database, MAX_STEPS_SETTING, DEFAULT_MAX_STEPS, minimum=1
         )
 
-    def _complete(self, run_id: str, text: str) -> None:
+    async def _complete(self, run_id: str, text: str) -> None:
         run = self.store.get(run_id)
+        sessions = self.app.sandbox.run_sessions(run["agent_id"], run_id, "chat")
+        active = any(item["status"] in {"running", "cancelling"} for item in sessions)
+        unknown = any(item["status"] == "unknown" for item in sessions)
+        if active or unknown:
+            if active:
+                sessions = await self.app.sandbox.stop_run_sessions(
+                    run["agent_id"], run_id, "chat", timeout=5.0
+                )
+            self._mark_command_uncertain(
+                run_id, "command_active_at_final" if active else "command_unknown_at_final"
+            )
+            code = "command_session_unknown" if unknown or any(
+                item["status"] in {"running", "cancelling", "unknown"} for item in sessions
+            ) else "command_session_active"
+            self._fail(run_id, code)
+            return
         evidence = self._evidence.setdefault(run_id, initial(coding=True))
         ensure_current(evidence, ChatToolScope(self.app, run["agent_id"], run_id).workdir)
         with self.app.database.transaction() as db:

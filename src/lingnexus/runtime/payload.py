@@ -146,6 +146,17 @@ def _environment_block(app, agent_id: str) -> str:
     ]
     if writable:
         lines.append("- 命令执行：可用（" + _sandbox_summary(app) + "）")
+        lines.append("- 命令工作目录：" + writable[0])
+        sandbox = getattr(app, "sandbox", None)
+        if sandbox is not None:
+            info = sandbox.info()
+            limits = info.get("limits", {})
+            lines.extend([
+                "- 命令额度档位：" + str(info.get("preset", "unknown")),
+                "- 执行资源：" + json.dumps(limits, ensure_ascii=False, sort_keys=True),
+                "- 命令格式：argv参数列表，不使用shell；按上述平台选择可用程序，不预设Linux命令。",
+                "- 已安装依赖：unknown，需要通过已授权的命令检查。",
+            ])
     else:
         lines.append("- 命令执行：不可用（没有已授权的可写目录）")
     return "\n".join(lines)

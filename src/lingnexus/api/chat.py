@@ -113,7 +113,7 @@ async def status(run_id: str, request: Request):
 @router.post("/runs/{run_id}/cancel")
 async def cancel(run_id: str, request: Request):
     """Explicitly cancel a running turn; subscriber disconnects never call this."""
-    return _runtime(request).cancel(run_id)
+    return await _runtime(request).cancel(run_id)
 
 
 @router.post("/runs/{run_id}/pause")

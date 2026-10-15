@@ -177,6 +177,17 @@ class CommandSessions:
                 if rec.get("owner_id") == owner_id and rec.get("run_id") == run_id
             ]
 
+    def for_kind(self, kind: str) -> list[dict]:
+        """Return safe lifecycle metadata for sessions with a trusted context kind."""
+        with self._lock:
+            return [
+                {"session_id": rec["session_id"], "status": rec["status"],
+                 "run_id": rec.get("run_id"), "agent_id": (rec.get("context") or {}).get("agent_id"),
+                 "cancel_reason": rec.get("cancel_reason"), "error": rec.get("error")}
+                for rec in self._records.values()
+                if (rec.get("context") or {}).get("kind") == kind
+            ]
+
     def cancel_run(self, owner_id: str, run_id: str, reason: str = "owner") -> list[dict]:
         """Request cancellation for every active command in an exact run."""
         with self._lock:

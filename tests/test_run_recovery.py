@@ -227,8 +227,27 @@ def test_backup_switch_checkpoint_can_recover_after_backup_request_interrupts(ap
     assert requests == ["primary", "backup"]
 
 
+def test_first_request_respects_window_including_output_and_tool_declarations(app, agent_id):
+    profile = ModelProfile(api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model="fixture",
+                           base_url="https://fixture.test", context_window_tokens=1000)
+    item = app.profiles.save("too-small", profile, api_key="recovery-secret")
+    app.profiles.select(item["id"], None)
+    requests = []
+
+    async def scenario():
+        async with _mock_client([], requests) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(ChatRequest(agent_id=agent_id, message="hello", request_id="first-overflow"))
+            events = await asyncio.wait_for(asyncio.create_task(_drain(runtime, run["id"])), 5)
+            assert next(e["data"]["code"] for e in events if e["event"] == "error") == "context_limit"
+            assert requests == []
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_context_limit_run_is_not_recoverable_and_explains_next_action(app, agent_id, tmp_path):
-    small = ModelProfile(api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model="fixture", base_url="https://fixture.test", context_window_tokens=1000)
+    small = ModelProfile(api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model="fixture", base_url="https://fixture.test", context_window_tokens=32768)
     item = app.profiles.save("small-context", small, api_key="recovery-secret")
     app.profiles.select(item["id"], None)
     folder = tmp_path / "authorized"

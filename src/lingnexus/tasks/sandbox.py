@@ -68,13 +68,22 @@ class SandboxService:
     def _owner(agent_id, run_id, kind):
         return f"{kind}:{agent_id}:{run_id}"
 
-    def task_sessions(self, agent_id, run_id):
-        return self.sessions.for_run(self._owner(agent_id, run_id, "task"), run_id)
+    def run_sessions(self, agent_id, run_id, kind):
+        return self.sessions.for_run(self._owner(agent_id, run_id, kind), run_id)
 
-    async def stop_task_sessions(self, agent_id, run_id, *, timeout=5.0):
-        owner = self._owner(agent_id, run_id, "task")
+    def sessions_for_kind(self, kind):
+        return self.sessions.for_kind(kind)
+
+    async def stop_run_sessions(self, agent_id, run_id, kind, *, timeout=5.0):
+        owner = self._owner(agent_id, run_id, kind)
         self.sessions.cancel_run(owner, run_id)
         return await self.sessions.wait_run(owner, run_id, timeout)
+
+    def task_sessions(self, agent_id, run_id):
+        return self.run_sessions(agent_id, run_id, "task")
+
+    async def stop_task_sessions(self, agent_id, run_id, *, timeout=5.0):
+        return await self.stop_run_sessions(agent_id, run_id, "task", timeout=timeout)
 
     async def command(self, agent_id, run_id, kind, argv, purpose, root, *, authorization_root=None,
                       image=None, long_running=False):

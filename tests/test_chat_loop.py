@@ -383,6 +383,10 @@ def test_opening_states_the_granted_environment(app, agent_id, tmp_path):
     assert "- 平台：" in system
     assert str(folder) in system
     assert "命令执行：可用" in system
+    assert "- 命令工作目录：" + str(folder) in system
+    assert '"timeout_seconds": 30' in system
+    assert '"session_timeout_seconds": 900' in system
+    assert "不预设Linux命令" in system
     # The opening must never carry a moving clock; time belongs to the message tail.
     assert not re.search(r"\d{4}-\d{2}-\d{2}", system)
 

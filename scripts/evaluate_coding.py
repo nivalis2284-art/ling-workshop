@@ -19,7 +19,8 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import dataclass
+import traceback
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -41,6 +42,7 @@ CACHED_INPUT_RATE = Decimal("0.0299")
 OUTPUT_RATE = Decimal("0.4355")
 PROTOCOL_MARGIN_TOKENS = 1024
 DATASET_VERSION = "coding-tasks-v1"
+VERIFIER_VERSION = "coding-verifier-v2"
 TERMINAL = {"completed", "needs_review", "blocked", "paused", "cancelled", "interrupted", "waiting_owner"}
 
 
@@ -285,11 +287,30 @@ elif case == "cross_file_feature":
         "count": 2, "total_quantity": 3, "low_stock": ["bottle"]
     }
 elif case == "behavior_refactor":
+    import ast
+    from pathlib import Path
     from pricing import format_price
     assert format_price(1250) == "$12.50"
     assert format_price(-5) == "($0.05)"
     assert format_price(500, "JPY") == "JPY 5.00"
     assert format_price(0) == "$0.00"
+    tree = ast.parse(Path("pricing.py").read_text(encoding="utf-8"))
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    public = functions.get("format_price")
+    assert public is not None
+    helper_calls = {
+        node.func.id for node in ast.walk(public)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id in functions and node.func.id != "format_price"
+    }
+    assert helper_calls, "format_price must delegate formatting to an extracted helper"
+    assert any(
+        any(isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)
+            and isinstance(node.right, ast.Constant) and node.right.value == 100
+            for node in ast.walk(functions[name]))
+        and any(isinstance(node, (ast.If, ast.IfExp)) for node in ast.walk(functions[name]))
+        for name in helper_calls
+    ), "the extracted helper must own amount and negative-value formatting"
 elif case == "test_repair":
     from parser import parse_row
     assert parse_row('alpha,"beta,gamma",delta') == ["alpha", "beta,gamma", "delta"]
@@ -337,6 +358,18 @@ _SOLUTIONS = {
             "        \"total_quantity\": sum(item[\"quantity\"] for item in normalized),\n"
             "        \"low_stock\": [item[\"name\"] for item in normalized if item[\"quantity\"] <= 2],\n"
             "    }\n"
+        ),
+    },
+    "behavior_refactor": {
+        "pricing.py": (
+            "def _format_price_value(cents, currency):\n"
+            "    amount = f\"{abs(cents) / 100:.2f}\"\n"
+            "    prefix = \"$\" if currency == \"USD\" else currency + \" \"\n"
+            "    value = prefix + amount\n"
+            "    if cents < 0:\n        value = \"(\" + value + \")\"\n"
+            "    return value\n\n"
+            "def format_price(cents, currency=\"USD\"):\n"
+            "    return _format_price_value(cents, currency)\n"
         ),
     },
     "test_repair": {
@@ -420,6 +453,7 @@ def dry_run(dataset_path: str | Path = DEFAULT_DATASET) -> dict:
         "status": "passed" if all(item["incorrect_rejected"] and item["correct_accepted"]
                                    for item in outcomes) else "failed",
         "dataset_version": DATASET_VERSION,
+        "verifier_version": VERIFIER_VERSION,
         "cases": outcomes,
         "network_calls": 0,
     }
@@ -595,6 +629,7 @@ async def _trial_child(args) -> dict:
     runtime = None
     runtime_closed = False
     key_cleared = False
+    stage = "product_setup"
     try:
         agent = app.create_agent("编程评测")
         model = app.profiles.save("评测模型", profile, api_key=key)
@@ -602,9 +637,18 @@ async def _trial_child(args) -> dict:
         app.permissions.configure(agent, readable=[workspace_root], writable=[workspace_root],
                                   expected_revision=0)
         limits = ExecutionLimits(timeout_seconds=120, max_output_bytes=262_144)
+        sandbox = app.sandbox
+        if callable(getattr(sandbox, "set_preset", None)):
+            sandbox.set_preset("coding")
+            resource_report = _sandbox_resource_report(sandbox, limits, preset="coding")
+        else:
+            resource_report = _sandbox_resource_report(
+                sandbox, limits, preset="legacy_runtime_limits"
+            )
         runtime = TaskRuntime(app, client=client, max_steps=40, limits=limits)
         await runtime.start()
         objective = task["objective"]
+        stage = "product_execution"
         tid = await runtime.submit({
             "agent_id": agent,
             "objective": objective,
@@ -614,15 +658,13 @@ async def _trial_child(args) -> dict:
         })
         outcome = await _wait_for_task(runtime, tid, task, args.task_timeout_seconds)
         task_record = runtime.get(tid)
-        try:
-            diff = runtime.changes(tid)
-        except (KeyError, RuntimeError, ValueError):
-            diff = {"files": []}
+        stage = "evaluation_collection"
+        diff = _safe_changes(runtime, tid)
         original_unchanged_after_model = _tree_hash(workspace_root) == before
         delivery_conflict = None
         if task["id"] == "slow_delivery":
-            review = runtime.changes(tid)
-            if review["review_id"]:
+            review = _safe_changes(runtime, tid)
+            if review.get("review_id"):
                 delivery_conflict = await _probe_delivery_conflict(
                     runtime, workspace_root, tid, review["review_id"]
                 )
@@ -655,10 +697,8 @@ async def _trial_child(args) -> dict:
                 })
         budget.finalize_trial(trial_id, usage_by_step)
         steps = _read_steps(app, tid, key)
-        commands = _command_durations(events)
-        slow_ok = task["id"] != "slow_delivery" or any(
-            command["duration_seconds"] >= 30 for command in commands
-        )
+        commands = _command_durations(events, _execution_session_records(app, tid))
+        slow_ok = task["id"] != "slow_delivery" or _slow_command_passed(commands)
         budget_limited = transport.budget_limited
         if budget_limited:
             status = "budget_limited"
@@ -677,6 +717,9 @@ async def _trial_child(args) -> dict:
             status = _classify_failure(task_record, tool_rows)
         database_bytes = db_path.read_bytes() if db_path.exists() else b""
         record = {
+            "verifier_version": VERIFIER_VERSION,
+            "controller_source": _source_identity(REPOSITORY),
+            "execution_resources": resource_report,
             "status": status,
             "case_id": task["id"],
             "task": {key_name: task_record.get(key_name) for key_name in
@@ -699,6 +742,16 @@ async def _trial_child(args) -> dict:
                 "credential_absent_from_database": key.encode() not in database_bytes,
             },
             "original_workspace_unchanged_after_model": original_unchanged_after_model,
+        }
+    except Exception as exc:  # noqa: BLE001 - only safe exception metadata is retained.
+        failure_origin = _failure_origin(stage)
+        return {
+            "status": "framework_failure",
+            "error_code": "trial_worker_failed",
+            "failure_origin": failure_origin,
+            "diagnostic": _safe_exception_diagnostic(exc, origin=failure_origin),
+            "verifier_version": VERIFIER_VERSION,
+            "execution_resources": locals().get("resource_report", {"status": "unknown"}),
         }
     finally:
         if runtime is not None:
@@ -783,6 +836,61 @@ def _execution_limits():
     return ExecutionLimits(timeout_seconds=15, max_output_bytes=8192)
 
 
+def _sandbox_resource_report(sandbox, runtime_limits, *, preset: str) -> dict:
+    """Record effective execution limits without machine paths or image names."""
+    info = {}
+    try:
+        candidate = sandbox.info()
+        if isinstance(candidate, dict):
+            info = candidate
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+        pass
+    actual_limits = info.get("limits")
+    if preset == "legacy_runtime_limits":
+        actual_limits = asdict(runtime_limits)
+    if not isinstance(actual_limits, dict):
+        try:
+            actual_limits = asdict(sandbox.limits())
+        except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
+            actual_limits = asdict(runtime_limits)
+    return {
+        "tier": info.get("level", "unknown"),
+        "preset": preset if preset == "legacy_runtime_limits" else info.get("preset", preset),
+        "resource_source": "runtime_limits" if preset == "legacy_runtime_limits" else "sandbox_preset",
+        "limits": actual_limits,
+        "session_timeout_seconds": actual_limits.get("session_timeout_seconds"),
+        "max_sessions": actual_limits.get("max_sessions"),
+    }
+
+
+def _safe_changes(runtime, task_id: str) -> dict:
+    """Blocked tasks can have no reviewable snapshot; classify that as no diff."""
+    from lingnexus.common.errors import Conflict
+
+    try:
+        return runtime.changes(task_id)
+    except (Conflict, KeyError, RuntimeError, ValueError):
+        return {"files": [], "review_id": None}
+
+
+def _safe_exception_diagnostic(exc: BaseException, *, origin: str) -> dict:
+    """Keep a useful stack location while excluding messages, locals and paths."""
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    return {
+        "origin": origin,
+        "exception_type": type(exc).__name__,
+        "frames": [
+            {"file": Path(frame.filename).name, "line": frame.lineno,
+             "function": frame.name}
+            for frame in frames[-12:]
+        ],
+    }
+
+
+def _failure_origin(stage: str) -> str:
+    return "product_runtime" if stage in {"product_setup", "product_execution"} else "evaluation_controller"
+
+
 def _read_steps(app, task_id: str, key: str) -> list[dict]:
     with app.database.transaction() as db:
         rows = db.execute(
@@ -816,24 +924,59 @@ def _tool_summary(result: Any, key: str) -> dict | None:
     return summary
 
 
-def _command_durations(events: list[dict]) -> list[dict]:
-    starts = {}
+def _execution_session_records(app, run_id: str) -> list[dict]:
+    """Read terminal task-session records; updated_at is persisted on completion."""
+    with app.database.transaction() as db:
+        rows = db.execute("SELECT id,record,updated_at FROM execution_sessions").fetchall()
+    records = []
+    for row in rows:
+        try:
+            record = json.loads(row["record"])
+        except (TypeError, ValueError):
+            continue
+        context = record.get("context") or {}
+        if (record.get("run_id") == run_id and context.get("run_id") == run_id
+                and context.get("kind") == "task"):
+            records.append({"session_id": row["id"], "record": record,
+                            "updated_at": row["updated_at"]})
+    return records
+
+
+def _command_durations(events: list[dict], sessions: list[dict] | None = None) -> list[dict]:
+    """Use the persisted command session lifetime, never tool-poll intervals."""
+    by_id = {item.get("session_id"): item for item in sessions or []}
     durations = []
     for event in events:
         data = event.get("data") or {}
-        if event["type"] == "tool_started" and data.get("name") == "run_command":
-            starts[data.get("step_id")] = event.get("created_at")
-        elif event["type"] == "tool_result" and data.get("name") == "run_command":
-            start = starts.get(data.get("step_id"))
+        if event.get("type") == "tool_result" and data.get("name") == "run_command":
+            execution = ((data.get("result") or {}).get("execution") or {})
+            session = by_id.get(execution.get("session_id"))
+            if session is None:
+                continue
+            record = session.get("record") or {}
+            result = record.get("result") or {}
             try:
-                duration = (datetime.fromisoformat(event["created_at"])
-                            - datetime.fromisoformat(start)).total_seconds()
+                duration = (datetime.fromisoformat(session["updated_at"])
+                            - datetime.fromisoformat(record["created_at"])).total_seconds()
             except (TypeError, ValueError, KeyError):
                 continue
             durations.append({"step_id": data.get("step_id"),
+                              "session_id": session.get("session_id"),
                               "duration_seconds": round(max(0, duration), 3),
-                              "status": (data.get("result") or {}).get("status")})
+                              "status": record.get("status"),
+                              "exit_code": result.get("exit_code"),
+                              "timed_out": bool(result.get("timed_out")),
+                              "argv": record.get("argv", [])})
     return durations
+
+
+def _slow_command_passed(commands: list[dict]) -> bool:
+    return any(
+        command.get("status") == "success" and command.get("exit_code") == 0
+        and not command.get("timed_out") and command.get("duration_seconds", 0) >= 30
+        and any(Path(arg).name == "slow_check.py" for arg in command.get("argv", []))
+        for command in commands
+    )
 
 
 def _classify_failure(task: dict, tool_rows: list[dict]) -> str:
@@ -941,19 +1084,31 @@ def _source_identity(source: Path) -> dict:
         pass
     digest = hashlib.sha256()
     ignored = {".git", ".venv", "venv", "node_modules", "__pycache__", ".artifacts",
-               ".tmp", ".deps", ".home"}
+               ".tmp", ".deps", ".home", ".tools", ".ling-data", ".cache",
+               "data", ".data", "workspace", "workspaces"}
     lock_names = {"uv.lock", "poetry.lock", "pdm.lock", "pipfile.lock",
                   "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "requirements.lock"}
     files = []
-    for path in source.rglob("*"):
-        if (not path.is_file() or path.is_symlink()
-                or any(part.lower() in ignored for part in path.relative_to(source).parts)):
-            continue
-        if path.suffix.lower() in {".py", ".sql", ".lock"} or path.name.lower() in lock_names:
-            files.append(path)
+    for directory, dirnames, filenames in os.walk(source, topdown=True, followlinks=False,
+                                                   onerror=lambda _error: None):
+        parent = Path(directory)
+        dirnames[:] = [name for name in dirnames
+                       if name.lower() not in ignored
+                       and not (parent / name).is_symlink()]
+        for name in filenames:
+            path = parent / name
+            if path.is_symlink():
+                continue
+            if path.suffix.lower() in {".py", ".sql", ".lock"} or name.lower() in lock_names:
+                files.append(path)
     for file in sorted(files):
         digest.update(file.relative_to(source).as_posix().encode("utf-8"))
-        digest.update(file.read_bytes())
+        try:
+            digest.update(file.read_bytes())
+        except OSError:
+            # Unreadable ignored runtime data must not fail source identification.
+            # Unreadable tracked source is reflected by its path, never its contents.
+            digest.update(b"<unreadable>")
     return {"revision": revision, "source_hash": digest.hexdigest()}
 
 
@@ -967,7 +1122,8 @@ def _lock_and_write_result(path: Path, value: dict) -> None:
 
 
 def _launch_trial(args, product_source: Path, task: dict, repeat: int,
-                  budget_file: Path, output_file: Path, source_identity: dict) -> dict:
+                  budget_file: Path, output_file: Path, source_identity: dict,
+                  controller_identity: dict | None = None) -> dict:
     trial_id = f"{task['id']}-r{repeat}-{uuid4().hex[:8]}"
     with tempfile.TemporaryDirectory(prefix="ling-coding-trial-") as temp:
         trial_dir = Path(temp)
@@ -994,17 +1150,34 @@ def _launch_trial(args, product_source: Path, task: dict, repeat: int,
                                    stdin=subprocess.DEVNULL, capture_output=True,
                                    timeout=args.task_timeout_seconds + 90,
                                    check=False, text=True, encoding="utf-8", errors="replace")
-            if child.returncode:
-                child_result = {"status": "framework_failure", "error_code": "trial_worker_failed"}
-            else:
+            try:
                 child_result = json.loads(child.stdout.strip().splitlines()[-1])
+            except (ValueError, IndexError) as exc:
+                child_result = {
+                    "status": "framework_failure", "error_code": "trial_worker_failed",
+                    "failure_origin": "evaluation_controller",
+                    "diagnostic": _safe_exception_diagnostic(exc, origin="evaluation_controller"),
+                    "worker_exit_code": child.returncode,
+                }
+            if child.returncode and child_result.get("status") in {"passed", "success"}:
+                child_result = {
+                    "status": "framework_failure", "error_code": "trial_worker_failed",
+                    "failure_origin": "evaluation_controller",
+                    "diagnostic": {"origin": "evaluation_controller", "exception_type": "WorkerProcessExit",
+                                   "frames": [], "worker_exit_code": child.returncode},
+                }
         except subprocess.TimeoutExpired:
             child_result = {"status": "interrupted", "error_code": "trial_process_timeout"}
-        except (OSError, ValueError, IndexError):
-            child_result = {"status": "framework_failure", "error_code": "trial_worker_failed"}
+        except OSError as exc:
+            child_result = {
+                "status": "framework_failure", "error_code": "trial_worker_failed",
+                "failure_origin": "evaluation_controller",
+                "diagnostic": _safe_exception_diagnostic(exc, origin="evaluation_controller"),
+            }
     record = {
-        "evaluation_version": 1,
+        "evaluation_version": 2,
         "dataset_version": DATASET_VERSION,
+        "verifier_version": VERIFIER_VERSION,
         "attempt_id": trial_id,
         "case_id": task["id"],
         "category": task["category"],
@@ -1012,6 +1185,7 @@ def _launch_trial(args, product_source: Path, task: dict, repeat: int,
         "started_at": started_at,
         "finished_at": _utc_now(),
         "product_source": source_identity,
+        "controller_source": controller_identity or _source_identity(REPOSITORY),
         "model": DEFAULT_MODEL,
         "base_url": DEFAULT_BASE_URL,
         "max_output_tokens": args.max_output_tokens,
@@ -1029,6 +1203,7 @@ def run_controller(args) -> dict:
     dataset = load_dataset(args.dataset)
     source = _resolve_product_source(args.product_source)
     identity = _source_identity(source)
+    controller_identity = _source_identity(REPOSITORY)
     api_key = os.environ.get("LINGNEXUS_EVAL_API_KEY", "")
     if not api_key:
         raise ValueError("credential_missing")
@@ -1044,10 +1219,13 @@ def run_controller(args) -> dict:
     try:
         for repeat in range(1, args.repeat + 1):
             for task in selected:
-                records.append(_launch_trial(args, source, task, repeat, budget_file, jsonl, identity))
+                records.append(_launch_trial(
+                    args, source, task, repeat, budget_file, jsonl, identity, controller_identity
+                ))
     except KeyboardInterrupt:
         _lock_and_write_result(jsonl, {
-            "evaluation_version": 1, "dataset_version": DATASET_VERSION,
+            "evaluation_version": 2, "dataset_version": DATASET_VERSION,
+            "verifier_version": VERIFIER_VERSION,
             "status": "interrupted", "error_code": "owner_interrupted", "finished_at": _utc_now(),
         })
         raise
@@ -1057,11 +1235,14 @@ def run_controller(args) -> dict:
               for status in ("passed", "model_not_solved", "framework_failure",
                              "environment_missing", "budget_limited", "interrupted")}
     summary = {
+        "evaluation_version": 2,
         "dataset_version": DATASET_VERSION,
+        "verifier_version": VERIFIER_VERSION,
         "model": DEFAULT_MODEL,
         "base_url": DEFAULT_BASE_URL,
         "profile_hash": _profile_hash(args.max_output_tokens),
         "product_source": identity,
+        "controller_source": controller_identity,
         "planned": len(selected) * args.repeat,
         "attempted": len(records),
         "passed": passed,
@@ -1123,9 +1304,14 @@ def main(argv=None) -> int:
             try:
                 result = asyncio.run(_trial_child(args))
             except (ImportError, AttributeError, TypeError):
-                result = {"status": "framework_failure", "error_code": "product_source_unsupported"}
-            except Exception:  # noqa: BLE001 - prevent credentials from entering worker output.
-                result = {"status": "framework_failure", "error_code": "trial_worker_failed"}
+                result = {"status": "framework_failure", "error_code": "product_source_unsupported",
+                          "failure_origin": "product_source",
+                          "verifier_version": VERIFIER_VERSION}
+            except Exception as exc:  # noqa: BLE001 - emit only the safe diagnostic structure.
+                result = {"status": "framework_failure", "error_code": "trial_worker_failed",
+                          "failure_origin": "evaluation_controller",
+                          "diagnostic": _safe_exception_diagnostic(exc, origin="evaluation_controller"),
+                          "verifier_version": VERIFIER_VERSION}
         elif args.dry_run:
             result = dry_run(args.dataset)
         else:
@@ -1139,9 +1325,10 @@ def main(argv=None) -> int:
         code = "credential_missing" if str(exc) == "credential_missing" else "evaluation_failed"
         print(json.dumps({"status": "failed", "error_code": code}), file=sys.stderr)
         return 1
-    except Exception:  # noqa: BLE001 - never print provider or child exception text.
-        # Exception messages and tracebacks can contain provider credentials.
-        print(json.dumps({"status": "failed", "error_code": "evaluation_failed"}), file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 - never print exception messages or locals.
+        print(json.dumps({"status": "failed", "error_code": "evaluation_failed",
+                          "diagnostic": _safe_exception_diagnostic(exc, origin="evaluation_controller"),
+                          "verifier_version": VERIFIER_VERSION}), file=sys.stderr)
         return 1
 
 

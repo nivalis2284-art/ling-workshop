@@ -229,14 +229,16 @@ class ChatRuntime:
                 (run_id,),
             ).fetchone()
             terminal_code = json.loads(error_row[0]).get("code") if error_row else None
+            version_unknown = bool(checkpoint.get("grants", {}).get("writable")) and checkpoint.get("workspace_version") is None
             recoverable = (run["status"] in {"interrupted", "failed"}
                            and bool(checkpoint) and not self.checkpoints.uncertain(run_id)
                            and not checkpoint.get("evidence", {}).get("unknown_failures")
                            and checkpoint.get("phase") != "completed"
-                           and terminal_code != "context_limit")
+                           and terminal_code != "context_limit" and not version_unknown)
             reason = (
                 "上下文超出模型窗口，无法从相同输入续跑；请拆分任务或新建请求。"
                 if terminal_code == "context_limit"
+                else "无法确认工作目录版本，请人工核对后新建请求。" if version_unknown
                 else None if recoverable else "运行已结束或存在待核对的副作用。"
             )
             return self.store.get(run_id) | self.failover.metadata(run_id) | {
@@ -457,7 +459,8 @@ class ChatRuntime:
         scope = ChatToolScope(self.app, run["agent_id"], run_id)
         from lingnexus.common.verification import workspace_version
 
-        if checkpoint.get("workspace_version") != workspace_version(scope.workdir):
+        actual_version = workspace_version(scope.workdir)
+        if (scope.workdir is not None and actual_version is None) or checkpoint.get("workspace_version") != actual_version:
             raise Conflict("工作目录内容已变化，不能自动续跑旧状态。")
         if checkpoint.get("grants") != self.app.permissions.current(run["agent_id"]):
             raise Conflict("目录授权已改变，请核对后新建请求。")

@@ -234,7 +234,9 @@ def test_payload_keeps_the_newest_tail_under_budget(app, agent_id):
 
 
 def test_over_budget_turn_truncates_with_a_notice(app, agent_id):
-    configure(app, context_window_tokens=8000, max_output_tokens=1000)
+    # The window must fit the real tool declarations as well as a recent tail.
+    # Smaller-than-schema windows now stop before issuing a provider request.
+    configure(app, context_window_tokens=20000, max_output_tokens=1000)
     conversation = app.conversations.create(agent_id, "长对话")
     head = None
     for i in range(20):

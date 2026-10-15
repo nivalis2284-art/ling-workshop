@@ -369,6 +369,23 @@ def test_recovery_refuses_changed_model_or_workspace(app, agent_id, tmp_path, ch
     asyncio.run(attempt())
 
 
+def test_recovery_refuses_an_unavailable_workspace_fingerprint(app, agent_id, tmp_path):
+    _configure(app)
+    run_id = _interrupt_run(app, agent_id, "unknown-workspace-version", folder=tmp_path / "work")
+    runtime = ChatRuntime(app)
+    checkpoint = runtime.checkpoints.load(run_id)
+    checkpoint["workspace_version"] = None
+    runtime.checkpoints.save(run_id, checkpoint)
+    try:
+        status = runtime.get_run(run_id)
+        assert status["recoverable"] is False
+        assert "无法确认工作目录版本" in status["recovery_reason"]
+        with pytest.raises(Conflict):
+            runtime.recover(run_id)
+    finally:
+        asyncio.run(runtime.aclose())
+
+
 def test_recovery_endpoint_requires_owner_auth(client):
     response = client.post("/api/chat/runs/not-a-run/recover", json={})
     assert response.status_code == 401

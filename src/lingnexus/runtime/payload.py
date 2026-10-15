@@ -16,6 +16,7 @@ from copy import deepcopy
 from datetime import datetime
 from typing import TYPE_CHECKING
 
+from lingnexus.actions.catalog import registry as tool_registry
 from lingnexus.context.builder import BudgetPolicy
 from lingnexus.models import APIFamily, ModelProfile, ToolCall
 
@@ -68,10 +69,13 @@ def build_payload(
                    if message["id"] in original_turns else 0),
             }
         )
+    tool_payload = {}
+    declare_tools(tool_payload, profile, tool_registry.schema())
+    tool_tokens = app.context.counter.count(json.dumps(tool_payload, ensure_ascii=False))
     context = app.context.build(
         agent_id,
         messages=entries,
-        budget=BudgetPolicy(context_limit=limit, output_reserve=output, tool_reserve=256),
+        budget=BudgetPolicy(context_limit=limit, output_reserve=output, tool_reserve=tool_tokens + 512),
         extra_header=_skill_index(app, profile),
         environment=_environment_block(app, agent_id),
     )

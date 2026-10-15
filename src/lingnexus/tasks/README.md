@@ -90,15 +90,12 @@ names an engine. `GET /sandbox` / `PUT /sandbox` return
 `{level, available_levels, engine{available,name}, protections, limitations, image, preset, limits}`;
 the lists are honest about what each tier can and cannot defend.
 
-Long commands return a session ID with running state. Models and owner UI can poll
-incremental output or cancel it. A successful invocation that merely starts a command
-does not verify its outcome. Verification is shared with foreground chat in
-`common/verification.py` and is tied to the checked workspace version; later edits
-invalidate it. File readback alone cannot verify programming work.
+长命令返回会话ID和running状态，模型与所有者界面可以查询增量输出或取消。
+成功启动命令不能证明其结果。验证证据与普通对话共用 `common/verification.py`，
+绑定实际检查的工作区版本；后续编辑使旧验证失效。文件回读不能单独验证编程结果。
 
-Delivery reviews retain baseline artifacts and per-file applied, not-applied,
-conflict or unknown outcomes. Applying multiple files is not atomic. A partial or
-uncertain application retains recovery evidence and cannot silently replay.
+交付审阅保留原内容材料与逐文件的已应用、未应用、冲突、未知状态。
+多文件应用不具备整体原子性；部分或未知写回保留恢复证据，不静默重复。
 
 ## Browser tools and owner approval
 

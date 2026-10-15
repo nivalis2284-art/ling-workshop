@@ -225,13 +225,18 @@ class BudgetTransport(httpx.AsyncBaseTransport):
     """Reserve worst-case spend before forwarding each complete HTTP request."""
 
     def __init__(self, inner: httpx.AsyncBaseTransport, budget: BudgetFile,
-                 trial_id: str, model: str):
+                 trial_id: str, model: str, *, capture_dir: Path | None = None,
+                 secret: str | bytes | None = None, max_trace_bytes: int = 1_048_576):
         self.inner = inner
         self.budget = budget
         self.trial_id = trial_id
         self.model = model
+        self.capture_dir = Path(capture_dir) if capture_dir is not None else None
+        self.secret = secret.encode("utf-8") if isinstance(secret, str) else (secret or b"")
+        self.max_trace_bytes = max(0, min(max_trace_bytes, 1_048_576))
         self.budget_limited = False
         self.reservations: list[Reservation] = []
+        self.trace_records: list[dict] = []
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if request.method.upper() != "POST":
@@ -266,10 +271,104 @@ class BudgetTransport(httpx.AsyncBaseTransport):
             content=content,
             extensions=request.extensions,
         )
-        return await self.inner.handle_async_request(forwarded)
+        response = await self.inner.handle_async_request(forwarded)
+        if self.capture_dir is None:
+            return response
+        wrapper = _CapturedResponseStream(
+            response.stream,
+            capture_dir=self.capture_dir,
+            filename=f"{self.trial_id}-{reservation.request_index}-{uuid4().hex[:8]}.json",
+            secret=self.secret,
+            max_bytes=self.max_trace_bytes,
+            records=self.trace_records,
+            status_code=response.status_code,
+        )
+        if response.is_stream_consumed:
+            wrapper.capture(response.content)
+            wrapper.complete = True
+            wrapper._finalize()
+            return response
+        # At the transport boundary real HTTPX responses do not yet have a
+        # request assigned (MockTransport does). Preserve the original response
+        # and let AsyncClient bind it after this method returns.
+        response.stream = wrapper
+        return response
 
     async def aclose(self) -> None:
         await self.inner.aclose()
+
+
+class _CapturedResponseStream(httpx.AsyncByteStream):
+    """Tee a bounded, redacted copy of response bytes without changing delivery."""
+
+    def __init__(self, inner: httpx.AsyncByteStream, *, capture_dir: Path,
+                 filename: str, secret: bytes, max_bytes: int, records: list[dict],
+                 status_code: int):
+        self.inner = inner
+        self.capture_dir = capture_dir
+        self.filename = filename
+        self.secret = secret
+        self.max_bytes = max_bytes
+        self.records = records
+        self.status_code = status_code
+        self.digest = hashlib.sha256()
+        self.total_bytes = 0
+        self.captured = bytearray()
+        self.finalized = False
+        self.complete = False
+
+    async def __aiter__(self):
+        try:
+            async for chunk in self.inner:
+                self.capture(chunk)
+                yield chunk
+            self.complete = True
+        finally:
+            self._finalize()
+
+    def capture(self, chunk: bytes) -> None:
+        self.digest.update(chunk)
+        self.total_bytes += len(chunk)
+        # Keep enough lookahead to redact a secret split at the byte cap.
+        raw_cap = self.max_bytes + max(0, len(self.secret) - 1)
+        if len(self.captured) < raw_cap:
+            self.captured.extend(chunk[:raw_cap - len(self.captured)])
+
+    async def aclose(self) -> None:
+        try:
+            await self.inner.aclose()
+        finally:
+            self._finalize()
+
+    def _finalize(self) -> None:
+        if self.finalized:
+            return
+        self.finalized = True
+        try:
+            safe = bytes(self.captured).replace(self.secret, b"[redacted]") if self.secret else bytes(self.captured)
+            redacted_bytes = len(safe)
+            safe = safe[:self.max_bytes]
+            record = {
+                "status_code": self.status_code,
+                "sha256": self.digest.hexdigest(),
+                "bytes_received": self.total_bytes,
+                "captured_bytes": len(safe),
+                "response_complete": self.complete,
+                "truncated": (not self.complete or self.total_bytes > self.max_bytes
+                              or redacted_bytes > self.max_bytes),
+                "response_text": safe.decode("utf-8", errors="replace"),
+            }
+            self.capture_dir.mkdir(parents=True, exist_ok=True)
+            path = self.capture_dir / self.filename
+            with path.open("x", encoding="utf-8", newline="\n") as stream:
+                json.dump(record, stream, ensure_ascii=False, separators=(",", ":"))
+                stream.write("\n")
+            self.records.append({"file": self.filename, "sha256": record["sha256"],
+                                 "bytes_received": self.total_bytes,
+                                 "captured_bytes": len(safe), "truncated": record["truncated"]})
+        except (OSError, TypeError, ValueError):
+            # Trace persistence must never interfere with provider response delivery.
+            return
 
 
 _VERIFIER = r'''import json, sys
@@ -622,7 +721,10 @@ async def _trial_child(args) -> dict:
     profile_hash = hashlib.sha256(json.dumps(profile_data, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     budget = BudgetFile(args.budget_file, args.budget_usd)
     trial_id = args.trial_id
-    transport = BudgetTransport(_provider_transport(), budget, trial_id, DEFAULT_MODEL)
+    transport = BudgetTransport(
+        _provider_transport(), budget, trial_id, DEFAULT_MODEL,
+        capture_dir=DEFAULT_OUTPUT / "provider-traces", secret=key,
+    )
     client = httpx.AsyncClient(transport=transport, trust_env=False)
     db_path = Path(args.data_dir) / "ling.db"
     app = Application(db_path, credential_cache=False)
@@ -697,30 +799,28 @@ async def _trial_child(args) -> dict:
                 })
         budget.finalize_trial(trial_id, usage_by_step)
         steps = _read_steps(app, tid, key)
-        commands = _command_durations(events, _execution_session_records(app, tid))
+        commands = _command_durations(events, _execution_session_records(app, tid), steps)
         slow_ok = task["id"] != "slow_delivery" or _slow_command_passed(commands)
         budget_limited = transport.budget_limited
         if budget_limited:
             status = "budget_limited"
-        elif (
+        elif task_record.get("error_code") == "model_malformed_stream" or (
             outcome.get("error_code") == "task_timeout"
             or (task["id"] == "guided_recovery" and not outcome.get("guidance_sent"))
             or (delivery_conflict and delivery_conflict.get("status") != "passed")
             or not original_unchanged_after_model
         ):
             status = "framework_failure"
-        elif not acceptance["passed"] or not slow_ok:
-            status = "model_not_solved"
-        elif task_record["status"] in {"completed", "needs_review"}:
-            status = "passed"
         else:
-            status = _classify_failure(task_record, tool_rows)
+            status = _candidate_status(task_record, acceptance["passed"], slow_ok, tool_rows)
         database_bytes = db_path.read_bytes() if db_path.exists() else b""
         record = {
             "verifier_version": VERIFIER_VERSION,
             "controller_source": _source_identity(REPOSITORY),
             "execution_resources": resource_report,
+            "provider_traces": list(transport.trace_records),
             "status": status,
+            "failure_origin": _task_failure_origin(task_record),
             "case_id": task["id"],
             "task": {key_name: task_record.get(key_name) for key_name in
                      ("id", "status", "verified", "step_count", "error_code", "final")},
@@ -894,7 +994,7 @@ def _failure_origin(stage: str) -> str:
 def _read_steps(app, task_id: str, key: str) -> list[dict]:
     with app.database.transaction() as db:
         rows = db.execute(
-            "SELECT model_step,name,arguments,status,result FROM task_steps "
+            "SELECT id,model_step,name,arguments,status,result FROM task_steps "
             "WHERE task_id=? ORDER BY model_step,rowid", (task_id,),
         ).fetchall()
     values = []
@@ -905,7 +1005,7 @@ def _read_steps(app, task_id: str, key: str) -> list[dict]:
         except (TypeError, ValueError):
             arguments, result = {}, None
         values.append({
-            "model_step": row["model_step"], "name": row["name"], "status": row["status"],
+            "id": row["id"], "model_step": row["model_step"], "name": row["name"], "status": row["status"],
             "arguments": _redact_value(arguments, key),
             "result": _tool_summary(result, key),
         })
@@ -924,9 +1024,11 @@ def _tool_summary(result: Any, key: str) -> dict | None:
     return summary
 
 
-def _execution_session_records(app, run_id: str) -> list[dict]:
+def _execution_session_records(app, run_id: str) -> list[dict] | None:
     """Read terminal task-session records; updated_at is persisted on completion."""
     with app.database.transaction() as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='execution_sessions'").fetchone():
+            return None  # Legacy product has synchronous commands, not session records.
         rows = db.execute("SELECT id,record,updated_at FROM execution_sessions").fetchall()
     records = []
     for row in rows:
@@ -942,9 +1044,33 @@ def _execution_session_records(app, run_id: str) -> list[dict]:
     return records
 
 
-def _command_durations(events: list[dict], sessions: list[dict] | None = None) -> list[dict]:
+def _command_durations(events: list[dict], sessions: list[dict] | None = None,
+                       steps: list[dict] | None = None) -> list[dict]:
     """Use the persisted command session lifetime, never tool-poll intervals."""
     by_id = {item.get("session_id"): item for item in sessions or []}
+    if sessions is None:
+        # The legacy executor blocks until exit. Its own durable invocation
+        # interval is timing evidence; polling intervals are never used here.
+        starts = {event["data"]["step_id"]: event["created_at"] for event in events
+                  if event.get("type") == "tool_started" and event["data"].get("name") == "run_command"}
+        arguments = {step["id"]: step.get("arguments", {}) for step in steps or []}
+        legacy = []
+        for event in events:
+            data = event.get("data") or {}
+            result = data.get("result") or {}
+            if event.get("type") != "tool_result" or data.get("name") != "run_command" or result.get("execution"):
+                continue
+            try:
+                duration = (datetime.fromisoformat(event["created_at"])
+                            - datetime.fromisoformat(starts[data["step_id"]])).total_seconds()
+            except (TypeError, ValueError, KeyError):
+                continue
+            legacy.append({"step_id": data["step_id"], "duration_seconds": max(0, duration),
+                           "status": result.get("status"), "exit_code": result.get("exit_code"),
+                           "timed_out": bool(result.get("timed_out")),
+                           "argv": arguments.get(data["step_id"], {}).get("argv", []),
+                           "timing_basis": "legacy_synchronous_invocation"})
+        return legacy
     durations = []
     for event in events:
         data = event.get("data") or {}
@@ -981,7 +1107,8 @@ def _slow_command_passed(commands: list[dict]) -> bool:
 
 def _classify_failure(task: dict, tool_rows: list[dict]) -> str:
     code = task.get("error_code") or ""
-    if code in {"credentials_required", "permissions_revoked", "task_state_invalid",
+    if code in {"model_malformed_stream", "model_provider_error", "model_unexpected_eof",
+                "model_content_type", "credentials_required", "permissions_revoked", "task_state_invalid",
                 "task_runtime_error", "profile_changed", "snapshot_invalid"}:
         return "framework_failure"
     if code.startswith(("model_transport", "model_http")) or code == "model_timeout":
@@ -990,6 +1117,20 @@ def _classify_failure(task: dict, tool_rows: list[dict]) -> str:
            for item in tool_rows):
         return "environment_missing"
     return "model_not_solved"
+
+
+def _candidate_status(task: dict, accepted: bool, slow_ok: bool, tool_rows: list[dict]) -> str:
+    # Missing artifacts after an infrastructure failure do not make it a model
+    # solving failure. Classify the stopped runtime before grading its candidate.
+    if task.get("status") not in {"completed", "needs_review"}:
+        return _classify_failure(task, tool_rows)
+    return "passed" if accepted and slow_ok else "model_not_solved"
+
+
+def _task_failure_origin(task: dict) -> str | None:
+    if task.get("error_code") in {"model_malformed_stream", "model_provider_error", "model_unexpected_eof", "model_content_type"}:
+        return "protocol_boundary_unknown"
+    return None
 
 
 def _tree_hash(root: Path) -> str:

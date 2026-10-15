@@ -256,12 +256,10 @@ replay/retry, pricing lookup, or live service validation in this spike.
 
 ## Official references read before implementation
 
-Foreground chat now also consumes native continuation via `runtime/payload.py` and
-`runtime/checkpoints.py`. It saves Chat assistant messages, Responses output items
-and Anthropic content blocks independently of public display text. Recovery rejects
-unknown effects, changed profiles/grants/workspaces and context-limit failures;
-completed tool effects are reconciled rather than executed again. No context
-compression or long-term memory is supplied by these checkpoints.
+普通对话通过 `runtime/payload.py` 与 `runtime/checkpoints.py` 使用原生续接；
+Chat assistant消息、Responses输出项和Anthropic内容块与显示文本分开保存。
+恢复拒绝未知副作用、配置／授权／工作区变化和超窗口输入；已经落盘的工具效果
+只核对结果、不再次执行。检查点不提供上下文压缩或长期记忆。
 
 - [Anthropic streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
 - [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort)

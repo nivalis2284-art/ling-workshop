@@ -227,6 +227,32 @@ def test_backup_switch_checkpoint_can_recover_after_backup_request_interrupts(ap
     assert requests == ["primary", "backup"]
 
 
+def test_changed_terminal_response_id_never_executes_buffered_tools(app, agent_id, tmp_path):
+    _configure(app)
+    folder = tmp_path / "identity-conflict"
+    _grant(app, agent_id, folder)
+    target = folder / "must-not-exist.txt"
+    stream = _sse(
+        {"id": "response-start", "choices": [{"index": 0, "delta": {
+            "role": "assistant", "tool_calls": [{"index": 0, "id": "pending-write", "type": "function",
+                "function": {"name": "create_file", "arguments": json.dumps({"path": str(target), "text": "unsafe"})}}]},
+            "finish_reason": None}]},
+        {"id": "different-terminal-id", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+    )
+
+    async def scenario():
+        async with _mock_client([stream]) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(ChatRequest(agent_id=agent_id, message="protocol safety", request_id="terminal-id-changed"))
+            events = await asyncio.wait_for(asyncio.create_task(_drain(runtime, run["id"])), 5)
+            assert next(e["data"]["code"] for e in events if e["event"] == "error") == "malformed_stream"
+            assert not target.exists()
+            assert not any(e["event"] == "tool_started" for e in events)
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_first_request_respects_window_including_output_and_tool_declarations(app, agent_id):
     profile = ModelProfile(api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model="fixture",
                            base_url="https://fixture.test", context_window_tokens=1000)

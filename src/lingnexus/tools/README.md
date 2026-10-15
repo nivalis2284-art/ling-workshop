@@ -85,21 +85,19 @@ All symlinks, junctions, reparse points, hardlinked files and non-regular files 
 denied, including links that stay inside a grant. On Windows, ancestor and file
 handles deny delete sharing for the duration of each operation, preventing path
 replacement while using that handle. POSIX uses directory descriptors and
-O_NOFOLLOW. Existing-file writes use a same-directory temporary file, flush/fsync,
-version checks and atomic replacement. An optional `expected_sha256` binds the
-replacement to the version previously read. `edit_file` supplies this precondition
-automatically; a conflicting change is preserved. Exclusive create never overwrites.
-These are file-level guarantees, not a multi-file transaction or a cross-process
-compare-and-swap: an external writer can still race the final check and rename.
-The caller records and reconciles uncertain effects before retrying.
+O_NOFOLLOW.
 
-The parent exposes noninteractive command sessions through `run_command`,
-`command_status` and `command_cancel`. Each session belongs to one agent/run,
-persists bounded output with a cursor, and records exit, timeout and process cleanup.
-Startup marks previously running sessions unknown without replaying a saved PID.
-The conservative preset keeps a 30-second normal deadline; coding uses 120 seconds.
-Explicit `long_running=true` permits up to 900 seconds, with two concurrent sessions
-per run. Cancellation is confirmed only after the executor confirms process cleanup.
+现有文件写入采用同目录临时文件、flush/fsync、版本检查和原子替换。
+可选 `expected_sha256` 将替换绑定到先前读取的版本；`edit_file` 自动传入该前提，
+冲突时保留外部修改。独占创建不会覆盖已有文件。保证粒度为单文件，不是多文件
+事务或跨进程CAS：外部写入仍可能发生在最后检查与rename之间。未知效果先核对，
+不自动重跑。
+
+上层通过 `run_command`、`command_status` 和 `command_cancel` 管理非交互命令会话。
+每个会话归属一个个体／运行，持久保存带游标的有界输出、退出、超时与清理结果。
+启动时把旧活动会话标为unknown，不凭保存的PID重放或认领。保守档普通命令30秒，
+编程档120秒；显式 `long_running=true` 最长900秒，同一运行最多2个会话。
+只有执行器确认进程清理后，取消才登记为已确认。
 
 ## Docker contract
 

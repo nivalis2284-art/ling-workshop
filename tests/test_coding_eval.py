@@ -15,6 +15,8 @@ from scripts.evaluate_coding import (
     BudgetExceeded,
     BudgetFile,
     BudgetTransport,
+    _candidate_status,
+    _classify_failure,
     _command_durations,
     _failure_origin,
     _probe_delivery_conflict,
@@ -26,6 +28,7 @@ from scripts.evaluate_coding import (
     _sandbox_resource_report,
     _slow_command_passed,
     _source_identity,
+    _task_failure_origin,
     _wait_for_task,
     dry_run,
     load_dataset,
@@ -72,6 +75,88 @@ def test_budget_transport_rejects_before_forwarding(tmp_path) -> None:
     assert transport.budget_limited is True
     assert calls == []
     assert budget.snapshot("trial")["budget_limited_count"] == 1
+
+
+def test_trace_supports_a_real_transport_response_without_request_binding(tmp_path):
+    class BareTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                                  stream=httpx.ByteStream(b"data: [DONE]\n\n"))
+
+    async def scenario():
+        transport = BudgetTransport(BareTransport(), BudgetFile(tmp_path / "budget.json", Decimal("0.2")),
+                                    "bare", "fixture", capture_dir=tmp_path / "traces")
+        async with httpx.AsyncClient(transport=transport) as client:
+            response = await client.post("https://fixture.invalid", json={"max_completion_tokens": 8})
+            assert response.content == b"data: [DONE]\n\n"
+            assert response.request.url.host == "fixture.invalid"
+        assert len(transport.trace_records) == 1
+
+    asyncio.run(scenario())
+
+
+def test_framework_failure_is_not_reclassified_as_missing_model_solution():
+    assert _candidate_status({"status": "blocked", "error_code": "task_runtime_error"}, False, False, []) == "framework_failure"
+    assert _candidate_status({"status": "blocked", "error_code": "model_malformed_stream"}, False, True, []) == "framework_failure"
+    assert _candidate_status({"status": "blocked", "error_code": "model_provider_error"}, False, True, []) == "framework_failure"
+    assert _candidate_status({"status": "needs_review"}, False, True, []) == "model_not_solved"
+    assert _candidate_status({"status": "needs_review"}, True, True, []) == "passed"
+
+
+def test_budget_transport_captures_only_bounded_redacted_response_bytes(tmp_path) -> None:
+    import hashlib
+
+    secret = "eval-secret-for-test"
+    request_marker = "private-request-body-marker"
+    responses = [
+        b"data: {\"reasoning_content\":\"fixture\"}\n\n"
+        + secret.encode() + b"\ndata: [DONE]\n\n",
+        b"x" * (1_048_576 + 64),
+    ]
+    calls = []
+
+    async def upstream(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, content=responses[len(calls) - 1], request=request)
+
+    budget = BudgetFile(tmp_path / "budget.json", "1.0")
+    trace_dir = tmp_path / "provider-traces"
+    transport = BudgetTransport(httpx.MockTransport(upstream), budget, "trial-unique", "test-model",
+                                capture_dir=trace_dir, secret=secret, max_trace_bytes=1_048_576)
+
+    async def send_requests() -> list[httpx.Response]:
+        async with httpx.AsyncClient(transport=transport) as client:
+            return [
+                await client.post("https://provider.invalid/v1/chat/completions",
+                                  headers={"Authorization": f"Bearer {secret}"},
+                                  json={"max_tokens": 8, "messages": [{"content": request_marker}]}),
+                await client.post("https://provider.invalid/v1/chat/completions",
+                                  headers={"Authorization": f"Bearer {secret}"},
+                                  json={"max_tokens": 8, "messages": [{"content": request_marker}]}),
+            ]
+
+    responses_received = asyncio.run(send_requests())
+    assert [response.content for response in responses_received] == responses
+    assert len(calls) == 2
+    assert len(transport.trace_records) == 2
+    first = json.loads((trace_dir / transport.trace_records[0]["file"]).read_text(encoding="utf-8"))
+    second = json.loads((trace_dir / transport.trace_records[1]["file"]).read_text(encoding="utf-8"))
+    assert first["sha256"] == hashlib.sha256(responses[0]).hexdigest()
+    assert "fixture" in first["response_text"]
+    assert secret not in first["response_text"]
+    assert request_marker not in json.dumps(first)
+    assert "Authorization" not in json.dumps(first)
+    assert second["sha256"] == hashlib.sha256(responses[1]).hexdigest()
+    assert second["captured_bytes"] <= 1_048_576
+    assert second["truncated"] is True
+    assert len(transport.trace_records[0]["file"]) > 0
+    assert transport.trace_records[0]["file"] != transport.trace_records[1]["file"]
+
+
+def test_malformed_model_stream_is_unknown_protocol_boundary_failure() -> None:
+    task = {"error_code": "model_malformed_stream"}
+    assert _classify_failure(task, []) == "framework_failure"
+    assert _task_failure_origin(task) == "protocol_boundary_unknown"
 
 
 def test_budget_file_cap_is_shared_across_processes(tmp_path) -> None:
@@ -174,6 +259,36 @@ def test_slow_command_uses_persisted_session_duration_and_success(tmp_path) -> N
     assert _slow_command_passed([{**commands[0], "status": "timeout", "exit_code": None}]) is False
     assert _slow_command_passed([{**commands[0], "argv": ["python", "other.py"]}]) is False
     assert _command_durations(events, [])[0:] == []
+
+
+def test_legacy_synchronous_command_has_distinct_timing_evidence():
+    events = [
+        {"type": "tool_started", "created_at": "2026-10-16T00:00:00+00:00",
+         "data": {"step_id": "s1", "name": "run_command"}},
+        {"type": "tool_result", "created_at": "2026-10-16T00:00:31+00:00",
+         "data": {"step_id": "s1", "name": "run_command", "result": {
+             "status": "success", "exit_code": 0, "timed_out": False}}},
+    ]
+    steps = [{"id": "s1", "arguments": {"argv": ["python", "slow_check.py"]}}]
+    commands = _command_durations(events, None, steps)
+    assert _slow_command_passed(commands)
+    assert commands[0]["timing_basis"] == "legacy_synchronous_invocation"
+    assert _command_durations(events, [], steps) == []
+
+
+def test_legacy_product_without_session_table_is_not_a_controller_failure(tmp_path):
+    import sqlite3
+    from contextlib import nullcontext
+
+    from scripts.evaluate_coding import _execution_session_records
+
+    # A real bare legacy-shaped database has no execution_sessions table.
+    connection = sqlite3.connect(tmp_path / "legacy.db")
+    database = SimpleNamespace(transaction=lambda: nullcontext(connection))
+    try:
+        assert _execution_session_records(SimpleNamespace(database=database), "task") is None
+    finally:
+        connection.close()
 
 
 def test_wait_for_task_sends_guidance_once_after_a_tool_result() -> None:

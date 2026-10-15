@@ -6,89 +6,28 @@ every loop. This module only adapts one task step to that dispatcher (the
 whether a delivered task outcome was actually verified.
 """
 
-import asyncio
 import json
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from lingnexus.actions.catalog import registry as TOOL_REGISTRY
 from lingnexus.actions.dispatch import ToolDispatcher
 from lingnexus.common.errors import PermissionDenied
+
+# Shared evidence policy is deliberately independent of either runtime.
+from lingnexus.common.verification import account as record_evidence
+from lingnexus.common.verification import successful, workspace_version
 from lingnexus.dependencies import DependencyService
 from lingnexus.tools import ExecutionLimits
 
 from .browser import BrowserTools
 from .store import encode
-from .workspace import authorize, digest, make_parents, scan, tools
-
-BROWSER_NAMES = frozenset(s.name for s in TOOL_REGISTRY.specs() if s.kind == "browser")
-
-
-def successful(name, result):
-    if name == "run_command":
-        return (
-            result.get("status") == "success"
-            and result.get("exit_code") == 0
-            and result.get("cleanup_confirmed")
-            and not result.get("timed_out")
-            and not result.get("output_truncated")
-            and not result.get("artifact_error")
-        )
-    return result.get("status") == "completed"
+from .workspace import authorize, make_parents, scan, tools
 
 
 def account(state, call, result):
-    name, args = call["name"], call["arguments"]
-    key = (
-        name + ":" + args.get("path", "")
-        if name in {"read_file", "create_file", "write_file"}
-        else name + encode(args.get("argv", args))
-    )
-    okay = successful(name, result)
-    if okay:
-        state["failures"].pop(key, None)
-    else:
-        state["failures"][key] = result.get("error_code") or result.get("error") or "tool_failed"
-    if name in {"create_file", "write_file"} and okay:
-        state["verified"] = False
-        state["writes"][args["path"]] = digest(args["text"].encode())
-        state["checked"].pop(args["path"], None)
-    elif name == "read_file" and okay:
-        content = result.get("result", {}).get("text", "")
-        state["checked"][args["path"]] = digest(content.encode())
-        state["verified"] = bool(state["writes"]) and all(
-            state["checked"].get(p) == h for p, h in state["writes"].items()
-        )
-        if not state["writes"]:
-            state["verified"] = True
-    elif name == "run_command":
-        state["command_used"] = True
-        state["verified"] = bool(okay and args.get("purpose") == "verify")
-    if name == "run_command" or name in {"create_file", "write_file"}:
-        state["command_verified"] = state["verified"] if name == "run_command" else False
-    if state["command_used"] or (state.get("coding_workspace") and state["writes"]):
-        # File reads cannot replace current test evidence.
-        state["verified"] = state.get("command_verified", False)
-    if name in BROWSER_NAMES and name != "browser_state":
-        state["browser_used"] = True
-        state["browser_verified"] = bool(
-            okay and name == "browser_read" and result.get("verification_passed")
-        )
-    if state.get("browser_used"):
-        command_required = state["command_used"] or (
-            state.get("coding_workspace") and state["writes"]
-        )
-        files_checked = (
-            not state["writes"]
-            or state.get("coding_workspace")
-            or all(state["checked"].get(p) == h for p, h in state["writes"].items())
-        )
-        state["verified"] = bool(
-            state.get("browser_verified")
-            and files_checked
-            and (not command_required or state.get("command_verified"))
-        )
+    """Compatibility entry point for the shared evidence policy."""
+    record_evidence(state, call, result)
 
 
 class TaskToolScope:
@@ -123,7 +62,8 @@ class TaskToolScope:
         result = json.loads(encode(result))
         return result, result.get("id")
 
-    def write(self, raw: str, text: str, *, create: bool) -> tuple[dict, str | None]:
+    def write(self, raw: str, text: str, *, create: bool,
+              expected_sha256: str | None = None) -> tuple[dict, str | None]:
         if self._snapshot:
             root = self.snapshots.path(self.task["id"])
             path = self.snapshots.file_path(self.task["id"], raw)
@@ -132,8 +72,7 @@ class TaskToolScope:
                 make_parents(root, path.relative_to(root))
                 access.create_text(path, text)
             else:
-                access.write_text(path, text)
-            path.chmod(0o666)
+                access.write_text(path, text, expected_sha256=expected_sha256)
             scan(root)
             payload = {
                 "status": "completed",
@@ -143,7 +82,8 @@ class TaskToolScope:
             return payload, self.effect
         name = "create_file" if create else "write_file"
         result = self.app.actions.execute(
-            self.agent_id, self._base + ":write", name, {"path": raw, "text": text}
+            self.agent_id, self._base + ":write", name,
+            {"path": raw, "text": text, "expected_sha256": expected_sha256}
         )
         result = json.loads(encode(result))
         return result, result.get("id")
@@ -153,23 +93,25 @@ class TaskToolScope:
             return tools(self.snapshots.path(self.task["id"])).read_text(path)
         return self.app.permissions.read_text(self.agent_id, path)
 
-    async def run(self, argv: list[str], purpose: str) -> tuple[dict, str | None]:
+    async def run(self, argv: list[str], purpose: str, *, long_running=False) -> tuple[dict, str | None]:
         if not self._snapshot:
             raise PermissionDenied("Command requires an authorized snapshot.")
         authorize(self.app, self.agent_id, self.task["workspace"])
         root = self.snapshots.path(self.task["id"])
         scan(root)
         # The tier is chosen by the sandbox service; no engine is hard-coded.
-        runner = self.app.sandbox.executor(
-            root, image=self.task["docker_image"], writable=True, limits=self.limits
-        )
-        result = asdict(await asyncio.to_thread(runner.execute, list(argv)))
+        result = await self.app.sandbox.command(
+            self.agent_id, self.task["id"], "task", list(argv), purpose, root,
+            authorization_root=self.task["workspace"], image=self.task["docker_image"], long_running=long_running)
         try:
             scan(root)
         except (PermissionError, OSError, ValueError):
             # The execution result remains authoritative even when generated
             # artifacts fail validation. Never lose exit/output/cleanup flags.
             result["artifact_error"] = "unsafe_or_oversized_snapshot"
+        result["workspace_version"] = workspace_version(root)
+        result["version_unavailable"] = result["workspace_version"] is None
+        result["execution_purpose"] = purpose
         result["verification_passed"] = bool(purpose == "verify" and successful("run_command", result))
         return result, self.effect
 
@@ -178,6 +120,9 @@ class TaskToolScope:
         return result, result.get("id") or self.effect
 
     def meta(self, name: str, args: dict) -> tuple[dict, str | None]:
+        if name in {"command_status", "command_cancel"}:
+            return self.app.sandbox.observe(args["session_id"], self.agent_id, self.task["id"], "task",
+                                            args.get("after", 0), cancel=name == "command_cancel"), self.effect
         if name == "read_skill":
             # Knowledge only, and no real-world effect: nothing to reconcile later.
             library = getattr(self.app, "skillpacks", None)
@@ -241,7 +186,7 @@ class ToolExecutor:
             else "unknown"
             if result.get("status") == "unknown"
             else "completed"
-            if successful(name, result)
+            if successful(name, result) or result.get("status") in {"running", "cancelling"}
             else "failed"
         )
         with self.app.database.transaction():

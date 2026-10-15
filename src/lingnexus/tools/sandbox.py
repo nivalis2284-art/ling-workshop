@@ -200,7 +200,7 @@ class RestrictedLocalSandbox:
         self.limits = limits or LocalLimits()
         self.resource_limits_enforced = job_limits_available()
 
-    def execute(self, argv: Sequence[str]) -> ExecutionResult:
+    def execute(self, argv: Sequence[str], *, cancel_event=None, on_output=None) -> ExecutionResult:
         command = _validated(argv)
         self._prepare_directories()
         job = None
@@ -218,6 +218,8 @@ class RestrictedLocalSandbox:
             env=local_environment(self.worktree),
             job_limits=job,
             new_session=not self.resource_limits_enforced,
+            cancel_event=cancel_event,
+            on_output=on_output,
         )
         return self._result(result)
 
@@ -232,7 +234,9 @@ class RestrictedLocalSandbox:
             return ExecutionResult("failed", error="process_unavailable")
         if result.error == "resource_limits_unavailable":
             return ExecutionResult("unknown", error="resource_limits_unavailable")
-        if result.timed_out:
+        if result.cancelled:
+            status, error = "cancelled", "execution_cancelled"
+        elif result.timed_out:
             status, error = "timeout", "execution_timed_out"
         elif result.error:
             status, error = "unknown", result.error
@@ -264,9 +268,10 @@ class ContainerSandbox:
         )
         self.worktree = self._executor.worktree
 
-    def execute(self, argv: Sequence[str]) -> ExecutionResult:
+    def execute(self, argv: Sequence[str], *, cancel_event=None, on_output=None) -> ExecutionResult:
         command = _validated(argv)
-        return self._executor.execute(["env", *_CONTAINER_ENV, *command])
+        return self._executor.execute(["env", *_CONTAINER_ENV, *command],
+                                      cancel_event=cancel_event, on_output=on_output)
 
 
 def create_executor(

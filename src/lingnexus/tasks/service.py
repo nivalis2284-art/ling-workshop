@@ -134,6 +134,13 @@ class TaskRuntime:
                 + "\nOwner-selected coding environment: "
                 + spec["environment"]
             )
+            import platform
+
+            actual_root = str(self.snapshots.root / tid / "workspace") if spec["workspace"] else "none"
+            stated_root = "/workspace" if self.sandbox.level() == "container" else actual_root
+            system_rules += (f"\nPlatform: {'Linux' if self.sandbox.level() == 'container' else platform.system()}"
+                             f"\nWorkspace: {stated_root}\nSandbox: {self.sandbox.level()}"
+                             f"\nProtections and limits: {encode(self.sandbox.info())}")
             state = {
                 "environment": spec["environment"],
                 "coding_workspace": bool(spec["workspace"]),
@@ -144,6 +151,7 @@ class TaskRuntime:
                     spec["objective"],
                     system_rules,
                     sorted(baseline) if spec["workspace"] else None,
+                    workdir=stated_root,
                 ),
                 "pending": [],
                 "baseline": baseline,
@@ -204,11 +212,22 @@ class TaskRuntime:
             await asyncio.sleep(0.1)
 
     async def _stop(self, tid, status):
-        self.store.status(tid, status, "process_interrupted" if status == "interrupted" else None)
+        if self.get(tid)["status"] not in TERMINAL:
+            self.store.status(tid, "paused", "command_cleanup_pending")
         worker = _ACTIVE.get((self._db_key, tid))
         if worker and not worker.done():
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
+        task = self.get(tid)
+        sessions = await self.sandbox.stop_task_sessions(task["agent_id"], tid)
+        uncertain = any(
+            item["status"] in {"running", "cancelling", "unknown"} for item in sessions
+        )
+        if uncertain:
+            self.store.status(tid, "blocked", "command_cleanup_unknown")
+        else:
+            error = "process_interrupted" if status == "interrupted" else None
+            self.store.status(tid, status, error)
         return self.get(tid)
 
     async def pause(self, tid):
@@ -228,6 +247,12 @@ class TaskRuntime:
             raise Conflict("Task runtime is closed.")
         if type(additional_steps) is not int or not 0 <= additional_steps <= 1000:
             raise ValueError("Task limit extension is invalid.")
+        task = self.get(tid)
+        sessions = self.sandbox.task_sessions(task["agent_id"], tid)
+        if any(item["status"] in {"running", "cancelling"} for item in sessions):
+            raise Conflict("A task command is still active; wait for confirmed cleanup before resuming.")
+        if any(item["status"] == "unknown" for item in sessions):
+            raise Conflict("A task command has unknown cleanup status; reconcile it before resuming.")
         async with self._dependency_guard(tid):
             if self.get(tid)["status"] in TERMINAL:
                 raise Conflict("A terminal task cannot resume.")
@@ -351,7 +376,7 @@ class TaskRuntime:
             state["family"],
             call,
             encode(result),
-            not successful(call["name"], result),
+            not successful(call["name"], result) and result.get("status") not in {"running", "cancelling"},
         )
         state["pending"].pop(0)
         state.pop("waiting_owner", None)

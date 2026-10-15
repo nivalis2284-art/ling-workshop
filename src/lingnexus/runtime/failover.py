@@ -264,13 +264,17 @@ class ChatFailover:
                 },
             )
 
-    def begin_attempt(self, run_id: str, step: int, attempt: int, profile_id: str) -> None:
+    def begin_attempt(self, run_id: str, step: int, attempt: int, profile_id: str) -> int:
         with self.app.database.transaction() as db:
+            attempt = max(attempt, db.execute(
+                "SELECT COALESCE(MAX(attempt),0)+1 FROM chat_call_attempts WHERE run_id=? AND step=?",
+                (run_id, step)).fetchone()[0])
             db.execute(
                 "INSERT INTO chat_call_attempts(run_id,step,attempt,profile_id,status,started_at) "
                 "VALUES (?,?,?,?,'running',?)",
                 (run_id, step, attempt, profile_id, utc_now()),
             )
+            return attempt
 
     def finish_attempt(self, run_id: str, status: str, code: str | None = None, http_status=None):
         with self.app.database.transaction() as db:

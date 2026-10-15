@@ -2,8 +2,11 @@
 import os
 import signal
 import subprocess
+import time
+from codecs import getincrementaldecoder
+from collections.abc import Callable
 from dataclasses import dataclass
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 
 from ._jobobject import CREATE_SUSPENDED, JobObject, ResourceLimits, resume_process
 
@@ -16,16 +19,19 @@ class ProcessResult:
     timed_out: bool = False
     truncated: bool = False
     error: str | None = None
+    cancelled: bool = False
 
     @property
     def ok(self) -> bool:
-        return self.returncode == 0 and not self.timed_out and self.error is None
+        return (self.returncode == 0 and not self.timed_out
+                and not self.cancelled and self.error is None)
 
 
 def run_process(argv: list[str], *, timeout: float, max_output_bytes: int,
                 cwd: str | None = None, env: dict[str, str] | None = None,
                 job_limits: ResourceLimits | None = None,
-                new_session: bool = False) -> ProcessResult:
+                new_session: bool = False, cancel_event: Event | None = None,
+                on_output: Callable[[str], None] | None = None) -> ProcessResult:
     """Run an argument list with no shell.
 
     cwd/env scope the child; job_limits adds Windows Job Object bounds. When a
@@ -72,13 +78,32 @@ def run_process(argv: list[str], *, timeout: float, max_output_bytes: int,
 
     def drain(stream, buffer):
         nonlocal remaining, truncated, read_failed
+        decoder = getincrementaldecoder("utf-8")(errors="replace")
+        read_chunk = getattr(stream, "read1", stream.read)
+        callback_failed = False
         try:
-            while chunk := stream.read(8192):
+            while chunk := read_chunk(8192):
                 with lock:
                     count = min(remaining, len(chunk))
-                    buffer.extend(chunk[:count])
+                    captured = chunk[:count]
+                    buffer.extend(captured)
                     remaining -= count
                     truncated |= count < len(chunk)
+                if on_output is not None and captured and not callback_failed:
+                    try:
+                        on_output(decoder.decode(captured))
+                    except Exception:  # noqa: BLE001 -- drain/cleanup must survive consumer failures
+                        callback_failed = True
+                        with lock:
+                            read_failed = True
+            if on_output is not None and not callback_failed:
+                final = decoder.decode(b"", final=True)
+                if final:
+                    try:
+                        on_output(final)
+                    except Exception:  # noqa: BLE001 -- never leave a live pipe after a callback failure
+                        with lock:
+                            read_failed = True
         except (OSError, ValueError):
             with lock:
                 read_failed = True
@@ -90,16 +115,33 @@ def run_process(argv: list[str], *, timeout: float, max_output_bytes: int,
     for thread in threads:
         thread.start()
     timed_out = False
+    cancelled = False
     error = None
     try:
-        process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        try:
-            _terminate(process, job, new_session)
-            process.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            error = "process_cleanup_unconfirmed"
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                cancelled = True
+                _terminate(process, job, new_session)
+                try:
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    error = "process_cleanup_unconfirmed"
+                break
+            remaining_time = deadline - time.monotonic()
+            if remaining_time <= 0:
+                timed_out = True
+                _terminate(process, job, new_session)
+                try:
+                    process.wait(timeout=2)
+                except (OSError, subprocess.TimeoutExpired):
+                    error = "process_cleanup_unconfirmed"
+                break
+            try:
+                process.wait(timeout=min(0.1, remaining_time))
+                break
+            except subprocess.TimeoutExpired:
+                continue
     except BaseException:
         _terminate(process, job, new_session)
         _reap(process)
@@ -115,7 +157,7 @@ def run_process(argv: list[str], *, timeout: float, max_output_bytes: int,
         if read_failed or any(thread.is_alive() for thread in threads):
             error = error or "output_incomplete"
         return ProcessResult(process.returncode, bytes(buffers[0]), bytes(buffers[1]),
-                             timed_out, truncated, error)
+                             timed_out, truncated, error, cancelled)
 
 
 def _reap(process) -> None:

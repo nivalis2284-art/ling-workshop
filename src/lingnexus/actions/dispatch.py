@@ -10,10 +10,12 @@ caller's environment (snapshot, authorized directories, sandbox, browser).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import stat
+import threading
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -21,6 +23,7 @@ from pydantic import ValidationError
 
 from lingnexus.common.errors import DomainError, PermissionDenied
 from lingnexus.tools._paths import FileAccessDenied, reject_link
+from lingnexus.tools.workspace import FileVersionConflict
 
 from .catalog import registry as default_registry
 from .registry import ToolRegistry, ToolResult
@@ -29,6 +32,7 @@ _EXCLUDED = {".git", "venv", ".venv", "node_modules", "__pycache__", ".tmp", ".d
 _SEARCH_SCAN_LIMIT = 5000
 _ARGUMENT_BYTES = 65_536
 _ARGUMENT_CHARS = 16_384
+_EDIT_LOCKS = tuple(threading.RLock() for _ in range(64))
 
 _STATUS = {
     "completed": "completed",
@@ -37,6 +41,9 @@ _STATUS = {
     "unknown": "unknown",
     "failed": "failed",
     "timeout": "failed",
+    "cancelled": "failed",
+    "running": "completed",
+    "cancelling": "completed",
 }
 
 
@@ -50,7 +57,8 @@ class ToolScope(Protocol):
 
     def read(self, raw: str) -> tuple[dict, str | None]: ...
 
-    def write(self, raw: str, text: str, *, create: bool) -> tuple[dict, str | None]: ...
+    def write(self, raw: str, text: str, *, create: bool,
+              expected_sha256: str | None = None) -> tuple[dict, str | None]: ...
 
     def read_path(self, path: Path) -> str: ...
 
@@ -119,6 +127,8 @@ class ToolDispatcher:
             return self._fail("invalid_tool_request")
         except (PermissionDenied, FileAccessDenied):
             return self._fail("permission_denied")
+        except FileVersionConflict:
+            return self._fail("edit_version_conflict")
         except (ValueError, DomainError, UnicodeError):
             return self._fail("invalid_tool_request")
         except OSError:
@@ -145,6 +155,8 @@ class ToolDispatcher:
             return self._fail("invalid_tool_request")
         if scope.workdir is None:
             return self._fail("permission_denied")
+        if args.get("long_running"):
+            return self._wrap(*(await scope.run(argv, args["purpose"], long_running=True)))
         return self._wrap(*(await scope.run(argv, args["purpose"])))
 
     async def _file(self, name: str, args: dict, scope: ToolScope) -> ToolResult:
@@ -153,6 +165,12 @@ class ToolDispatcher:
             # and one slow read must not stall every other run's stream.
             return self._wrap(*(await asyncio.to_thread(scope.read, args["path"])))
         if name in {"create_file", "write_file"}:
+            if args.get("expected_sha256") is not None:
+                if name == "create_file":
+                    return self._fail("invalid_tool_request")
+                return self._wrap(*scope.write(
+                    args["path"], args["text"], create=False,
+                    expected_sha256=args["expected_sha256"]))
             return self._wrap(
                 *scope.write(args["path"], args["text"], create=name == "create_file")
             )
@@ -163,10 +181,23 @@ class ToolDispatcher:
         return self._fail("invalid_tool_request")
 
     def _edit(self, args: dict, scope: ToolScope) -> tuple[dict, str | None]:
+        path = Path(args["path"])
+        if not path.is_absolute():
+            base = scope.roots[0] if scope.roots else (scope.workdir or Path.cwd())
+            path = base / path
+        canonical = os.path.normcase(os.path.abspath(path))
+        stripe = int(hashlib.sha256(canonical.encode()).hexdigest()[:8], 16) % len(_EDIT_LOCKS)
+        with _EDIT_LOCKS[stripe]:
+            return self._edit_locked({**args, "path": str(path)}, scope)
+
+    def _edit_locked(self, args: dict, scope: ToolScope) -> tuple[dict, str | None]:
         payload, _ = scope.read(args["path"])
         if payload.get("status") != "completed":
             return payload, None
         text = (payload.get("result") or {}).get("text", "")
+        expected = args.get("expected_sha256")
+        if expected is not None and expected != hashlib.sha256(text.encode()).hexdigest():
+            return {"status": "failed", "error_code": "edit_version_conflict"}, None
         old, new = args["old_text"], args["new_text"]
         count = text.count(old)
         if count == 0:
@@ -174,7 +205,8 @@ class ToolDispatcher:
         if count > 1 and not args["replace_all"]:
             return {"status": "failed", "error_code": "text_not_unique"}, None
         updated = text.replace(old, new) if args["replace_all"] else text.replace(old, new, 1)
-        written, effect = scope.write(args["path"], updated, create=False)
+        written, effect = scope.write(args["path"], updated, create=False,
+                                      expected_sha256=hashlib.sha256(text.encode()).hexdigest())
         return {**written, "replaced": count if args["replace_all"] else 1}, effect
 
     def _search(self, args: dict, scope: ToolScope) -> dict:

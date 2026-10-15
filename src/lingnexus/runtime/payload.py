@@ -10,7 +10,9 @@ carries its own stored send time: the cache prefix stays stable and only the
 tail moves.
 """
 
+import json
 import platform
+from copy import deepcopy
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -18,6 +20,7 @@ from lingnexus.context.builder import BudgetPolicy
 from lingnexus.models import APIFamily, ModelProfile, ToolCall
 
 from . import attachments
+from .checkpoints import RunCheckpoints
 
 if TYPE_CHECKING:
     from lingnexus.app import Application
@@ -39,7 +42,13 @@ def build_payload(
     limit = profile.context_window_tokens or 32768
     plans_by_message = {}
     entries = []
+    original_turns = {}
+    checkpoints = RunCheckpoints(app.database)
     for message in messages:
+        if message["role"] == "assistant":
+            items = checkpoints.completed_items(message["id"], profile.model_dump(mode="json"))
+            if items:
+                original_turns[message["id"]] = items
         plans = (
             attachments.for_message(app, agent_id, message["id"])
             if message["role"] == "user"
@@ -54,7 +63,9 @@ def build_payload(
                 "text": message["text"],
                 "stamp": stamp,
                 "extra_tokens": sum(plan.estimated_tokens for plan in plans)
-                + len(stamp.encode("utf-8")),
+                + len(stamp.encode("utf-8"))
+                + (len(json.dumps(original_turns[message["id"]], ensure_ascii=False).encode())
+                   if message["id"] in original_turns else 0),
             }
         )
     context = app.context.build(
@@ -91,7 +102,10 @@ def build_payload(
                 if isinstance(content, str)
                 else [*content, attachments.text_block(profile, stamp)]
             )
-        native.append({"role": message["role"], "content": content})
+        if message["id"] in original_turns:
+            native.extend(original_turns[message["id"]])
+        else:
+            native.append({"role": message["role"], "content": content})
     manifest = {
         "agent_id": agent_id,
         "sent_messages": len(selected),
@@ -108,6 +122,9 @@ def build_payload(
         payload = {"system": instructions, "messages": native, "max_tokens": output}
     elif profile.api_family == APIFamily.OPENAI_RESPONSES:
         payload = {"instructions": instructions, "input": native, "max_output_tokens": output}
+        payload["store"] = False
+        if profile.capabilities.encrypted_reasoning:
+            payload["include"] = ["reasoning.encrypted_content"]
     else:
         payload = {
             "messages": [{"role": "system", "content": instructions}, *native],
@@ -263,6 +280,16 @@ def append_tool_calls(
                 ],
             }
         )
+
+
+def append_native_response(payload: dict, family, response: dict) -> None:
+    response = deepcopy(response)
+    if family == APIFamily.ANTHROPIC_MESSAGES:
+        payload["messages"].append({"role": "assistant", "content": response["content"]})
+    elif family == APIFamily.OPENAI_RESPONSES:
+        payload["input"].extend(response["output"])
+    else:
+        payload["messages"].append(response["choices"][0]["message"])
 
 
 def append_tool_results(

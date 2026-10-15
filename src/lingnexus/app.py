@@ -96,7 +96,7 @@ class Application:
         # dispatcher the chat loop reads, so it passes the same hooks below.
         self.mcp = McpService(self.database)
         self.actions = Actions(self)
-        self.sandbox = SandboxService(self.database)
+        self.sandbox = SandboxService(self.database, permissions=self.permissions)
         self.browser: BrowserService | None = None
         self.dependencies: DependencyService | None = None
         self.automatic_backups: AutomaticBackups | None = None
@@ -118,6 +118,7 @@ class Application:
             ]
 
     def close(self) -> None:
+        self.sandbox.sessions.close()
         # Release process-memory keys; the optional user-encrypted cache survives shutdown.
         self.profiles.clear_credentials()
         # Stop any MCP server processes this process started.

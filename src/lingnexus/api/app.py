@@ -19,6 +19,7 @@ from lingnexus.api import (
     content,
     conversations,
     dependencies,
+    execution,
     maintenance,
     mcp,
     models,
@@ -125,6 +126,7 @@ def create_app(
             await server.state.chat_runtime.aclose()
             await server.state.dependencies.aclose()
             await server.state.tasks.aclose()
+            await server.state.sandbox.sessions.aclose()
             await server.state.browser.aclose()
             server.state.services.close()
 
@@ -194,6 +196,7 @@ def create_app(
     server.include_router(system.router)
     server.include_router(mcp.router)
     server.include_router(skillpacks.router)
+    server.include_router(execution.router)
     for router in (
         agents.router,
         maintenance.router,
@@ -211,6 +214,7 @@ def create_app(
         system.router,
         mcp.router,
         skillpacks.router,
+        execution.router,
     ):
         server.include_router(router, prefix="/api")
     bundled = getattr(sys, "_MEIPASS", None)

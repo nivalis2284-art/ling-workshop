@@ -10,6 +10,7 @@ from threading import RLock
 from lingnexus.actions.catalog import SCHEMAS
 from lingnexus.common.errors import Conflict, DomainError, NotFound, PermissionDenied
 from lingnexus.common.types import SourceRef, new_id, utc_now
+from lingnexus.tools.workspace import FileVersionConflict
 
 
 class Actions:
@@ -101,6 +102,8 @@ class Actions:
                 return self._finish(intent, "failed", None, "permission_denied")
             except FileExistsError:
                 return self._finish(intent, "failed", None, "target_exists")
+            except FileVersionConflict:
+                return self._finish(intent, "failed", None, "edit_version_conflict")
             except (DomainError, ValueError):
                 return self._finish(intent, "failed", None, "invalid_tool_request")
             except OSError:
@@ -120,7 +123,8 @@ class Actions:
             self.app.permissions.create_text(agent_id, Path(args["path"]), args["text"])
             return {"created": True, "path": args["path"]}
         if name == "write_file":
-            self.app.permissions.write_text(agent_id, Path(args["path"]), args["text"])
+            self.app.permissions.write_text(agent_id, Path(args["path"]), args["text"],
+                                            expected_sha256=args.get("expected_sha256"))
             return {"written": True, "path": args["path"]}
         raise ValueError("未启用工具")
 

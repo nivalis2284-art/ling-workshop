@@ -96,7 +96,7 @@ class DockerExecutor:
             "--mount", mount, "--entrypoint", argv[0], image_id, *argv[1:],
         ]
 
-    def execute(self, argv: Sequence[str]) -> ExecutionResult:
+    def execute(self, argv: Sequence[str], *, cancel_event=None, on_output=None) -> ExecutionResult:
         if isinstance(argv, (str, bytes)) or not isinstance(argv, (list, tuple)) or not argv:
             raise ValueError("Command must be a nonempty argument list")
         if any(not isinstance(arg, str) or "\0" in arg for arg in argv):
@@ -138,7 +138,8 @@ class DockerExecutor:
                 else:
                     started = run_process([self.docker_binary, "start", "--attach", name],
                                           timeout=remaining,
-                                          max_output_bytes=self.limits.max_output_bytes)
+                                          max_output_bytes=self.limits.max_output_bytes,
+                                          cancel_event=cancel_event, on_output=on_output)
                     timed_out = started.timed_out
             else:
                 error = "container_create_failed"
@@ -167,6 +168,8 @@ class DockerExecutor:
                 status = "failed"
             if timed_out:
                 status, error = "timeout", "execution_timed_out"
+            elif started.cancelled:
+                status, error = "cancelled", "execution_cancelled"
         finally:
             if not inspected:
                 self._control(["kill", name])

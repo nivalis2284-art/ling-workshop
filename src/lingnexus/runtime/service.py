@@ -14,6 +14,7 @@ import httpx
 from lingnexus.actions.dispatch import ToolDispatcher
 from lingnexus.common.errors import Conflict, DomainError
 from lingnexus.common.types import new_id, utc_now
+from lingnexus.common.verification import account, ensure_current, initial, public
 from lingnexus.configuration.settings import read_int
 from lingnexus.models import (
     APIFamily,
@@ -25,9 +26,11 @@ from lingnexus.models import (
 )
 
 from . import attachments
+from .checkpoints import RunCheckpoints
 from .failover import ChatFailover, FailoverBlocked
 from .hooks import HookEvent
 from .payload import (
+    append_native_response,
     append_tool_calls,
     append_tool_results,
     append_user_message,
@@ -64,6 +67,7 @@ ERROR_MESSAGES = {
     "runtime_error": "The chat run could not be completed.",
     "cancelled": "The owner cancelled this run.",
     "interrupted": "The server stopped before this run completed.",
+    "context_limit": "完整工具交换已超出模型窗口，请拆分任务；本阶段暂未提供上下文压缩。",
 }
 
 COMPLETE_REASONS = {
@@ -88,6 +92,7 @@ class _Turn:
     finish_reason: str | None = None
     error: ModelEvent | None = None
     eof: bool = False
+    continuation: dict | None = None
 
 
 @dataclass
@@ -200,6 +205,9 @@ class ChatRuntime:
         self._owns_client = client is None
         self._tasks: dict[str, asyncio.Task] = {}
         self._control: dict[str, _RunControl] = {}
+        self._evidence: dict[str, dict] = {}
+        self.checkpoints = RunCheckpoints(application.database)
+        self._states: dict[str, dict] = {}
         self._closed = False
         with self.app.database.transaction() as db:
             pending = db.execute("SELECT id FROM chat_runs WHERE status='running'").fetchall()
@@ -208,8 +216,29 @@ class ChatRuntime:
 
     def get_run(self, run_id: str) -> dict:
         """Return durable status and source references, without model/credential internals."""
-        with self.app.database.transaction():
-            return self.store.get(run_id) | self.failover.metadata(run_id)
+        with self.app.database.transaction() as db:
+            checkpoint = self.checkpoints.load(run_id) or {}
+            run = self.store.get(run_id)
+            error_row = db.execute(
+                "SELECT data FROM chat_events WHERE run_id=? AND event='error' ORDER BY sequence DESC LIMIT 1",
+                (run_id,),
+            ).fetchone()
+            terminal_code = json.loads(error_row[0]).get("code") if error_row else None
+            recoverable = (run["status"] in {"interrupted", "failed"}
+                           and bool(checkpoint) and not self.checkpoints.uncertain(run_id)
+                           and not checkpoint.get("evidence", {}).get("unknown_failures")
+                           and checkpoint.get("phase") != "completed"
+                           and terminal_code != "context_limit")
+            reason = (
+                "上下文超出模型窗口，无法从相同输入续跑；请拆分任务或新建请求。"
+                if terminal_code == "context_limit"
+                else None if recoverable else "运行已结束或存在待核对的副作用。"
+            )
+            return self.store.get(run_id) | self.failover.metadata(run_id) | {
+                "verification": public(self._evidence.get(run_id, checkpoint.get("evidence", {}))),
+                "recoverable": recoverable,
+                "recovery_reason": reason,
+            }
 
     def submit(self, value: ChatRequest) -> dict:
         """Validate before network activity; rejected new requests have no persisted effects."""
@@ -312,11 +341,12 @@ class ChatRuntime:
             self.failover.save_selection(run_id, selected)
             effort = self.failover.effort(run_id, profile_id, profile, value.effort)
         self._control[run_id] = _RunControl()
+        self._evidence[run_id] = initial(coding=True)
         task = loop.create_task(
             self._execute(run_id, profile, selected.credentials, payload, effort, value.effort)
         )
         self._tasks[run_id] = task
-        task.add_done_callback(lambda _: self._finish_task(run_id))
+        task.add_done_callback(lambda done: self._finish_task(run_id, done))
         return self.get_run(run_id)
 
     async def events(self, run_id: str, *, after: int = 0) -> AsyncGenerator[dict, None]:
@@ -359,6 +389,55 @@ class ChatRuntime:
         control.resume_event.set()
         return {"run_id": run_id, "paused": False}
 
+    def recover(self, run_id: str, *, additional_steps: int = 0) -> dict:
+        if self._closed or type(additional_steps) is not int or not 0 <= additional_steps <= 1000:
+            raise Conflict("无法恢复或步数扩额无效。")
+        run = self.get_run(run_id)
+        if run["status"] == "running":
+            return run
+        if not run["recoverable"]:
+            if run.get("recovery_reason") and "上下文超出模型窗口" in run["recovery_reason"]:
+                raise Conflict(run["recovery_reason"])
+            raise Conflict("此运行缺少安全恢复点，或副作用仍待人工核对。")
+        checkpoint = self.checkpoints.load(run_id)
+        profile, credentials = self.app.profiles.resolve(run["profile_id"])
+        if profile.model_dump(mode="json") != checkpoint["profile"]:
+            raise Conflict("模型配置已改变，请核对后新建请求。")
+        self.failover.validate_head(run)
+        scope = ChatToolScope(self.app, run["agent_id"], run_id)
+        from lingnexus.common.verification import workspace_version
+
+        if checkpoint.get("workspace_version") != workspace_version(scope.workdir):
+            raise Conflict("工作目录内容已变化，不能自动续跑旧状态。")
+        if checkpoint.get("grants") != self.app.permissions.current(run["agent_id"]):
+            raise Conflict("目录授权已改变，请核对后新建请求。")
+        with self.app.database.transaction() as db:
+            if db.execute("SELECT 1 FROM chat_runs WHERE agent_id=? AND status='running'",
+                          (run["agent_id"],)).fetchone():
+                raise Conflict("这个体已有其他正在运行的对话。")
+            db.execute("UPDATE chat_runs SET status='running',finished_at=NULL WHERE id=?", (run_id,))
+        checkpoint["step_limit"] = checkpoint.get("step_limit", self._max_steps()) + additional_steps
+        self._control[run_id] = _RunControl()
+        self._evidence[run_id] = checkpoint.get("evidence", initial(coding=True))
+        self.store.append(run_id, "resumed", {"run_id": run_id})
+        task = asyncio.get_running_loop().create_task(self._execute(
+            run_id, profile, credentials, checkpoint["payload"], checkpoint.get("effort"),
+            checkpoint.get("requested_effort"), recovery=checkpoint))
+        self._tasks[run_id] = task
+        task.add_done_callback(lambda done: self._finish_task(run_id, done))
+        return self.get_run(run_id)
+
+    def _save_checkpoint(self, run_id: str, state: dict) -> None:
+        from lingnexus.common.verification import workspace_version
+
+        run = self.store.get(run_id)
+        saved = {key: value for key, value in state.items() if key not in {"credentials", "profile"}}
+        saved["profile"] = state["profile"].model_dump(mode="json")
+        saved["evidence"] = self._evidence.get(run_id, initial(coding=True))
+        saved["workspace_version"] = workspace_version(ChatToolScope(self.app, run["agent_id"], run_id).workdir)
+        saved["grants"] = self.app.permissions.current(run["agent_id"])
+        self.checkpoints.save(run_id, saved, secret=state["credentials"].api_key)
+
     def guide(self, run_id: str, text: str) -> dict:
         """Queue a mid-run instruction, injected as a user turn at the next boundary."""
         self.get_run(run_id)
@@ -379,9 +458,13 @@ class ChatRuntime:
         if self._owns_client and self._client is not None:
             await self._client.aclose()
 
-    def _finish_task(self, run_id: str) -> None:
+    def _finish_task(self, run_id: str, finished=None) -> None:
+        if finished is not None and self._tasks.get(run_id) is not finished:
+            return
         self._tasks.pop(run_id, None)
         self._control.pop(run_id, None)
+        self._states.pop(run_id, None)
+        self._evidence.pop(run_id, None)
 
     async def _execute(
         self,
@@ -391,6 +474,7 @@ class ChatRuntime:
         payload: dict,
         effort: str | None,
         requested_effort: str | None,
+        recovery: dict | None = None,
     ) -> None:
         try:
             if self._client is None:
@@ -402,14 +486,23 @@ class ChatRuntime:
                 "credentials": credentials,
                 "payload": payload,
                 "effort": effort,
+                "requested_effort": requested_effort,
+                "step": 1,
+                "phase": "ready",
+                "initial_length": len(payload.get("input", payload.get("messages", []))),
             }
+            if recovery:
+                state.update({key: recovery[key] for key in (
+                    "payload", "effort", "step", "phase", "initial_length", "pending", "step_limit"
+                ) if key in recovery})
+            self._states[run_id] = state
             # Discovery can block on first use (spawning servers, handshakes);
             # keep it off the event loop like the remote calls themselves.
             declare_tools(
                 state["payload"], profile, await asyncio.to_thread(self.dispatcher.schema)
             )
-            max_steps = self._max_steps()
-            step = 1
+            max_steps = state.get("step_limit", self._max_steps())
+            step = state["step"]
             while True:
                 if self.store.get(run_id)["status"] != "running":
                     return
@@ -429,10 +522,33 @@ class ChatRuntime:
                     )
                     self._fail(run_id, "step_budget_exhausted")
                     return
+                if state.get("phase") == "pending_tools":
+                    calls = [ToolCall(**item) for item in state["pending"]]
+                    results = await self._run_tools(run_id, step, calls, scope, run["conversation_id"])
+                    append_tool_results(state["payload"], state["profile"],
+                                        [(call, text) for call, text, _, _ in results])
+                    step += 1
+                    state.update(step=step, phase="ready", pending=[])
+                    self._save_checkpoint(run_id, state)
+                    continue
                 self.store.append(run_id, "step_started", {"run_id": run_id, "step": step})
+                state.update(step=step, phase="model_inflight")
+                self._save_checkpoint(run_id, state)
+                if step > 1 and self.app.context.counter.count(json.dumps(state["payload"], ensure_ascii=False)) + (
+                    state["profile"].max_output_tokens or 4096
+                ) > (state["profile"].context_window_tokens or 32768):
+                    self._fail(run_id, "context_limit")
+                    return
                 turn = await self._step_call(run_id, step, state, requested_effort)
                 if turn is None:
                     return
+                if turn.continuation is not None:
+                    encoded = json.dumps(turn.continuation, ensure_ascii=False)
+                    if state["credentials"].api_key in encoded:
+                        raise CredentialEcho()
+                    append_native_response(state["payload"], state["profile"].api_family, turn.continuation)
+                elif turn.calls:
+                    append_tool_calls(state["payload"], state["profile"], turn.calls, turn.text)
                 if not turn.calls:
                     if turn.finish_reason in COMPLETE_REASONS[state["profile"].api_family]:
                         await self._before_turn_end(run_id, turn.text)
@@ -440,16 +556,21 @@ class ChatRuntime:
                     else:
                         self._fail(run_id, "incomplete_response")
                     return
+                state.update(phase="pending_tools", pending=[{
+                    "id": call.id, "name": call.name, "arguments": call.arguments,
+                    "arguments_json": call.arguments_json} for call in turn.calls])
+                self._save_checkpoint(run_id, state)
                 results = await self._run_tools(
                     run_id, step, turn.calls, scope, run["conversation_id"]
                 )
-                append_tool_calls(state["payload"], state["profile"], turn.calls, turn.text)
                 append_tool_results(
                     state["payload"],
                     state["profile"],
                     [(call, text) for call, text, _, _ in results],
                 )
                 step += 1
+                state.update(step=step, phase="ready", pending=[])
+                self._save_checkpoint(run_id, state)
         except CredentialEcho:
             self._fail(run_id, "credential_in_response")
         except FailoverBlocked as exc:
@@ -485,7 +606,7 @@ class ChatRuntime:
         """
         if step > 1:
             profile_id = self.store.get(run_id)["profile_id"]
-            self.failover.begin_attempt(run_id, step, 1, profile_id)
+            attempt = self.failover.begin_attempt(run_id, step, 1, profile_id)
             turn = await self._stream_turn(
                 run_id,
                 step,
@@ -493,7 +614,7 @@ class ChatRuntime:
                 state["payload"],
                 state["credentials"],
                 state["effort"],
-                attempt=1,
+                attempt=attempt,
             )
             if turn is None:
                 return None
@@ -515,7 +636,7 @@ class ChatRuntime:
             if self.store.get(run_id)["status"] != "running":
                 return None
             profile_id = self.store.get(run_id)["profile_id"]
-            self.failover.begin_attempt(run_id, step, attempt, profile_id)
+            attempt = self.failover.begin_attempt(run_id, step, attempt, profile_id)
             turn = await self._stream_turn(
                 run_id,
                 step,
@@ -545,10 +666,14 @@ class ChatRuntime:
                 return None
             profile_id, profile, credentials, payload = replacement
             state.update(profile=profile, credentials=credentials, payload=payload)
+            state["initial_length"] = len(payload.get("input", payload.get("messages", [])))
             state["effort"] = self.failover.effort(run_id, profile_id, profile, requested_effort)
             declare_tools(
                 state["payload"], profile, await asyncio.to_thread(self.dispatcher.schema)
             )
+            # Failover changes the active profile and rebuilt payload. Persist
+            # the coherent model_inflight state before starting the backup request.
+            self._save_checkpoint(run_id, state)
         return None
 
     async def _stream_turn(
@@ -598,7 +723,8 @@ class ChatRuntime:
                             if channel == "text":
                                 text.append(remaining)
                     return _Turn(
-                        text="".join(text), calls=calls, finish_reason=event.finish_reason
+                        text="".join(text), calls=calls, finish_reason=event.finish_reason,
+                        continuation=event.continuation.response if event.continuation else None,
                     )
         return _Turn(text="".join(text), calls=calls, eof=True)
 
@@ -658,6 +784,12 @@ class ChatRuntime:
         identity is environment plumbing for the scope (a deterministic effect
         id), never a policy decision.
         """
+        previous = self.checkpoints.effect(run_id, step, call.id)
+        if previous:
+            if previous["status"] != "completed":
+                raise Conflict("工具副作用未知，不能自动重放。")
+            text, status, auto_full = previous["result"]
+            return call, text, status, auto_full
         bound = scope.bound(step, call.id)
         context = {
             "agent_id": bound.agent_id,
@@ -679,8 +811,17 @@ class ChatRuntime:
             )
             return call, text, "blocked", False
         auto_full = bool(decision.replacement and decision.replacement.get("full_access"))
+        self.checkpoints.begin(run_id, step, call.id)
         result = await self.dispatcher.execute(call.name, call.arguments, bound)
+        account(self._evidence.setdefault(run_id, initial(coding=True)),
+                {"name": call.name, "arguments": call.arguments}, result.data)
         text = _tool_text(result)
+        credentials = self._states[run_id]["credentials"]
+        if credentials.api_key in text:
+            self.checkpoints.finish(run_id, step, call.id, ["sensitive_result_discarded", "unknown", auto_full])
+            raise CredentialEcho()
+        self.checkpoints.finish(run_id, step, call.id, [text, result.status, auto_full])
+        self._save_checkpoint(run_id, self._states[run_id])
         await self.app.hooks.run(
             HookEvent.AFTER_TOOL,
             {
@@ -723,7 +864,14 @@ class ChatRuntime:
             "call_id": call.id,
             "status": status,
             "preview": _preview(text),
+            "verification": public(self._evidence.get(run_id, {})),
         }
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, dict) and isinstance(decoded.get("execution"), dict):
+                data["execution"] = decoded["execution"]
+        except (ValueError, TypeError):
+            pass
         if auto_full:
             # Released by the conversation's full-access mode, not by the owner;
             # the record stays honest about which calls skipped the gate.
@@ -753,6 +901,9 @@ class ChatRuntime:
         )
 
     def _complete(self, run_id: str, text: str) -> None:
+        run = self.store.get(run_id)
+        evidence = self._evidence.setdefault(run_id, initial(coding=True))
+        ensure_current(evidence, ChatToolScope(self.app, run["agent_id"], run_id).workdir)
         with self.app.database.transaction() as db:
             run = self.get_run(run_id)
             if run["status"] != "running":
@@ -783,9 +934,13 @@ class ChatRuntime:
                     "run_id": run_id,
                     "status": "completed",
                     "assistant_message_id": message["id"] if message else None,
+                    "verification": public(evidence),
                 },
             )
             self.failover.finish_attempt(run_id, "completed")
+            if state := self._states.get(run_id):
+                state.update(phase="completed", assistant_message_id=message["id"] if message else None)
+                self._save_checkpoint(run_id, state)
 
     def _fail(self, run_id: str, code: str, *, status: str = "failed") -> None:
         with self.app.database.transaction() as db:

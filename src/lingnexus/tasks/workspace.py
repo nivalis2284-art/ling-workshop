@@ -93,6 +93,17 @@ class Snapshots:
         self.store.get(tid)
         return directory(self.root / tid / "workspace")
 
+    def _require_commands_resolved(self, tid):
+        sandbox = getattr(self.app, "sandbox", None)
+        if sandbox is None or not hasattr(sandbox, "task_sessions"):
+            return
+        task = self.store.get(tid)
+        records = sandbox.task_sessions(task["agent_id"], tid)
+        if any(item["status"] in {"running", "cancelling"} for item in records):
+            raise Conflict("Task commands are still active; wait for confirmed cleanup before reviewing or applying.")
+        if any(item["status"] == "unknown" for item in records):
+            raise Conflict("A task command has unknown cleanup status; reconcile it before reviewing or applying.")
+
     def create(self, tid, agent, source):
         source = authorize(self.app, agent, source)
         if self.root.is_relative_to(source) or source.is_relative_to(self.root):
@@ -133,6 +144,7 @@ class Snapshots:
 
     def changes(self, tid):
         task = self.store.get(tid)
+        self._require_commands_resolved(tid)
         if not task["workspace"]:
             return {"review_id": None, "files": []}
         if task["status"] in {"running", "queued"}:
@@ -163,6 +175,7 @@ class Snapshots:
                 "path": p,
                 "before": baseline.get(p),
                 "after": hashes.get(p),
+                "baseline_artifact": f"__baseline__/{p}" if p in baseline else None,
                 "operation": "delete"
                 if p not in hashes
                 else "modify"
@@ -175,11 +188,25 @@ class Snapshots:
         return {"review_id": rid, "files": files}
 
     def artifact(self, tid, path):
+        if path.startswith("__baseline__/"):
+            relative = local_path(path[len("__baseline__/") :])
+            if relative.is_absolute() or excluded(relative):
+                raise PermissionDenied("File is excluded from the task snapshot.")
+            baseline = self.store.load(tid)["baseline"]
+            name = relative.as_posix()
+            if name not in baseline:
+                raise PermissionDenied("File is not part of the original task snapshot.")
+            root = directory(self.root / tid / "baseline")
+            data = tools(root).read_bytes(root / relative)
+            if digest(data) != baseline[name]:
+                raise Conflict("Original recovery material changed.")
+            return data
         target = self.file_path(tid, path)
         return tools(self.path(tid)).read_bytes(target)
 
     def apply(self, tid, rid):
         task = self.store.get(tid)
+        self._require_commands_resolved(tid)
         if task["status"] in {"running", "queued"} or not task["workspace"]:
             raise Conflict("Task changes are not ready for application.")
         review = self.store.get_review(tid, rid)
@@ -210,35 +237,63 @@ class Snapshots:
             except UnicodeError:
                 raise Conflict("Binary artifacts require manual application.") from None
         # Fence commits BEFORE filesystem writes. Unknown/partial applications never replay.
-        self.store.review_status(rid, "applying")
-        results = []
-        try:
-            for relative, text in texts.items():
+        files = [{"path": path, "status": "not_applied"} for path in texts]
+        effect_ids = []
+        outcome = {"status": "applying", "review_id": rid, "files": files,
+                   "effect_ids": effect_ids}
+        self.store.review_status(rid, "applying", outcome)
+        for index, relative in enumerate(texts):
+            item = files[index]
+            try:
                 with self.app.database.transaction():
                     authorize(self.app, task["agent_id"], source)
                     target = source / relative
                     existing = tools(source).read_bytes(target) if target.exists() else None
-                    if (digest(existing) if existing is not None else None) != baseline.get(
-                        relative
-                    ):
+                    if (digest(existing) if existing is not None else None) != baseline.get(relative):
                         raise Conflict("An application target changed.")
-                    make_parents(source, relative)
-                    name = "write_file" if relative in baseline else "create_file"
-                    result = self.app.actions.execute(
-                        task["agent_id"],
-                        "task-apply:" + rid + ":" + relative,
-                        name,
-                        {"path": str(target), "text": text},
-                    )
-                    results.append(result["id"])
-                    if result["status"] != "completed":
-                        raise Conflict("Application effect requires owner review.")
-            outcome = {"status": "applied", "review_id": rid, "effect_ids": results}
-            self.store.review_status(rid, "applied", outcome)
-            self.store.event(tid, "applied", outcome)
-            return outcome
-        except Exception:  # noqa: BLE001 -- fence every partial filesystem application
-            self.store.review_status(rid, "unknown", {"effect_ids": results})
-            raise Conflict(
-                "Application stopped; reconcile the recorded effects before continuing."
-            ) from None
+            except Exception:  # noqa: BLE001 -- preflight failures cannot have written this file
+                item["status"] = "conflict"
+                item["reason"] = "source_changed_or_permission_revoked"
+                outcome["status"] = "conflict"
+                self.store.review_status(rid, "conflict", outcome)
+                self.store.event(tid, "apply_conflict", outcome)
+                return outcome
+            # Mark uncertain before crossing the external effect boundary. A crash
+            # after this point must never cause automatic replay.
+            item["status"] = "unknown"
+            self.store.review_status(rid, "applying", outcome)
+            try:
+                make_parents(source, relative)
+                name = "write_file" if relative in baseline else "create_file"
+                arguments = {"path": str(target), "text": texts[relative]}
+                if relative in baseline:
+                    arguments["expected_sha256"] = baseline[relative]
+                result = self.app.actions.execute(
+                    task["agent_id"], "task-apply:" + rid + ":" + relative,
+                    name, arguments,
+                )
+                if result.get("id"):
+                    item["effect_id"] = result["id"]
+                    effect_ids.append(result["id"])
+                if result.get("status") != "completed":
+                    failed_cleanly = result.get("status") == "failed"
+                    item["status"] = "conflict" if failed_cleanly else "unknown"
+                    item["reason"] = result.get("error_code") or "effect_requires_reconciliation"
+                    outcome["status"] = "conflict" if failed_cleanly else "unknown"
+                    review_status = "conflict" if failed_cleanly else "unknown"
+                    self.store.review_status(rid, review_status, outcome)
+                    self.store.event(tid, "apply_stopped", outcome)
+                    return outcome
+                item["status"] = "applied"
+                self.store.review_status(rid, "applying", outcome)
+            except Exception:  # noqa: BLE001 -- effect may have committed before an error surfaced
+                item["status"] = "unknown"
+                item["reason"] = "effect_requires_reconciliation"
+                outcome["status"] = "unknown"
+                self.store.review_status(rid, "unknown", outcome)
+                self.store.event(tid, "apply_stopped", outcome)
+                return outcome
+        outcome["status"] = "applied"
+        self.store.review_status(rid, "applied", outcome)
+        self.store.event(tid, "applied", outcome)
+        return outcome

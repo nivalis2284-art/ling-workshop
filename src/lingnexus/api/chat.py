@@ -36,6 +36,10 @@ class ConfirmationInput(Input):
     approved: bool
 
 
+class RecoveryInput(Input):
+    additional_steps: int = Field(default=0, ge=0, le=1000)
+
+
 def _runtime(request: Request) -> ChatRuntime:
     """Return the lifespan-owned runtime; never create an untracked worker here."""
     runtime = getattr(request.app.state, "chat_runtime", None)
@@ -128,6 +132,11 @@ async def resume(run_id: str, request: Request):
 async def guide(run_id: str, value: GuideInput, request: Request):
     """Queue a mid-run instruction, injected at the next step boundary."""
     return _runtime(request).guide(run_id, value.text)
+
+
+@router.post("/runs/{run_id}/recover")
+async def recover(run_id: str, value: RecoveryInput, request: Request):
+    return _runtime(request).recover(run_id, additional_steps=value.additional_steps)
 
 
 @router.get("/runs/{run_id}/confirmations")

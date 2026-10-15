@@ -256,6 +256,13 @@ replay/retry, pricing lookup, or live service validation in this spike.
 
 ## Official references read before implementation
 
+Foreground chat now also consumes native continuation via `runtime/payload.py` and
+`runtime/checkpoints.py`. It saves Chat assistant messages, Responses output items
+and Anthropic content blocks independently of public display text. Recovery rejects
+unknown effects, changed profiles/grants/workspaces and context-limit failures;
+completed tool effects are reconciled rather than executed again. No context
+compression or long-term memory is supplied by these checkpoints.
+
 - [Anthropic streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
 - [Anthropic effort](https://platform.claude.com/docs/en/build-with-claude/effort)
 - [OpenAI Chat streaming events](https://developers.openai.com/api/reference/resources/chat/subresources/completions/streaming-events)

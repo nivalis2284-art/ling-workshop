@@ -22,6 +22,10 @@ class FileLimitExceeded(ValueError):
     """The requested read or write exceeds the configured byte limit."""
 
 
+class FileVersionConflict(ValueError):
+    """The caller's read version is no longer the replacement target."""
+
+
 @dataclass(frozen=True)
 class FilePermissions:
     readable_roots: tuple[Path, ...] = ()
@@ -69,12 +73,15 @@ class WorkspaceTools:
     def read_text(self, path: str | os.PathLike[str]) -> str:
         return self.read_bytes(path).decode("utf-8")
 
-    def _write(self, path: str | os.PathLike[str], data: bytes, operation: str) -> None:
+    def _write(self, path: str | os.PathLike[str], data: bytes, operation: str,
+               *, expected_sha256: str | None = None) -> None:
         candidate = self._path(path, write=True)
         if not isinstance(data, bytes):
             raise TypeError("Expected bytes")
         if len(data) > self.max_write_bytes:
             raise FileLimitExceeded("Data exceeds the write limit")
+        if expected_sha256 is not None and operation == "create":
+            raise ValueError("A create operation cannot replace a read version")
         with open_parent(candidate) as parent_fd:
             if operation == "create":
                 created_identity = None
@@ -94,6 +101,8 @@ class WorkspaceTools:
             with _open_leaf(candidate, "write", parent_fd):
                 pass
             original_stat, original_digest = _read_version(candidate, parent_fd)
+            if expected_sha256 is not None and original_digest.hex() != expected_sha256:
+                raise FileVersionConflict("File changed after it was read; replacement was not applied")
             mode = stat.S_IMODE(original_stat.st_mode)
             descriptor, temporary, temporary_name = _create_temporary(candidate, parent_fd)
             try:
@@ -116,14 +125,16 @@ class WorkspaceTools:
     def create_bytes(self, path: str | os.PathLike[str], data: bytes) -> None:
         self._write(path, data, "create")
 
-    def write_bytes(self, path: str | os.PathLike[str], data: bytes) -> None:
-        self._write(path, data, "write")
+    def write_bytes(self, path: str | os.PathLike[str], data: bytes,
+                    *, expected_sha256: str | None = None) -> None:
+        self._write(path, data, "write", expected_sha256=expected_sha256)
 
     def create_text(self, path: str | os.PathLike[str], text: str) -> None:
         self.create_bytes(path, text.encode("utf-8"))
 
-    def write_text(self, path: str | os.PathLike[str], text: str) -> None:
-        self.write_bytes(path, text.encode("utf-8"))
+    def write_text(self, path: str | os.PathLike[str], text: str,
+                   *, expected_sha256: str | None = None) -> None:
+        self.write_bytes(path, text.encode("utf-8"), expected_sha256=expected_sha256)
 
 
 def _open_leaf(path: Path, operation: str, parent_fd: int | None):

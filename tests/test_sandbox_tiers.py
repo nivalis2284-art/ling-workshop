@@ -436,7 +436,7 @@ def test_local_limits_validate_their_bounds():
 
 # --- 11. interface shape -----------------------------------------------------
 
-SHAPE = {"level", "available_levels", "engine", "protections", "limitations", "image"}
+SHAPE = {"level", "available_levels", "engine", "protections", "limitations", "image", "preset", "limits"}
 
 
 def test_sandbox_status_shape(client, headers):
@@ -452,6 +452,9 @@ def test_sandbox_status_shape(client, headers):
     assert isinstance(body["protections"], list) and body["protections"]
     assert isinstance(body["limitations"], list) and body["limitations"]
     assert isinstance(body["image"], str) and body["image"]
+    assert body["preset"] == "conservative"
+    assert body["limits"]["timeout_seconds"] == 30
+    assert body["limits"]["session_timeout_seconds"] == 900
 
 
 def test_sandbox_put_local_round_trip(client, headers):
@@ -476,6 +479,19 @@ def test_sandbox_put_container_without_engine_is_denied(client, headers, monkeyp
 def test_sandbox_put_invalid_level_is_rejected(client, headers):
     assert client.put("/sandbox", headers=headers, json={"level": "vm"}).status_code == 422
     assert client.get("/sandbox").status_code == 401
+
+
+def test_resource_preset_round_trip_and_invalid_value(client, headers):
+    response = client.put("/sandbox", headers=headers, json={"level": "local", "preset": "coding"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["preset"] == "coding"
+    assert body["limits"]["timeout_seconds"] == 120
+    assert body["limits"]["memory_bytes"] == 1_073_741_824
+    assert body["limits"]["max_output_bytes"] == 262_144
+    assert client.get("/sandbox", headers=headers).json()["preset"] == "coding"
+    assert client.put("/sandbox", headers=headers, json={"level": "local", "preset": "unbounded"}).status_code == 422
+    assert client.get("/sandbox", headers=headers).json()["preset"] == "coding"
 
 
 # --- 12. honest capability statement -----------------------------------------

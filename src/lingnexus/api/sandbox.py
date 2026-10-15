@@ -12,6 +12,7 @@ router = APIRouter(prefix="/sandbox", dependencies=[Depends(require_owner)])
 
 class SandboxInput(Input):
     level: Literal["local", "container"]
+    preset: Literal["conservative", "coding"] | None = None
 
 
 def service_for(request: Request):
@@ -25,4 +26,8 @@ def status(request: Request):
 
 @router.put("")
 def configure(value: SandboxInput, request: Request):
-    return service_for(request).set_level(value.level)
+    service = service_for(request)
+    service.set_level(value.level)
+    if value.preset is not None:
+        service.set_preset(value.preset)
+    return service.info()

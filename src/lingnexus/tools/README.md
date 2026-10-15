@@ -85,8 +85,21 @@ All symlinks, junctions, reparse points, hardlinked files and non-regular files 
 denied, including links that stay inside a grant. On Windows, ancestor and file
 handles deny delete sharing for the duration of each operation, preventing path
 replacement while using that handle. POSIX uses directory descriptors and
-O_NOFOLLOW. Writes are not transactional: disk or I/O failure can leave partial
-contents; the caller must record and reconcile effects before retrying.
+O_NOFOLLOW. Existing-file writes use a same-directory temporary file, flush/fsync,
+version checks and atomic replacement. An optional `expected_sha256` binds the
+replacement to the version previously read. `edit_file` supplies this precondition
+automatically; a conflicting change is preserved. Exclusive create never overwrites.
+These are file-level guarantees, not a multi-file transaction or a cross-process
+compare-and-swap: an external writer can still race the final check and rename.
+The caller records and reconciles uncertain effects before retrying.
+
+The parent exposes noninteractive command sessions through `run_command`,
+`command_status` and `command_cancel`. Each session belongs to one agent/run,
+persists bounded output with a cursor, and records exit, timeout and process cleanup.
+Startup marks previously running sessions unknown without replaying a saved PID.
+The conservative preset keeps a 30-second normal deadline; coding uses 120 seconds.
+Explicit `long_running=true` permits up to 900 seconds, with two concurrent sessions
+per run. Cancellation is confirmed only after the executor confirms process cleanup.
 
 ## Docker contract
 

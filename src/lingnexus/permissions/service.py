@@ -72,9 +72,11 @@ class Permissions:
             except FileAccessDenied:
                 raise PermissionDenied("创建位置不在授权范围或路径不安全") from None
 
-    def write_text(self, agent_id: str, path: Path, text: str) -> None:
+    def write_text(self, agent_id: str, path: Path, text: str,
+                   *, expected_sha256: str | None = None) -> None:
         with self.database.transaction():
             try:
-                self._tool(agent_id, path, write=True).write_text(path, text)
+                self._tool(agent_id, path, write=True).write_text(
+                    path, text, expected_sha256=expected_sha256)
             except FileAccessDenied:
                 raise PermissionDenied("修改位置不在授权范围或路径不安全") from None

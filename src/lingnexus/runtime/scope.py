@@ -20,12 +20,11 @@ one is present; without it a browser call is refused rather than faked.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-from dataclasses import asdict
 from pathlib import Path
 
 from lingnexus.common.errors import PermissionDenied
+from lingnexus.common.verification import successful, workspace_version
 
 _BROWSER_ACTIONS = {
     "browser_goto": "goto",
@@ -84,11 +83,13 @@ class ChatToolScope:
         text = self.app.permissions.read_text(self.agent_id, Path(raw))
         return {"status": "completed", "result": {"text": text}}, None
 
-    def write(self, raw: str, text: str, *, create: bool) -> tuple[dict, str | None]:
+    def write(self, raw: str, text: str, *, create: bool,
+              expected_sha256: str | None = None) -> tuple[dict, str | None]:
         if create:
             self.app.permissions.create_text(self.agent_id, Path(raw), text)
         else:
-            self.app.permissions.write_text(self.agent_id, Path(raw), text)
+            self.app.permissions.write_text(
+                self.agent_id, Path(raw), text, expected_sha256=expected_sha256)
         return (
             {"status": "completed", "result": {"path": raw, "written": True}},
             self._effect_id,
@@ -97,23 +98,18 @@ class ChatToolScope:
     def read_path(self, path: Path) -> str:
         return self.app.permissions.read_text(self.agent_id, path)
 
-    async def run(self, argv: list[str], purpose: str) -> tuple[dict, str | None]:
+    async def run(self, argv: list[str], purpose: str, *, long_running=False) -> tuple[dict, str | None]:
         """Execute for real, through the sandbox tier — never a bare host shell."""
         workdir = self.workdir
         if workdir is None:
             raise PermissionDenied("当前对话没有已授权的命令执行环境。")
         # The tier is chosen by the sandbox service; no engine is hard-coded here.
-        runner = self.app.sandbox.executor(workdir, writable=True)
-        result = asdict(await asyncio.to_thread(runner.execute, list(argv)))
-        result["verification_passed"] = bool(
-            purpose == "verify"
-            and result.get("status") == "success"
-            and result.get("exit_code") == 0
-            and result.get("cleanup_confirmed")
-            and not result.get("timed_out")
-            and not result.get("output_truncated")
-            and not result.get("error")
-        )
+        result = await self.app.sandbox.command(
+            self.agent_id, self.run_id, "chat", list(argv), purpose, workdir, long_running=long_running)
+        result["workspace_version"] = workspace_version(workdir)
+        result["version_unavailable"] = result["workspace_version"] is None
+        result["execution_purpose"] = purpose
+        result["verification_passed"] = bool(purpose == "verify" and successful("run_command", result))
         return result, self._effect_id
 
     async def browser(self, name: str, args: dict) -> tuple[dict, str | None]:
@@ -149,6 +145,9 @@ class ChatToolScope:
         return result, record.get("id")
 
     def meta(self, name: str, args: dict) -> tuple[dict, str | None]:
+        if name in {"command_status", "command_cancel"}:
+            return self.app.sandbox.observe(args["session_id"], self.agent_id, self.run_id, "chat",
+                                            args.get("after", 0), cancel=name == "command_cancel"), self._effect_id
         if name == "read_skill":
             # Knowledge only: reading a skill never changes what the tools may do.
             library = getattr(self.app, "skillpacks", None)

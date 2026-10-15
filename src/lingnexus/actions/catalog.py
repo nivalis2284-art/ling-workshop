@@ -22,12 +22,14 @@ class FilePath(BaseModel):
 
 class FileWrite(FilePath):
     text: str
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class FileEdit(FilePath):
     old_text: str = Field(min_length=1)
     new_text: str
     replace_all: bool = False
+    expected_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 class Search(BaseModel):
@@ -42,6 +44,13 @@ class Command(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     argv: list[str] = Field(min_length=1, max_length=100)
     purpose: Literal["work", "verify"]
+    long_running: bool = False
+
+
+class CommandSession(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    session_id: str = Field(min_length=1, max_length=128)
+    after: int = Field(default=0, ge=0)
 
 class SkillRead(BaseModel):
     """Reading a skill is knowledge only; it can never widen what the model may do."""
@@ -90,10 +99,15 @@ def _specs() -> list[ToolSpec]:
         ToolSpec(
             "run_command",
             "Execute a literal argument list (no shell) through the execution sandbox. "
-            "Use verify for checks.",
+            "Use verify for checks. Set long_running for slow builds/tests (owner's session limit applies). "
+            "If status is running, use command_status with its session_id until it exits.",
             Command,
             "command",
         ),
+        ToolSpec("command_status", "Read incremental output of this run's command. Poll until it exits; "
+                 "a running session is not a successful check.", CommandSession, "meta"),
+        ToolSpec("command_cancel", "Stop a command belonging to this run and confirm cleanup.",
+                 CommandSession, "meta"),
         ToolSpec(
             "read_file",
             "Read a UTF-8 file inside an authorized directory.",

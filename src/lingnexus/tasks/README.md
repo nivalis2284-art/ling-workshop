@@ -85,10 +85,20 @@ automatically:
   network sandbox.
 - **container** (optional): `ContainerSandbox` wraps the existing DockerExecutor.
 
-`ToolExecutor` asks `services.sandbox.executor(...)` for a runner and never names
-an engine. `GET /sandbox` / `PUT /sandbox` return the frozen shape
-`{level, available_levels, engine{available,name}, protections, limitations, image}`;
+`ToolExecutor` asks `services.sandbox.command(...)` for a run-owned session and never
+names an engine. `GET /sandbox` / `PUT /sandbox` return
+`{level, available_levels, engine{available,name}, protections, limitations, image, preset, limits}`;
 the lists are honest about what each tier can and cannot defend.
+
+Long commands return a session ID with running state. Models and owner UI can poll
+incremental output or cancel it. A successful invocation that merely starts a command
+does not verify its outcome. Verification is shared with foreground chat in
+`common/verification.py` and is tied to the checked workspace version; later edits
+invalidate it. File readback alone cannot verify programming work.
+
+Delivery reviews retain baseline artifacts and per-file applied, not-applied,
+conflict or unknown outcomes. Applying multiple files is not atomic. A partial or
+uncertain application retains recovery evidence and cannot silently replay.
 
 ## Browser tools and owner approval
 

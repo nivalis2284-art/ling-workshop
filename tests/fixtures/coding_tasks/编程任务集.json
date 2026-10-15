@@ -1,0 +1,63 @@
+{
+  "version": "coding-tasks-v1",
+  "tasks": [
+    {
+      "id": "local_bug",
+      "category": "局部修错",
+      "objective": "修复 calculator.py 的 add。先运行现有 unittest 确认失败，再只改必要代码并重新运行 `python -m unittest -v test_calculator`。保留现有测试，不要安装依赖。",
+      "files": {
+        "calculator.py": "def add(left, right):\n    return left - right\n",
+        "test_calculator.py": "import unittest\nfrom calculator import add\n\nclass CalculatorTests(unittest.TestCase):\n    def test_adds_positive_values(self):\n        self.assertEqual(add(17, 25), 42)\n\n    def test_adds_negative_values(self):\n        self.assertEqual(add(-4, 9), 5)\n"
+      }
+    },
+    {
+      "id": "cross_file_feature",
+      "category": "跨文件功能",
+      "objective": "为 inventory 报表补齐 low_stock 功能：数量小于等于 2 的项目按规范化名称列出，保留 count 和 total_quantity 字段。先看两个模块的职责并运行现有测试，再修改必要文件并验证；不要安装依赖。",
+      "files": {
+        "records.py": "def normalize_item(item):\n    return {\"name\": item[\"name\"].strip(), \"quantity\": int(item[\"quantity\"])}\n",
+        "summary.py": "from records import normalize_item\n\ndef summarize(items):\n    normalized = [normalize_item(item) for item in items]\n    return {\n        \"count\": len(normalized),\n        \"total_quantity\": sum(item[\"quantity\"] for item in normalized),\n        \"low_stock\": [],\n    }\n",
+        "test_summary.py": "import unittest\nfrom summary import summarize\n\nclass SummaryTests(unittest.TestCase):\n    def test_summary_fields(self):\n        self.assertEqual(\n            summarize([{\"name\": \" pen \", \"quantity\": \"2\"}, {\"name\": \"book\", \"quantity\": 7}]),\n            {\"count\": 2, \"total_quantity\": 9, \"low_stock\": [\"pen\"]},\n        )\n"
+      }
+    },
+    {
+      "id": "behavior_refactor",
+      "category": "保持行为的重构",
+      "objective": "重构 pricing.py，让格式化逻辑更清楚，同时严格保持当前输出：USD 使用 `$`，其他币种使用币种代码和空格；负数以括号包裹。先运行 unittest 记录行为，再重构并重跑测试，不要安装依赖。",
+      "files": {
+        "pricing.py": "def format_price(cents, currency=\"USD\"):\n    amount = f\"{abs(cents) / 100:.2f}\"\n    prefix = \"$\" if currency == \"USD\" else currency + \" \"\n    value = prefix + amount\n    if cents < 0:\n        value = \"(\" + value + \")\"\n    return value\n",
+        "test_pricing.py": "import unittest\nfrom pricing import format_price\n\nclass PricingTests(unittest.TestCase):\n    def test_existing_format(self):\n        self.assertEqual(format_price(1250), \"$12.50\")\n        self.assertEqual(format_price(-5), \"($0.05)\")\n        self.assertEqual(format_price(500, \"JPY\"), \"JPY 5.00\")\n"
+      }
+    },
+    {
+      "id": "test_repair",
+      "category": "失败测试修复",
+      "objective": "修复 parser.py，使 CSV 行解析支持双引号包裹的字段和字段内逗号。先运行已有 `python -m unittest -v test_parser` 观察失败，修实现而不是放宽或删除测试，然后重跑。仅使用标准库。",
+      "files": {
+        "parser.py": "def parse_row(line):\n    if not line:\n        return []\n    return [part.strip() for part in line.split(\",\")]\n",
+        "test_parser.py": "import unittest\nfrom parser import parse_row\n\nclass ParserTests(unittest.TestCase):\n    def test_quoted_comma(self):\n        self.assertEqual(parse_row('alpha,\"beta,gamma\",delta'), [\"alpha\", \"beta,gamma\", \"delta\"])\n\n    def test_quoted_quote(self):\n        self.assertEqual(parse_row('one,\"say \"\"hi\"\"\",three'), [\"one\", 'say \"hi\"', \"three\"])\n"
+      }
+    },
+    {
+      "id": "guided_recovery",
+      "category": "运行中指导与恢复",
+      "objective": "完善邮箱规范化功能：去掉首尾空白、校验地址结构，并把邮箱整体转成小写。先检查 email_parts.py 与 normalizer.py 并运行测试，再分模块修复、验证。收到所有者后续指导时按最新要求调整并继续，不要安装依赖。",
+      "owner_guidance": "更正规范：保留 local-part 的原始大小写，只规范化域名（使用标准库 IDNA 编码并转小写）；增加 Unicode local-part 用例。按这条指导继续并重新验证。",
+      "files": {
+        "email_parts.py": "def split_address(value):\n    parts = value.strip().lower().split(\"@\")\n    if len(parts) != 2 or not all(parts):\n        raise ValueError(\"invalid email\")\n    return parts\n",
+        "normalizer.py": "from email_parts import split_address\n\ndef normalize_address(value):\n    local, domain = split_address(value)\n    return local + \"@\" + domain\n",
+        "test_normalizer.py": "import unittest\nfrom normalizer import normalize_address\n\nclass AddressTests(unittest.TestCase):\n    def test_basic(self):\n        self.assertEqual(normalize_address(\"  Alice@Example.COM \"), \"alice@example.com\")\n\n    def test_structure(self):\n        with self.assertRaises(ValueError):\n            normalize_address(\"no-at-sign\")\n"
+      }
+    },
+    {
+      "id": "slow_delivery",
+      "category": "慢命令与交付冲突",
+      "objective": "修复 release.py 的 build_report，让 files 保持排序后的文件名列表，并新增 artifact_count。然后运行 `python slow_check.py`；该检查会等待超过 30 秒并在工作副本生成 release.json。检查完成后同时保留修正后的 release.py 与生成的 release.json，重新检查二者内容并报告慢命令的真实结果。不要修改 slow_check.py 或删除生成报告，不要安装依赖。",
+      "files": {
+        "release.py": "def build_report(version, files):\n    return {\"version\": version, \"files\": len(files)}\n",
+        "slow_check.py": "import json\nimport time\nfrom pathlib import Path\nfrom release import build_report\n\ntime.sleep(31)\nreport = build_report(\"1.2\", [\"zeta.py\", \"alpha.py\"])\nPath(\"release.json\").write_text(json.dumps(report, sort_keys=True) + \"\\n\", encoding=\"utf-8\")\nprint(\"SLOW_REPORT_WRITTEN\")\n",
+        "test_release.py": "import unittest\nfrom release import build_report\n\nclass ReleaseTests(unittest.TestCase):\n    def test_report(self):\n        self.assertEqual(build_report(\"1.2\", [\"zeta.py\", \"alpha.py\"]), {\"version\": \"1.2\", \"files\": [\"alpha.py\", \"zeta.py\"], \"artifact_count\": 2})\n"
+      }
+    }
+  ]
+}

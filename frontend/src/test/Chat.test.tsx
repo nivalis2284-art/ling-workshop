@@ -28,6 +28,8 @@ function backend(
     cancelFails?: boolean;
     cancelStatus?: string;
     startError?: { status: number; detail: string };
+    recoverable?: boolean;
+    recoveryReason?: string;
   } = {},
 ) {
   const requests: {
@@ -41,9 +43,11 @@ function backend(
   let rejectStart = options.rejectStart;
   let runId = "";
   let status = "running";
+  let recoverable = options.recoverable;
   let conversationCreated = false;
   let requestId = "";
   let answer = "";
+  let executionOutput = "more output\n";
   let assistantMessageId = "assistant-answer";
   let userMessageId = "";
   const messages: ConversationMessage[] = [];
@@ -75,6 +79,10 @@ function backend(
     status,
     created_at: "2026-10-09T00:00:00Z",
     finished_at: status === "running" ? null : "2026-10-09T00:01:00Z",
+    ...(recoverable !== undefined ? { recoverable } : {}),
+    ...(options.recoveryReason
+      ? { recovery_reason: options.recoveryReason }
+      : {}),
   });
   vi.stubGlobal("fetch", async (path: string, init: RequestInit) => {
     expect(init.credentials).toBe("omit");
@@ -109,9 +117,28 @@ function backend(
       );
     if (path === "/api/models/selection")
       return json({ primary: "primary-profile", fallback: null });
+    if (path.startsWith("/api/execution/sessions/session-chat")) {
+      if (path.endsWith("/cancel"))
+        return json({
+          session_id: "session-chat",
+          status: "cancelled",
+          cursor: 2,
+        });
+      return json({
+        session_id: "session-chat",
+        status: "running",
+        cursor: 2,
+        output: executionOutput,
+      });
+    }
     if (path.endsWith("/cancel")) {
       if (options.cancelFails) return json({ detail: "unavailable" }, 503);
       status = options.cancelStatus ?? "cancelled";
+      return json(run());
+    }
+    if (path.endsWith("/recover")) {
+      status = "running";
+      recoverable = false;
       return json(run());
     }
     if (path === "/api/chat/runs/" + runId) return json(run());
@@ -171,6 +198,9 @@ function backend(
   });
   return {
     requests,
+    async waitForStreams(count: number) {
+      await waitFor(() => expect(streams).toHaveLength(count));
+    },
     setStatus(value: string) {
       status = value;
       if (status === "completed") commit();
@@ -626,6 +656,119 @@ test("server interruption is terminal with Chinese recovery guidance and never d
   );
 });
 
+test("可恢复的中断从原游标继续，且不重发原消息", async () => {
+  const server = backend({ recoverable: true });
+  const { user } = await openChat();
+  await send(user, "继续这个工作");
+  await server.emit("started", { run_id: "run-recovery" }, 1);
+  await server.emit("text", { text: "已完成一部分" }, 2);
+  await server.emit("error", { code: "interrupted", message: "中断" }, 3);
+  expect(
+    await screen.findByRole("button", { name: "继续未完成工作" }),
+  ).toBeEnabled();
+
+  await user.click(screen.getByRole("button", { name: "继续未完成工作" }));
+  await server.waitForStreams(2);
+  await server.emit(
+    "complete",
+    {
+      status: "completed",
+      assistant_message_id: "assistant-recovered",
+      verification: { status: "passed", kind: "command" },
+    },
+    4,
+    1,
+  );
+
+  await waitFor(() =>
+    expect(screen.getByText(/验证状态：检查通过/)).toBeVisible(),
+  );
+  expect(
+    server.requests.filter((request) => request.path === "/api/chat/stream"),
+  ).toHaveLength(1);
+  expect(
+    server.requests.find((request) => request.path.endsWith("/recover"))?.body,
+  ).toEqual({});
+  expect(
+    server.requests.find((request) => request.path.includes("/events?"))?.path,
+  ).toContain("after=3");
+});
+
+test("不可恢复的运行只显示后端给出的原因", async () => {
+  const server = backend({
+    recoverable: false,
+    recoveryReason: "工具副作用仍需人工核对。",
+  });
+  const { user } = await openChat();
+  await send(user);
+  await server.emit("started", { run_id: "run-no-recovery" }, 1);
+  await server.emit("error", { code: "interrupted", message: "中断" }, 2);
+  expect(await screen.findByText("工具副作用仍需人工核对。")).toBeVisible();
+  expect(
+    screen.queryByRole("button", { name: "继续未完成工作" }),
+  ).not.toBeInTheDocument();
+});
+
+test("命令会话仅在手动操作时刷新输出，并可停止", async () => {
+  const server = backend();
+  const { user } = await openChat();
+  await send(user, "运行长命令");
+  await server.emit("started", { run_id: "run-command" }, 1);
+  await server.emit(
+    "tool_started",
+    {
+      step: 1,
+      name: "run_command",
+      call_id: "command-1",
+      arguments: { argv: ["python", "-c", "sleep"] },
+    },
+    2,
+  );
+  await server.emit(
+    "tool_result",
+    {
+      step: 1,
+      name: "run_command",
+      call_id: "command-1",
+      status: "completed",
+      preview: "命令仍在运行",
+      execution: {
+        session_id: "session-chat",
+        status: "running",
+        cursor: 1,
+        output: "first output\n",
+      },
+    },
+    3,
+  );
+  expect(
+    await screen.findByText("first output", { exact: false }),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "刷新命令输出" })).toBeVisible();
+  expect(
+    server.requests.some((request) =>
+      request.path.includes("/execution/sessions/"),
+    ),
+  ).toBe(false);
+
+  await user.click(screen.getByRole("button", { name: "刷新命令输出" }));
+  expect(await screen.findByText(/more output/)).toBeVisible();
+  expect(
+    server.requests.find((request) =>
+      request.path.includes("/execution/sessions/"),
+    )?.path,
+  ).toContain("after=1");
+  await user.click(screen.getByRole("button", { name: "停止命令" }));
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "停止命令" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(
+    server.requests.some((request) => request.path.endsWith("/cancel")),
+  ).toBe(true);
+});
+
 /** A live turn renders without actions, so wait until the round is committed. */
 async function savedRound(
   server: ReturnType<typeof backend>,
@@ -661,9 +804,7 @@ test("deleting a turn removes it from the transcript and drops it from later req
   )!;
   await savedRound(server);
   expect(screen.getByText("你好！我是灵。")).toBeVisible();
-  await user.click(
-    screen.getAllByRole("button", { name: "删除这一轮" })[0],
-  );
+  await user.click(screen.getAllByRole("button", { name: "删除这一轮" })[0]);
   const dialog = await screen.findByRole("dialog");
   await user.click(within(dialog).getByRole("button", { name: "确认删除" }));
   await waitFor(() =>
@@ -676,9 +817,9 @@ test("deleting a turn removes it from the transcript and drops it from later req
   await waitFor(() =>
     expect(screen.queryByText("你好！我是灵。")).not.toBeInTheDocument(),
   );
-  expect(
-    screen.queryAllByRole("button", { name: "删除这一轮" }),
-  ).toHaveLength(0);
+  expect(screen.queryAllByRole("button", { name: "删除这一轮" })).toHaveLength(
+    0,
+  );
 });
 
 test("cancelling the confirmation keeps the turn and sends nothing", async () => {
@@ -687,9 +828,7 @@ test("cancelling the confirmation keeps the turn and sends nothing", async () =>
   await send(user, "你好");
   await savedRound(server);
   await screen.findByText("你好！我是灵。");
-  await user.click(
-    screen.getAllByRole("button", { name: "删除这一轮" })[0],
-  );
+  await user.click(screen.getAllByRole("button", { name: "删除这一轮" })[0]);
   await user.click(
     within(await screen.findByRole("dialog")).getByRole("button", {
       name: "取消",

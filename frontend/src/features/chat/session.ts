@@ -8,6 +8,7 @@ import type {
   ConversationMessage,
   ConversationBranch,
   PendingConfirmation,
+  VerificationEvidence,
 } from "../../api/types";
 import {
   chatErrorMessage,
@@ -46,6 +47,10 @@ export interface ChatTurn {
   pausePending?: boolean;
   resumePending?: boolean;
   confirmations?: PendingConfirmation[];
+  verification?: VerificationEvidence;
+  recoverable?: boolean;
+  recoveryReason?: string;
+  recovering?: boolean;
   // 本回合已提交决策的指纹：决策与回读/通知并发时，靠它防止已处理的卡复活。
   decidedFingerprints?: string[];
 }
@@ -66,6 +71,11 @@ export interface ChatSnapshot {
 const storagePrefix = "lingnexus.chat.v1.";
 export const isPending = (turn?: ChatTurn) =>
   !!turn && ["connecting", "streaming", "disconnected"].includes(turn.status);
+const shouldPersist = (turn: ChatTurn) =>
+  isPending(turn) ||
+  (!!turn.runId &&
+    turn.recoverable === true &&
+    ["error", "stopped"].includes(turn.status));
 
 export function clearChatSessions() {
   try {
@@ -157,7 +167,7 @@ function restore(agentId: string, conversationId?: string): ChatSnapshot {
           ? saved.conversationId
           : undefined),
       // Browser data restores subscribers and drafts, never completed history.
-      turns: saved.turns.filter(isPending).map((turn: ChatTurn) => ({
+      turns: saved.turns.filter(shouldPersist).map((turn: ChatTurn) => ({
         ...turn,
         cancelling: false,
         // 在途控制标记不跨页面生命周期：重载后没有请求可等。已决策记账也不
@@ -182,6 +192,7 @@ export class ChatSession {
   private historyController: AbortController | null = null;
   private runController: AbortController | null = null;
   private confirmationsController: AbortController | null = null;
+  private recoveryRequest: string | null = null;
   private conversations = new Map<string, ChatSession>();
 
   constructor(
@@ -214,7 +225,7 @@ export class ChatSession {
       sessionStorage.setItem(
         storageKey(this.agentId, this.storageConversationId),
         JSON.stringify({
-          turns: this.state.turns.filter(isPending),
+          turns: this.state.turns.filter(shouldPersist),
           draft: this.state.draft,
           profileId: this.state.profileId,
           effort: this.state.effort,
@@ -274,7 +285,11 @@ export class ChatSession {
       // A terminal run resolved through GET status carries no assistant id;
       // adopt the selected branch's answer so the round stays linked to it.
       const latest = this.state.turns.at(-1);
-      if (latest && latest.status === "complete" && !latest.assistantMessageId) {
+      if (
+        latest &&
+        latest.status === "complete" &&
+        !latest.assistantMessageId
+      ) {
         const answer = branches.find(
           (branch) => branch.selected && branch.role === "assistant",
         );
@@ -395,7 +410,8 @@ export class ChatSession {
     const active = this.state.turns.at(-1);
     // A confirmation issued while this page was away is not replayed by the
     // stream, so re-read the run's pending decisions on reattach.
-    if (isPending(active) && active?.runId) void this.syncConfirmations(active.runId);
+    if (isPending(active) && active?.runId)
+      void this.syncConfirmations(active.runId);
     if (isPending(this.state.turns.at(-1))) void this.reconnect();
   }
   private async syncConfirmations(runId: string) {
@@ -630,8 +646,7 @@ export class ChatSession {
           patch.notice =
             event.data.message ?? "对话超出模型窗口，已丢弃最早的部分消息。";
         else if (event.data.code === "step_budget_exhausted")
-          patch.notice =
-            event.data.message ?? "已达到步数上限，任务尚未完成。";
+          patch.notice = event.data.message ?? "已达到步数上限，任务尚未完成。";
         else if (
           event.data.code === "confirmation_required" &&
           event.data.fingerprint
@@ -689,6 +704,12 @@ export class ChatSession {
                 ...(event.data.access === "full"
                   ? { access: "full" as const }
                   : {}),
+                ...(event.data.verification
+                  ? { verification: event.data.verification }
+                  : {}),
+                ...(event.data.execution
+                  ? { execution: event.data.execution }
+                  : {}),
               }
             : tool,
         );
@@ -716,6 +737,7 @@ export class ChatSession {
       case "complete":
         patch.status = "complete";
         patch.assistantMessageId = event.data.assistant_message_id;
+        patch.verification = event.data.verification ?? turn.verification;
         patch.error = undefined;
         // 任何终态都清空暂停标记与确认卡，收尾后不残留待办。
         patch.paused = false;
@@ -736,8 +758,10 @@ export class ChatSession {
         break;
     }
     this.change(id, patch);
-    if (event.event === "complete" || event.event === "error")
+    if (event.event === "complete" || event.event === "error") {
       void this.refreshHistory();
+      void this.syncRunState(event.data.run_id);
+    }
   }
   private checkRun(run: ChatRun, runId: string) {
     if (
@@ -755,8 +779,28 @@ export class ChatSession {
   private adoptRun(run: ChatRun) {
     if (run.conversation_id)
       this.update({ conversationId: run.conversation_id });
+    const turn = this.state.turns.find((item) => item.runId === run.id);
+    const requestId = turn?.request.request_id ?? run.request_id;
     if (run.user_message_id)
-      this.change(run.request_id, { userMessageId: run.user_message_id });
+      this.change(requestId, { userMessageId: run.user_message_id });
+    this.change(requestId, {
+      ...(run.verification ? { verification: run.verification } : {}),
+      ...(typeof run.recoverable === "boolean"
+        ? { recoverable: run.recoverable }
+        : {}),
+      ...(run.recovery_reason !== undefined
+        ? { recoveryReason: run.recovery_reason }
+        : {}),
+    });
+  }
+  private async syncRunState(runId: string) {
+    try {
+      const run = await this.api.chatRun(runId);
+      this.checkRun(run, runId);
+      this.adoptRun(run);
+    } catch {
+      /* Stream terminal state remains useful when the status read is unavailable. */
+    }
   }
   private runResult(run: ChatRun): Partial<ChatTurn> {
     return {
@@ -769,12 +813,141 @@ export class ChatSession {
       error: ["completed", "cancelled"].includes(run.status)
         ? undefined
         : chatRunErrorMessage(run.status),
+      verification: run.verification,
+      recoverable: run.recoverable,
+      recoveryReason: run.recovery_reason,
       // 通过 GET 状态收尾同样是终态：暂停标记与确认卡一并清空。
       paused: false,
       pausePending: false,
       resumePending: false,
       confirmations: [],
     };
+  }
+  recover = async (additionalSteps?: number): Promise<boolean> => {
+    const turn = this.state.turns.at(-1);
+    if (
+      !turn?.runId ||
+      turn.recoverable !== true ||
+      !["error", "stopped"].includes(turn.status) ||
+      this.recoveryRequest ||
+      this.controller
+    )
+      return false;
+    const id = turn.request.request_id;
+    const runId = turn.runId;
+    this.recoveryRequest = id;
+    this.change(id, { recovering: true, error: undefined });
+    try {
+      const run = await this.api.recoverChat(runId, additionalSteps);
+      this.checkRun(run, runId);
+      this.adoptRun(run);
+      if (run.status === "running") {
+        this.change(id, {
+          status: "connecting",
+          error: undefined,
+          recovering: false,
+          recoverable: false,
+          paused: false,
+          pausePending: false,
+          resumePending: false,
+        });
+        const current = this.state.turns.find(
+          (item) => item.request.request_id === id,
+        );
+        if (current && this.attached) await this.connect(current);
+        return true;
+      }
+      this.change(id, { ...this.runResult(run), recovering: false });
+      void this.refreshHistory();
+      return run.status === "completed";
+    } catch (error) {
+      this.change(id, {
+        recovering: false,
+        error: chatErrorMessage(error),
+      });
+      return false;
+    } finally {
+      if (this.recoveryRequest === id) this.recoveryRequest = null;
+    }
+  };
+  refreshExecution = async (callId: string) => {
+    const turn = this.state.turns.at(-1);
+    const tool = turn?.tools?.find((item) => item.call_id === callId);
+    const session = tool?.execution;
+    if (!turn?.runId || !session?.session_id || !tool || tool.executionAction)
+      return;
+    const id = turn.request.request_id;
+    this.patchExecutionTool(id, callId, { executionAction: "refreshing" });
+    try {
+      const latest = await this.api.executionSession(
+        session.session_id,
+        turn.runId,
+        "chat",
+        session.cursor,
+      );
+      const current = this.state.turns.find(
+        (item) => item.request.request_id === id,
+      );
+      const previous = current?.tools?.find(
+        (item) => item.call_id === callId,
+      )?.execution;
+      if (!previous) return;
+      this.patchExecutionTool(id, callId, {
+        execution: {
+          ...previous,
+          ...latest,
+          output: (previous.output ?? "") + (latest.output ?? ""),
+          truncated: previous.truncated || latest.truncated,
+        },
+      });
+    } catch (error) {
+      this.update({ actionError: errorMessage(error) });
+    } finally {
+      this.patchExecutionTool(id, callId, { executionAction: undefined });
+    }
+  };
+  stopExecution = async (callId: string) => {
+    const turn = this.state.turns.at(-1);
+    const tool = turn?.tools?.find((item) => item.call_id === callId);
+    const session = tool?.execution;
+    if (!turn?.runId || !session?.session_id || !tool || tool.executionAction)
+      return;
+    const id = turn.request.request_id;
+    this.patchExecutionTool(id, callId, { executionAction: "cancelling" });
+    try {
+      const result = await this.api.cancelExecutionSession(
+        session.session_id,
+        turn.runId,
+        "chat",
+      );
+      this.patchExecutionTool(id, callId, {
+        execution: {
+          ...session,
+          ...result,
+          output: (session.output ?? "") + (result.output ?? ""),
+          truncated: session.truncated || result.truncated,
+        },
+      });
+    } catch (error) {
+      this.update({ actionError: errorMessage(error) });
+    } finally {
+      this.patchExecutionTool(id, callId, { executionAction: undefined });
+    }
+  };
+  private patchExecutionTool(
+    id: string,
+    callId: string,
+    patch: Partial<ChatToolCall>,
+  ) {
+    const turn = this.state.turns.find(
+      (item) => item.request.request_id === id,
+    );
+    if (!turn) return;
+    this.change(id, {
+      tools: (turn.tools ?? []).map((tool) =>
+        tool.call_id === callId ? { ...tool, ...patch } : tool,
+      ),
+    });
   }
   stop = async () => {
     const turn = this.state.turns.at(-1);

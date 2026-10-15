@@ -45,6 +45,44 @@ test("public API calls preserve the local authenticated HTTP boundary for featur
   );
 });
 
+test("recovery and command-session endpoints use the authenticated LingApi", async () => {
+  const fetched = vi.fn(
+    async () => new Response(JSON.stringify({ status: "running" })),
+  );
+  vi.stubGlobal("fetch", fetched);
+  const api = new LingApi("owner-token", () => {});
+
+  await api.recoverChat("run/1", 4);
+  await api.executionSession("session/2", "run/1", "chat", 8);
+  await api.cancelExecutionSession("session/2", "run/1", "chat");
+
+  expect(fetched).toHaveBeenNthCalledWith(
+    1,
+    "/api/chat/runs/run%2F1/recover",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ additional_steps: 4 }),
+      headers: expect.objectContaining({ Authorization: "Bearer owner-token" }),
+    }),
+  );
+  expect(fetched).toHaveBeenNthCalledWith(
+    2,
+    "/api/execution/sessions/session%2F2?run_id=run%2F1&kind=chat&after=8",
+    expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer owner-token" }),
+    }),
+  );
+  expect(fetched).toHaveBeenNthCalledWith(
+    3,
+    "/api/execution/sessions/session%2F2/cancel",
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ run_id: "run/1", kind: "chat" }),
+      headers: expect.objectContaining({ Authorization: "Bearer owner-token" }),
+    }),
+  );
+});
+
 test.each([
   "feature/action",
   "https://provider.invalid/action",
@@ -299,12 +337,49 @@ test("loop events (steps, tools, pause and confirmations) are parsed, not reject
     call_id: "c1",
     arguments: { path: "/a" },
   });
-  expect(events[3]).toMatchObject({ event: "paused", data: { run_id: "run-1" } });
+  expect(events[3]).toMatchObject({
+    event: "paused",
+    data: { run_id: "run-1" },
+  });
   expect(events[5].data).toMatchObject({
     code: "confirmation_required",
     fingerprint: "fp1",
     tool: "run_command",
     arguments: { argv: ["ls"] },
+  });
+});
+
+test("verification and command-session facts survive SSE parsing", async () => {
+  const events: ChatEvent[] = [];
+  await readChatStream(
+    streamResponse(
+      'id: 1\nevent: tool_result\ndata: {"run_id":"run-1","step":2,"name":"run_command","call_id":"c7","status":"completed","preview":"运行中","verification":{"status":"stale","kind":"command"},"execution":{"session_id":"s1","status":"running","cursor":4,"output":"chunk"}}\n\n' +
+        'id: 2\nevent: complete\ndata: {"run_id":"run-1","status":"completed","assistant_message_id":"a1","verification":{"status":"passed","kind":"command","checks":[{"argv":["pytest","-q"],"exit_code":0}]}}\n\n',
+    ),
+    (event) => events.push(event),
+    new AbortController().signal,
+  );
+  expect(events[0]).toMatchObject({
+    event: "tool_result",
+    data: {
+      verification: { status: "stale", kind: "command" },
+      execution: {
+        session_id: "s1",
+        status: "running",
+        cursor: 4,
+        output: "chunk",
+      },
+    },
+  });
+  expect(events[1]).toMatchObject({
+    event: "complete",
+    data: {
+      verification: {
+        status: "passed",
+        kind: "command",
+        checks: [{ argv: ["pytest", "-q"], exit_code: 0 }],
+      },
+    },
   });
 });
 

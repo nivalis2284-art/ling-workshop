@@ -4,6 +4,14 @@ export interface Agent {
   created_at?: string;
 }
 export type SandboxLevel = "local" | "container";
+export type SandboxPreset = "conservative" | "coding";
+export interface SandboxLimits {
+  timeout_seconds: number;
+  memory_bytes: number;
+  max_output_bytes: number;
+  session_timeout_seconds: number;
+  max_sessions: number;
+}
 // Frozen shape from GET/PUT /sandbox. protections/limitations are the backend's
 // own honest wording and are shown to the owner verbatim.
 export interface SandboxStatus {
@@ -13,6 +21,8 @@ export interface SandboxStatus {
   protections: string[];
   limitations: string[];
   image: string;
+  preset?: SandboxPreset;
+  limits?: SandboxLimits;
 }
 export interface AgentPermissions {
   agent_id: string;
@@ -68,9 +78,7 @@ export interface ModelCapabilities {
 }
 export interface ModelProfile {
   api_family:
-    | "anthropic_messages"
-    | "openai_chat_completions"
-    | "openai_responses";
+    "anthropic_messages" | "openai_chat_completions" | "openai_responses";
   model: string;
   base_url: string;
   capabilities: ModelCapabilities;
@@ -192,6 +200,29 @@ export interface ChatToolCall {
   status?: string;
   preview?: string;
   access?: "full";
+  verification?: VerificationEvidence;
+  execution?: ExecutionSession;
+  executionAction?: "refreshing" | "cancelling";
+}
+
+export type VerificationStatus =
+  "unverified" | "stale" | "passed" | "failed" | "unknown";
+export interface VerificationCheck {
+  argv: string[];
+  exit_code: number;
+}
+export interface VerificationEvidence {
+  status: VerificationStatus;
+  kind?: "command" | "content";
+  checks?: VerificationCheck[];
+}
+export interface ExecutionSession {
+  session_id: string;
+  status: string;
+  cursor: number;
+  output?: string;
+  truncated?: boolean;
+  result?: Record<string, unknown>;
 }
 
 // A side-effecting call waiting for the owner's decision (run_command).
@@ -253,6 +284,8 @@ export type ChatEvent = { id: string } & (
         status: string;
         preview: string;
         access?: "full";
+        verification?: VerificationEvidence;
+        execution?: ExecutionSession;
       };
     }
   | { event: "paused" | "resumed"; data: { run_id: string } }
@@ -264,6 +297,7 @@ export type ChatEvent = { id: string } & (
         run_id: string;
         status: "completed";
         assistant_message_id: string | null;
+        verification?: VerificationEvidence;
       };
     }
   | { event: "error"; data: { run_id: string; code: string; message: string } }
@@ -280,4 +314,7 @@ export interface ChatRun {
   context_manifest?: Record<string, unknown> | null;
   created_at: string;
   finished_at: string | null;
+  verification?: VerificationEvidence;
+  recoverable?: boolean;
+  recovery_reason?: string;
 }

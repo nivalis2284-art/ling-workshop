@@ -2,7 +2,7 @@ import { expect, test, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { LingApi } from "../../api/client";
-import type { SandboxLevel } from "../../api/types";
+import type { SandboxLevel, SandboxPreset } from "../../api/types";
 import { SandboxSettings } from "./SandboxSettings";
 
 const PROTECTIONS = [
@@ -19,10 +19,20 @@ function backend(
     engine?: boolean;
     initialLevel?: SandboxLevel;
     failSwitch?: boolean;
+    preset?: SandboxPreset;
+    limits?: {
+      timeout_seconds: number;
+      memory_bytes: number;
+      max_output_bytes: number;
+      session_timeout_seconds: number;
+      max_sessions: number;
+    };
+    supportsPreset?: boolean;
   } = {},
 ) {
   const engine = options.engine ?? false;
   let level: SandboxLevel = options.initialLevel ?? "local";
+  let preset = options.preset;
   const requests: { path: string; method: string; body: any }[] = [];
   const state = () => ({
     level,
@@ -31,6 +41,8 @@ function backend(
     protections: PROTECTIONS,
     limitations: LIMITATIONS,
     image: "python:3.12-slim",
+    ...(preset ? { preset } : {}),
+    ...(options.limits ? { limits: options.limits } : {}),
   });
   vi.stubGlobal(
     "fetch",
@@ -48,6 +60,7 @@ function backend(
               403,
             );
           level = body.level;
+          if (body.preset && options.supportsPreset) preset = body.preset;
         }
         return json(state());
       }
@@ -60,7 +73,10 @@ function backend(
 function show() {
   const user = userEvent.setup();
   render(<SandboxSettings api={new LingApi("sandbox-test-owner", () => {})} />);
-  return { user, region: () => screen.getByRole("region", { name: "执行沙箱" }) };
+  return {
+    user,
+    region: () => screen.getByRole("region", { name: "执行沙箱" }),
+  };
 }
 
 test("读取当前档位，并如实展示能防与不能防的清单", async () => {
@@ -77,6 +93,47 @@ test("读取当前档位，并如实展示能防与不能防的清单", async ()
   expect(within(panel).getByText("它能防住")).toBeInTheDocument();
   expect(within(panel).getByText("它防不住")).toBeInTheDocument();
   expect(server.requests.filter((r) => r.method === "GET")).toHaveLength(1);
+  expect(within(panel).getByText(/未提供命令资源额度详情/)).toBeInTheDocument();
+});
+
+test("显示后端额度并持久化切换到编程档", async () => {
+  const server = backend({
+    preset: "conservative",
+    supportsPreset: true,
+    limits: {
+      timeout_seconds: 30,
+      memory_bytes: 256 * 1024 * 1024,
+      max_output_bytes: 64 * 1024,
+      session_timeout_seconds: 900,
+      max_sessions: 2,
+    },
+  });
+  const { user, region } = show();
+  const panel = region();
+  expect(await within(panel).findByText("256 MiB")).toBeInTheDocument();
+  await user.selectOptions(
+    within(panel).getByLabelText("命令资源档位"),
+    "coding",
+  );
+  expect(
+    await within(panel).findByText(/执行额度已切换到「编程档」/),
+  ).toBeInTheDocument();
+  expect(
+    server.requests.find((request) => request.method === "PUT")?.body,
+  ).toEqual({
+    level: "local",
+    preset: "coding",
+  });
+});
+
+test("旧后端未确认额度档位时保留原选择并给出兼容提示", async () => {
+  backend();
+  const { user, region } = show();
+  const panel = region();
+  const select = await within(panel).findByLabelText("命令资源档位");
+  await user.selectOptions(select, "coding");
+  expect(await within(panel).findByText(/未确认额度档位设置/)).toBeVisible();
+  expect(select).toHaveValue("conservative");
 });
 
 test("引擎不可用时容器档不可选，并说明需要先安装容器引擎", async () => {
@@ -89,9 +146,7 @@ test("引擎不可用时容器档不可选，并说明需要先安装容器引�
   expect(
     within(panel).getByRole("button", { name: "切换到本地受限执行" }),
   ).toBeDisabled();
-  expect(
-    within(panel).getByText(/需要先安装容器引擎/),
-  ).toBeInTheDocument();
+  expect(within(panel).getByText(/需要先安装容器引擎/)).toBeInTheDocument();
   expect(server.requests.some((r) => r.method === "PUT")).toBe(false);
 });
 

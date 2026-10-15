@@ -13,6 +13,10 @@ export function ChatRunControls({
   onPause,
   onResume,
   onGuide,
+  onRecover,
+  recoverable,
+  recoveryReason,
+  recovering = false,
   disabled,
 }: {
   paused: boolean;
@@ -23,6 +27,10 @@ export function ChatRunControls({
   onPause: () => void;
   onResume: () => void;
   onGuide: (text: string) => Promise<boolean>;
+  onRecover?: () => void;
+  recoverable?: boolean;
+  recoveryReason?: string;
+  recovering?: boolean;
   disabled: boolean;
 }) {
   const [text, setText] = useState("");
@@ -40,6 +48,26 @@ export function ChatRunControls({
       setSending(false);
     }
   };
+  if (onRecover && recoverable !== undefined)
+    return (
+      <div className="chat-recovery" role="group" aria-label="运行恢复">
+        <p className="metadata">
+          {recoverable
+            ? "这次运行可以从已保存的进度继续。"
+            : recoveryReason || "当前运行无法继续，请创建新请求。"}
+        </p>
+        {recoverable && (
+          <button
+            className="button secondary"
+            type="button"
+            disabled={disabled || recovering}
+            onClick={onRecover}
+          >
+            {recovering ? "正在恢复…" : "继续未完成工作"}
+          </button>
+        )}
+      </div>
+    );
   const waiting = !!pausePending || !!resumePending;
   return (
     <div className="chat-run-controls" role="group" aria-label="生成控制">

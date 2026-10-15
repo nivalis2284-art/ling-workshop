@@ -76,7 +76,12 @@ export function ChatPage({
         if (!current) return;
         const root = value.writable[0] ?? value.readable[0];
         setWorkdirName(
-          root ? (root.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "") : "",
+          root
+            ? (root
+                .replace(/[\\/]+$/, "")
+                .split(/[\\/]/)
+                .pop() ?? "")
+            : "",
         );
       })
       .catch(() => {
@@ -208,7 +213,9 @@ export function ChatPage({
           title={selected?.title ?? "新对话"}
           selecting={selecting}
           canSelect={!!userTurns && !disabled}
-          onSelectTurns={() => (selecting ? stopSelecting() : setSelecting(true))}
+          onSelectTurns={() =>
+            selecting ? stopSelecting() : setSelecting(true)
+          }
           onOpenSettings={openSettings}
           onOpenWorkspace={() => setWorkspaceOpen(true)}
           disabled={locked}
@@ -217,7 +224,8 @@ export function ChatPage({
           <div className="chat-banner" role="status">
             <ShieldAlert size={14} aria-hidden="true" />
             <span>
-              完全访问已开启 · 本对话内命令与远程工具不再逐条确认（沙箱、审计与目录授权不变）
+              完全访问已开启 ·
+              本对话内命令与远程工具不再逐条确认（沙箱、审计与目录授权不变）
             </span>
             <button
               type="button"
@@ -231,130 +239,148 @@ export function ChatPage({
         )}
         {accessError && <ErrorNotice message={accessError} />}
         <div className="chat-column">
-        {models.status === "loading" && <Loading label="正在读取对话模型…" />}
-        {models.status === "error" && (
-          <ErrorNotice
-            message={models.error}
-            retry={() => void models.refresh()}
+          {models.status === "loading" && <Loading label="正在读取对话模型…" />}
+          {models.status === "error" && (
+            <ErrorNotice
+              message={models.error}
+              retry={() => void models.refresh()}
+            />
+          )}
+          {models.status === "ready" && !profiles.length && (
+            <p className="notice">
+              还没有模型连接。请到模型设置中添加连接并选择主用模型。
+            </p>
+          )}
+          {models.status === "ready" && !!profiles.length && !profileId && (
+            <p className="notice">
+              尚未选择主用模型，请在下方输入框右下角选择本次对话使用的连接。
+            </p>
+          )}
+          {profile && !profile.credentials_available && (
+            <p className="notice">
+              当前模型尚未提供密钥，请到模型设置中填写本次运行的模型密钥。
+            </p>
+          )}
+          {state.historyStatus === "loading" && (
+            <Loading label="正在读取对话消息…" />
+          )}
+          {state.historyError && (
+            <ErrorNotice
+              message={state.historyError}
+              retry={() => void session.refreshHistory()}
+            />
+          )}
+          {state.actionError && <ErrorNotice message={state.actionError} />}
+          {(last?.switchedProfile || last?.notice) && (
+            <p className="notice" role="status">
+              {last.switchedProfile && (
+                <>
+                  已切换到备用模型
+                  {profiles.find(
+                    (profile) => profile.id === last.switchedProfile,
+                  )?.name
+                    ? "「" +
+                      profiles.find(
+                        (profile) => profile.id === last.switchedProfile,
+                      )!.name +
+                      "」"
+                    : ""}
+                  。{pending ? "正在重新生成回复。" : ""}
+                </>
+              )}
+              {last.notice}
+            </p>
+          )}
+          <ChatTranscript
+            state={state}
+            name={agent.name}
+            disabled={disabled}
+            canRegenerate={!!profileId && models.status === "ready"}
+            onEdit={session.editMessage}
+            onRegenerate={(id) => session.regenerate(id, profileId, effort)}
+            onDeleteTurn={(id) => setConfirming([id])}
+            selecting={selecting}
+            selected={picked}
+            onToggleSelect={togglePick}
+            attachments={attachments.items}
+            regenerateProblem={(user) =>
+              attachmentProblem(
+                user.attachment_ids ?? [],
+                attachments.items,
+                profile?.profile.capabilities,
+                profile?.profile.api_family,
+              )
+            }
+            onRefreshExecution={session.refreshExecution}
+            onStopExecution={session.stopExecution}
           />
-        )}
-        {models.status === "ready" && !profiles.length && (
-          <p className="notice">
-            还没有模型连接。请到模型设置中添加连接并选择主用模型。
-          </p>
-        )}
-        {models.status === "ready" && !!profiles.length && !profileId && (
-          <p className="notice">
-            尚未选择主用模型，请在下方输入框右下角选择本次对话使用的连接。
-          </p>
-        )}
-        {profile && !profile.credentials_available && (
-          <p className="notice">
-            当前模型尚未提供密钥，请到模型设置中填写本次运行的模型密钥。
-          </p>
-        )}
-        {state.historyStatus === "loading" && (
-          <Loading label="正在读取对话消息…" />
-        )}
-        {state.historyError && (
-          <ErrorNotice
-            message={state.historyError}
-            retry={() => void session.refreshHistory()}
-          />
-        )}
-        {state.actionError && <ErrorNotice message={state.actionError} />}
-        {(last?.switchedProfile || last?.notice) && (
-          <p className="notice" role="status">
-            {last.switchedProfile && (
-              <>
-                已切换到备用模型
-                {profiles.find((profile) => profile.id === last.switchedProfile)
-                  ?.name
-                  ? "「" +
-                    profiles.find(
-                      (profile) => profile.id === last.switchedProfile,
-                    )!.name +
-                    "」"
-                  : ""}
-                。{pending ? "正在重新生成回复。" : ""}
-              </>
+          {last?.error && <ErrorNotice message={last.error} />}
+          {last?.status === "disconnected" && (
+            <div className="chat-recovery">
+              <p className="metadata">
+                重新连接会接续当前生成，不会重复发送消息。
+              </p>
+              <button
+                className="button secondary"
+                onClick={() => void session.reconnect()}
+              >
+                重新连接
+              </button>
+            </div>
+          )}
+          {last?.status === "error" && (
+            <div className="chat-recovery">
+              <p className="metadata">
+                检查模型设置后，可将同一条消息作为新请求再次发送。
+              </p>
+              <button
+                className="button secondary"
+                disabled={
+                  !profileId ||
+                  disabled ||
+                  !!attachmentProblem(
+                    last.request.attachment_ids ?? [],
+                    attachments.items,
+                    profile?.profile.capabilities,
+                    profile?.profile.api_family,
+                  )
+                }
+                onClick={() => session.retry(profileId, effort)}
+              >
+                再次发送
+              </button>
+            </div>
+          )}
+          {last?.status === "error" &&
+            last.runId &&
+            last.recoverable !== undefined && (
+              <ChatRunControls
+                paused={false}
+                onPause={() => {}}
+                onResume={() => {}}
+                onGuide={async () => false}
+                onRecover={() => void session.recover()}
+                recoverable={last.recoverable}
+                recoveryReason={last.recoveryReason}
+                recovering={last.recovering}
+                disabled={false}
+              />
             )}
-            {last.notice}
-          </p>
-        )}
-        <ChatTranscript
-          state={state}
-          name={agent.name}
-          disabled={disabled}
-          canRegenerate={!!profileId && models.status === "ready"}
-          onEdit={session.editMessage}
-          onRegenerate={(id) => session.regenerate(id, profileId, effort)}
-          onDeleteTurn={(id) => setConfirming([id])}
-          selecting={selecting}
-          selected={picked}
-          onToggleSelect={togglePick}
-          attachments={attachments.items}
-          regenerateProblem={(user) =>
-            attachmentProblem(
-              user.attachment_ids ?? [],
-              attachments.items,
-              profile?.profile.capabilities,
-              profile?.profile.api_family,
-            )
-          }
-        />
-        {last?.error && <ErrorNotice message={last.error} />}
-        {last?.status === "disconnected" && (
-          <div className="chat-recovery">
-            <p className="metadata">
-              重新连接会接续当前生成，不会重复发送消息。
-            </p>
-            <button
-              className="button secondary"
-              onClick={() => void session.reconnect()}
-            >
-              重新连接
-            </button>
-          </div>
-        )}
-        {last?.status === "error" && (
-          <div className="chat-recovery">
-            <p className="metadata">
-              检查模型设置后，可将同一条消息作为新请求再次发送。
-            </p>
-            <button
-              className="button secondary"
-              disabled={
-                !profileId ||
-                disabled ||
-                !!attachmentProblem(
-                  last.request.attachment_ids ?? [],
-                  attachments.items,
-                  profile?.profile.capabilities,
-                  profile?.profile.api_family,
-                )
-              }
-              onClick={() => session.retry(profileId, effort)}
-            >
-              再次发送
-            </button>
-          </div>
-        )}
-        {selecting && (
-          <div className="chat-select-bar">
-            <span>已选 {picked.size} 轮</span>
-            <button className="button secondary" onClick={stopSelecting}>
-              取消
-            </button>
-            <button
-              className="button danger"
-              disabled={!picked.size}
-              onClick={() => setConfirming([...picked])}
-            >
-              删除所选
-            </button>
-          </div>
-        )}
+          {selecting && (
+            <div className="chat-select-bar">
+              <span>已选 {picked.size} 轮</span>
+              <button className="button secondary" onClick={stopSelecting}>
+                取消
+              </button>
+              <button
+                className="button danger"
+                disabled={!picked.size}
+                onClick={() => setConfirming([...picked])}
+              >
+                删除所选
+              </button>
+            </div>
+          )}
         </div>
         {(last?.confirmations?.length ?? 0) > 0 && (
           <div className="chat-approval" role="alert">
@@ -368,12 +394,11 @@ export function ChatPage({
                   {agent.name}请求执行「<strong>{item.tool}</strong>」
                   。该操作有现实副作用，批准后才会真正执行。
                 </p>
-                {item.arguments &&
-                  Object.keys(item.arguments).length > 0 && (
-                    <pre className="chat-approval-args">
-                      {JSON.stringify(item.arguments, null, 2)}
-                    </pre>
-                  )}
+                {item.arguments && Object.keys(item.arguments).length > 0 && (
+                  <pre className="chat-approval-args">
+                    {JSON.stringify(item.arguments, null, 2)}
+                  </pre>
+                )}
                 <div className="button-row">
                   <button
                     className="button secondary"
@@ -501,7 +526,8 @@ export function ChatPage({
           <section className="panel chat-confirm-card">
             <h2 id="chat-confirm-heading">删除这一轮？</h2>
             <p>
-              将删除 {confirming.length} 轮。这些内容会从对话中消失，之后发给模型的
+              将删除 {confirming.length}{" "}
+              轮。这些内容会从对话中消失，之后发给模型的
               请求里不再出现，删除后无法撤销。
             </p>
             <div className="button-row">

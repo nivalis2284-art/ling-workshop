@@ -1,5 +1,84 @@
-import type { ChatEvent } from "../../api/types";
+import type {
+  ChatEvent,
+  ExecutionSession,
+  VerificationEvidence,
+  VerificationStatus,
+} from "../../api/types";
 import { ChatStreamError } from "./errors";
+
+const verificationStatuses: VerificationStatus[] = [
+  "unverified",
+  "stale",
+  "passed",
+  "failed",
+  "unknown",
+];
+
+function parseVerification(value: unknown): VerificationEvidence | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new ChatStreamError("malformed_stream");
+  const raw = value as Record<string, unknown>;
+  if (!verificationStatuses.includes(raw.status as VerificationStatus))
+    throw new ChatStreamError("malformed_stream");
+  if (
+    raw.kind !== undefined &&
+    raw.kind !== "command" &&
+    raw.kind !== "content"
+  )
+    throw new ChatStreamError("malformed_stream");
+  if (raw.checks !== undefined && !Array.isArray(raw.checks))
+    throw new ChatStreamError("malformed_stream");
+  const checks = (raw.checks as unknown[] | undefined)?.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new ChatStreamError("malformed_stream");
+    const check = item as Record<string, unknown>;
+    if (
+      !Array.isArray(check.argv) ||
+      !check.argv.every((part) => typeof part === "string") ||
+      typeof check.exit_code !== "number"
+    )
+      throw new ChatStreamError("malformed_stream");
+    return { argv: check.argv as string[], exit_code: check.exit_code };
+  });
+  return {
+    status: raw.status as VerificationStatus,
+    ...(raw.kind === undefined
+      ? {}
+      : { kind: raw.kind as "command" | "content" }),
+    ...(checks === undefined ? {} : { checks }),
+  };
+}
+
+function parseExecution(value: unknown): ExecutionSession | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new ChatStreamError("malformed_stream");
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.session_id !== "string" ||
+    !raw.session_id ||
+    typeof raw.status !== "string" ||
+    typeof raw.cursor !== "number"
+  )
+    throw new ChatStreamError("malformed_stream");
+  if (raw.output !== undefined && typeof raw.output !== "string")
+    throw new ChatStreamError("malformed_stream");
+  if (raw.truncated !== undefined && typeof raw.truncated !== "boolean")
+    throw new ChatStreamError("malformed_stream");
+  return {
+    session_id: raw.session_id,
+    status: raw.status,
+    cursor: raw.cursor,
+    ...(typeof raw.output === "string" ? { output: raw.output } : {}),
+    ...(typeof raw.truncated === "boolean" ? { truncated: raw.truncated } : {}),
+    ...(raw.result &&
+    typeof raw.result === "object" &&
+    !Array.isArray(raw.result)
+      ? { result: raw.result as Record<string, unknown> }
+      : {}),
+  };
+}
 
 function parseEvent(id: string, event: string, json: string): ChatEvent {
   let data: unknown;
@@ -114,7 +193,9 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
         typeof value.name === "string" &&
         typeof value.call_id === "string" &&
         typeof value.status === "string"
-      )
+      ) {
+        const verification = parseVerification(value.verification);
+        const execution = parseExecution(value.execution);
         return {
           id,
           event,
@@ -125,8 +206,12 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
             call_id: value.call_id,
             status: value.status,
             preview: typeof value.preview === "string" ? value.preview : "",
+            ...(value.access === "full" ? { access: "full" as const } : {}),
+            ...(verification ? { verification } : {}),
+            ...(execution ? { execution } : {}),
           },
         };
+      }
       break;
     case "paused":
     case "resumed":
@@ -154,7 +239,8 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
         (value.assistant_message_id === null ||
           (typeof value.assistant_message_id === "string" &&
             !!value.assistant_message_id))
-      )
+      ) {
+        const verification = parseVerification(value.verification);
         return {
           id,
           event,
@@ -162,8 +248,10 @@ function parseEvent(id: string, event: string, json: string): ChatEvent {
             run_id,
             status: "completed",
             assistant_message_id: value.assistant_message_id,
+            ...(verification ? { verification } : {}),
           },
         };
+      }
       break;
     case "error":
       if (typeof value.code === "string" && typeof value.message === "string")

@@ -3,8 +3,21 @@ import type { LingApi } from "../../api/client";
 import { ConfirmDialog } from "../../shared/ConfirmDialog";
 import { EmptyState, ErrorNotice } from "../../shared/ui";
 import { downloadArtifact, tasksApi } from "./api";
-import type { ChangeReview, Task } from "./api";
+import type { ApplyResult, ChangeReview, Task } from "./api";
 import { useManagementAction } from "./useManagementAction";
+
+type ReviewedChange = ChangeReview["changes"][number] & {
+  baseline_artifact?: string | null;
+};
+type DetailedReview = Omit<ChangeReview, "changes"> & { changes: ReviewedChange[] };
+type DetailedApplyResult = ApplyResult & {
+  files?: {
+    path: string;
+    status: "applied" | "not_applied" | "conflict" | "unknown";
+    reason?: string;
+    effect_id?: string;
+  }[];
+};
 
 export function TaskChanges({
   api,
@@ -15,8 +28,9 @@ export function TaskChanges({
   task: Task;
   onApplied: () => Promise<void>;
 }) {
-  const [review, setReview] = useState<ChangeReview | null>(null);
-  const [confirm, setConfirm] = useState<ChangeReview | null>(null);
+  const [review, setReview] = useState<DetailedReview | null>(null);
+  const [applyResult, setApplyResult] = useState<DetailedApplyResult | null>(null);
+  const [confirm, setConfirm] = useState<DetailedReview | null>(null);
   const [message, setMessage] = useState("");
   const action = useManagementAction();
   const active = task.status === "running" || task.status === "queued";
@@ -33,7 +47,8 @@ export function TaskChanges({
           onClick={() =>
             void action.run(async () => {
               setMessage("");
-              setReview(await tasksApi(api).changes(task.id));
+              setApplyResult(null);
+              setReview((await tasksApi(api).changes(task.id)) as DetailedReview);
             })
           }
         >
@@ -69,6 +84,22 @@ export function TaskChanges({
                   这是二进制文件，可以下载后检查内容。
                 </p>
               )}
+              {change.baseline_artifact && (
+                <button
+                  className="button secondary"
+                  disabled={action.busy}
+                  onClick={() =>
+                    void action.run(async () => {
+                      downloadArtifact(
+                        await tasksApi(api).artifact(task.id, change.baseline_artifact!),
+                        change.path,
+                      );
+                    })
+                  }
+                >
+                  下载原始基线：{change.path}
+                </button>
+              )}
               {change.artifact && (
                 <button
                   className="button secondary"
@@ -85,16 +116,36 @@ export function TaskChanges({
                   下载成果：{change.path}
                 </button>
               )}
+              {applyResult?.files?.find((item) => item.path === change.path) && (
+                <p className="management-status" role="status">
+                  写回状态：
+                  {{
+                    applied: "已应用",
+                    not_applied: "未应用",
+                    conflict: "冲突，未覆盖",
+                    unknown: "结果未知，需人工核对",
+                  }[
+                    applyResult.files.find((item) => item.path === change.path)!.status
+                  ] ?? "需核对"}
+                  {applyResult.files.find((item) => item.path === change.path)?.reason &&
+                    `（${applyResult.files.find((item) => item.path === change.path)?.reason}）`}
+                </p>
+              )}
             </article>
           ))}
+          {applyResult && applyResult.status !== "applied" && (
+            <p className="management-status" role="alert">
+              写回已停止，服务不会自动重试。请逐项核对原始基线、成果和写回状态；未知项可能已产生副作用。
+            </p>
+          )}
           {review.review_id && review.changes.length > 0 && (
             <>
               <p className="muted small">
-                删除和二进制改动需要手动处理。项目或任务副本在审阅后发生变化时，服务会拒绝写回。
+                删除和二进制改动需要手动应用：当前写回接口只安全处理 UTF-8 文本的新增和修改。项目或任务副本在审阅后发生变化时，服务会拒绝写回。
               </p>
               <button
                 className="button primary"
-                disabled={action.busy || active || Boolean(message)}
+                disabled={action.busy || active || Boolean(message) || Boolean(applyResult) || review.changes.some((change) => change.operation === "delete" || change.diff === null)}
                 onClick={() => setConfirm(review)}
               >
                 应用这些改动
@@ -112,9 +163,16 @@ export function TaskChanges({
           onConfirm={() => {
             const review_id = confirm.review_id!;
             void action.run(async () => {
-              const result = await tasksApi(api).apply(task.id, review_id);
-              if (result.status !== "applied")
-                throw new Error("服务没有确认改动已写回，请检查执行记录。");
+              const result = (await tasksApi(api).apply(
+                task.id,
+                review_id,
+              )) as DetailedApplyResult;
+              if (result.status !== "applied") {
+                setApplyResult(result);
+                setConfirm(null);
+                setMessage("写回已停止，请核对逐文件状态和原始基线。");
+                return;
+              }
               setConfirm(null);
               setMessage("改动已写回项目。");
               await onApplied();

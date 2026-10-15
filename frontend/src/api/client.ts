@@ -11,11 +11,13 @@ import type {
   ConversationAccess,
   ConversationMessage,
   ConversationBranch,
+  ExecutionSession,
   ModelInput,
   ModelSelection,
   McpServerEntry,
   PendingConfirmation,
   SandboxLevel,
+  SandboxPreset,
   SandboxStatus,
   SavedModel,
   SkillpackView,
@@ -156,11 +158,22 @@ export class LingApi {
       body: JSON.stringify({ level }),
       signal,
     });
+  setSandboxPreset = (
+    level: SandboxLevel,
+    preset: SandboxPreset,
+    signal?: AbortSignal,
+  ) =>
+    this.request<SandboxStatus>("/sandbox", {
+      method: "PUT",
+      body: JSON.stringify({ level, preset }),
+      signal,
+    });
   permissions = (id: string, signal?: AbortSignal) =>
     this.request<AgentPermissions>(
       "/agents/" + encodeURIComponent(id) + "/permissions",
       { signal },
-    );  savePermissions = (
+    );
+  savePermissions = (
     id: string,
     update: PermissionUpdate,
     signal?: AbortSignal,
@@ -316,6 +329,18 @@ export class LingApi {
     this.request<ChatRun>("/chat/runs/" + encodeURIComponent(runId), {
       signal,
     });
+  recoverChat = (runId: string, additionalSteps?: number) =>
+    this.request<ChatRun>(
+      "/chat/runs/" + encodeURIComponent(runId) + "/recover",
+      {
+        method: "POST",
+        body: JSON.stringify(
+          additionalSteps === undefined
+            ? {}
+            : { additional_steps: additionalSteps },
+        ),
+      },
+    );
   cancelChat = (runId: string) =>
     this.request<ChatRun>(
       "/chat/runs/" + encodeURIComponent(runId) + "/cancel",
@@ -354,5 +379,31 @@ export class LingApi {
         "/confirmations/" +
         encodeURIComponent(fingerprint),
       { approved },
+    );
+  executionSession = (
+    sessionId: string,
+    runId: string,
+    kind: "chat" | "task" = "chat",
+    after = 0,
+    signal?: AbortSignal,
+  ) => {
+    const query = new URLSearchParams({
+      run_id: runId,
+      kind,
+      after: String(after),
+    });
+    return this.request<ExecutionSession>(
+      "/execution/sessions/" + encodeURIComponent(sessionId) + "?" + query,
+      { signal },
+    );
+  };
+  cancelExecutionSession = (
+    sessionId: string,
+    runId: string,
+    kind: "chat" | "task" = "chat",
+  ) =>
+    this.request<ExecutionSession>(
+      "/execution/sessions/" + encodeURIComponent(sessionId) + "/cancel",
+      { method: "POST", body: JSON.stringify({ run_id: runId, kind }) },
     );
 }

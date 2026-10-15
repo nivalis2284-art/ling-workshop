@@ -32,6 +32,12 @@ function toolLabel(name: string) {
 }
 
 function toolStatus(tool: ChatToolCall) {
+  if (tool.execution) {
+    if (tool.execution.status === "running") return "命令运行中";
+    if (tool.execution.status === "cancelled") return "命令已停止";
+    if (tool.execution.status === "unknown") return "命令结果待核对";
+    if (tool.execution.status === "completed") return "命令已退出";
+  }
   switch (tool.status) {
     case undefined:
       return "执行中…";
@@ -49,19 +55,48 @@ function toolStatus(tool: ChatToolCall) {
 }
 
 function toolMark(tool: ChatToolCall) {
-  if (tool.status === "completed") return <Check size={9} strokeWidth={3} aria-hidden="true" />;
+  if (tool.execution?.status === "running") return "…";
+  if (tool.status === "completed")
+    return <Check size={9} strokeWidth={3} aria-hidden="true" />;
   if (tool.status === "blocked" || tool.status === "failed") return "!";
   if (tool.status === "unknown") return "?";
   return "…";
 }
 
 /** One turn's tool activity as a grouped record card. */
-function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
+function verificationLabel(status: string, kind?: string) {
+  if (status === "passed")
+    return kind === "content"
+      ? "内容已回读"
+      : kind === "command"
+        ? "检查通过"
+        : "验证通过";
+  if (status === "stale") return "验证已失效";
+  if (status === "failed") return "检查失败";
+  if (status === "unknown") return "结果未知";
+  return "尚未验证";
+}
+
+function ToolCalls({
+  tools,
+  onRefreshExecution,
+  onStopExecution,
+}: {
+  tools?: ChatToolCall[];
+  onRefreshExecution?: (callId: string) => void;
+  onStopExecution?: (callId: string) => void;
+}) {
   if (!tools?.length) return null;
   const settled = tools.filter(
-    (tool) => tool.status && tool.status !== "running",
+    (tool) =>
+      tool.status &&
+      tool.status !== "running" &&
+      tool.execution?.status !== "running",
   ).length;
-  const finished = tools.filter((tool) => tool.status === "completed").length;
+  const finished = tools.filter(
+    (tool) =>
+      tool.status === "completed" && tool.execution?.status !== "running",
+  ).length;
   return (
     <section className="chat-tools" aria-label="工具调用">
       <div className="chat-tools-head">
@@ -94,9 +129,59 @@ function ToolCalls({ tools }: { tools?: ChatToolCall[] }) {
               </span>
             )}
             <span className="chat-tool-status">{toolStatus(tool)}</span>
+            {tool.verification && (
+              <span className="chat-verification" role="status">
+                验证状态：
+                {verificationLabel(
+                  tool.verification.status,
+                  tool.verification.kind,
+                )}
+                {tool.verification.checks?.map((check, index) => (
+                  <span className="chat-verification-check" key={index}>
+                    {check.argv.join(" ")}（退出码 {check.exit_code}）
+                  </span>
+                ))}
+              </span>
+            )}
             {tool.preview && (
               <pre className="chat-tool-preview">{tool.preview}</pre>
             )}
+            {tool.execution?.output && (
+              <pre className="chat-tool-preview">{tool.execution.output}</pre>
+            )}
+            {tool.execution?.result && (
+              <pre className="chat-tool-preview">
+                {JSON.stringify(tool.execution.result, null, 2)}
+              </pre>
+            )}
+            {tool.execution?.truncated && (
+              <span className="chat-tool-status">输出已截断</span>
+            )}
+            {tool.execution?.session_id &&
+              tool.execution.status === "running" && (
+                <div className="chat-execution-controls">
+                  <button
+                    type="button"
+                    className="text-button"
+                    disabled={!!tool.executionAction}
+                    onClick={() => onRefreshExecution?.(tool.call_id)}
+                  >
+                    {tool.executionAction === "refreshing"
+                      ? "刷新中…"
+                      : "刷新命令输出"}
+                  </button>
+                  <button
+                    type="button"
+                    className="text-button danger"
+                    disabled={!!tool.executionAction}
+                    onClick={() => onStopExecution?.(tool.call_id)}
+                  >
+                    {tool.executionAction === "cancelling"
+                      ? "正在停止…"
+                      : "停止命令"}
+                  </button>
+                </div>
+              )}
           </li>
         ))}
       </ul>
@@ -198,7 +283,15 @@ function MessageTools({
   );
 }
 
-function Reply({ turn }: { turn: ChatTurn }) {
+function Reply({
+  turn,
+  onRefreshExecution,
+  onStopExecution,
+}: {
+  turn: ChatTurn;
+  onRefreshExecution?: (callId: string) => void;
+  onStopExecution?: (callId: string) => void;
+}) {
   return (
     <>
       {turn.thinking && (
@@ -207,7 +300,22 @@ function Reply({ turn }: { turn: ChatTurn }) {
           <p className="preserve-text">{turn.thinking}</p>
         </details>
       )}
-      <ToolCalls tools={turn.tools} />
+      <ToolCalls
+        tools={turn.tools}
+        onRefreshExecution={onRefreshExecution}
+        onStopExecution={onStopExecution}
+      />
+      {turn.verification && (
+        <div className="chat-verification" role="status">
+          验证状态：
+          {verificationLabel(turn.verification.status, turn.verification.kind)}
+          {turn.verification.checks?.map((check, index) => (
+            <span className="chat-verification-check" key={index}>
+              {check.argv.join(" ")}（退出码 {check.exit_code}）
+            </span>
+          ))}
+        </div>
+      )}
       {turn.text ? (
         <p className="preserve-text chat-bubble">{turn.text}</p>
       ) : (
@@ -274,6 +382,8 @@ function SavedMessage({
   attachments,
   regenerateIssue,
   deleteAnchor,
+  onRefreshExecution,
+  onStopExecution,
 }: {
   message: ConversationMessage;
   name: string;
@@ -289,6 +399,8 @@ function SavedMessage({
   attachments: Attachment[];
   regenerateIssue?: string;
   deleteAnchor?: string;
+  onRefreshExecution?: (callId: string) => void;
+  onStopExecution?: (callId: string) => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(message.text);
@@ -366,7 +478,11 @@ function SavedMessage({
           ) : (
             <>
               {turn ? (
-                <Reply turn={{ ...turn, text: message.text }} />
+                <Reply
+                  turn={{ ...turn, text: message.text }}
+                  onRefreshExecution={onRefreshExecution}
+                  onStopExecution={onStopExecution}
+                />
               ) : (
                 <p className="preserve-text chat-bubble">{message.text}</p>
               )}
@@ -408,6 +524,8 @@ export function ChatTranscript({
   onToggleSelect = () => {},
   attachments = [],
   regenerateProblem,
+  onRefreshExecution,
+  onStopExecution,
 }: {
   state: ChatSnapshot;
   name: string;
@@ -421,6 +539,8 @@ export function ChatTranscript({
   onToggleSelect?: (id: string) => void;
   attachments?: Attachment[];
   regenerateProblem?: (user: ConversationMessage) => string | undefined;
+  onRefreshExecution?: (callId: string) => void;
+  onStopExecution?: (callId: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -494,6 +614,8 @@ export function ChatTranscript({
                 ? regenerateProblem?.(parentUser)
                 : undefined
             }
+            onRefreshExecution={onRefreshExecution}
+            onStopExecution={onStopExecution}
           />
         );
       })}
@@ -523,7 +645,11 @@ export function ChatTranscript({
                 {name.slice(0, 1)}
               </span>
               <div className="chat-stack">
-                <Reply turn={live} />
+                <Reply
+                  turn={live}
+                  onRefreshExecution={onRefreshExecution}
+                  onStopExecution={onStopExecution}
+                />
               </div>
             </div>
           </article>

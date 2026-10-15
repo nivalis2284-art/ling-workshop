@@ -152,7 +152,7 @@ export function TaskDetails({
             <TaskChanges api={api} task={task} onApplied={refresh} />
           )}
           {task.workspace && ["paused","blocked"].includes(task.status) && <TaskDependencies key={JSON.stringify(task.dependency_candidate??task.id)} api={api} taskId={task.id} status={task.status} onUpdated={refresh} candidate={task.dependency_candidate}/>}
-          <TaskEvents events={resource.data!.events} />
+          <TaskEvents api={api} taskId={task.id} events={resource.data!.events} />
         </>
       )}
       {confirm && (

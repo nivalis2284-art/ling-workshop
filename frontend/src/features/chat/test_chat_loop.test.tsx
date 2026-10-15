@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { waitFor } from "@testing-library/react";
 import { ApiError, type LingApi } from "../../api/client";
-import type { PendingConfirmation } from "../../api/types";
+import type { ChatRun, PendingConfirmation } from "../../api/types";
 import { ChatSession } from "./session";
 
 function frame(id: number, event: string, data: unknown) {
@@ -30,7 +30,11 @@ function apiFor(
   overrides: Partial<LingApi> = {},
 ): LingApi {
   return {
-    startChat: async () => stream,
+    startChat: async () => {
+      calls.push("start");
+      return stream;
+    },
+    chatEvents: async () => stream,
     chatRun: async () => ({
       id: "run-1",
       agent_id: "ling-1",
@@ -84,8 +88,9 @@ async function startTurn(
   stream: Response,
   send: (text: string) => void,
   calls: string[],
+  overrides: Partial<LingApi> = {},
 ) {
-  const session = new ChatSession(apiFor(stream, calls), "ling-1");
+  const session = new ChatSession(apiFor(stream, calls, overrides), "ling-1");
   session.attach();
   session.setProfile("p");
   session.send("跑个任务", "p");
@@ -121,9 +126,7 @@ test("对话循环把步骤与工具调用记进当前回合", async () => {
     }),
   );
   send(frame(5, "step_started", { run_id: "run-1", step: 2 }));
-  await waitFor(() =>
-    expect(session.getSnapshot().turns.at(-1)?.step).toBe(2),
-  );
+  await waitFor(() => expect(session.getSnapshot().turns.at(-1)?.step).toBe(2));
   expect(session.getSnapshot().turns.at(-1)?.tools).toEqual([
     {
       step: 1,
@@ -134,6 +137,185 @@ test("对话循环把步骤与工具调用记进当前回合", async () => {
       preview: "已写入",
     },
   ]);
+  session.detach();
+});
+
+test("验证证据和命令会话随工具结果进入工作记录", async () => {
+  const calls: string[] = [];
+  const { response, send } = openStream();
+  const session = await startTurn(response, send, calls);
+  send(
+    frame(2, "tool_started", {
+      run_id: "run-1",
+      step: 1,
+      name: "run_command",
+      call_id: "cmd-1",
+      arguments: { argv: ["pytest"] },
+    }),
+  );
+  send(
+    frame(3, "tool_result", {
+      run_id: "run-1",
+      step: 1,
+      name: "run_command",
+      call_id: "cmd-1",
+      status: "completed",
+      preview: "命令已启动",
+      verification: { status: "unknown", kind: "command" },
+      execution: {
+        session_id: "session-1",
+        status: "running",
+        cursor: 4,
+        output: "first chunk",
+      },
+    }),
+  );
+  await waitFor(() => {
+    const tool = session.getSnapshot().turns.at(-1)?.tools?.[0];
+    expect(tool?.verification?.status).toBe("unknown");
+    expect(tool?.execution?.session_id).toBe("session-1");
+  });
+  session.detach();
+});
+
+test("命令会话只在手动刷新时读取增量，停止会话使用同一运行身份", async () => {
+  const calls: string[] = [];
+  const { response, send } = openStream();
+  const session = await startTurn(response, send, calls, {
+    executionSession: async (sessionId, runId, kind, after) => {
+      calls.push(`refresh:${sessionId}:${runId}:${kind}:${after}`);
+      return {
+        session_id: sessionId,
+        status: "running",
+        cursor: 7,
+        output: "second chunk",
+      };
+    },
+    cancelExecutionSession: async (sessionId, runId, kind) => {
+      calls.push(`cancel:${sessionId}:${runId}:${kind}`);
+      return { session_id: sessionId, status: "cancelled", cursor: 7 };
+    },
+  });
+  send(
+    frame(2, "tool_started", {
+      run_id: "run-1",
+      step: 1,
+      name: "run_command",
+      call_id: "cmd-2",
+      arguments: { argv: ["pytest"] },
+    }),
+  );
+  send(
+    frame(3, "tool_result", {
+      run_id: "run-1",
+      step: 1,
+      name: "run_command",
+      call_id: "cmd-2",
+      status: "completed",
+      preview: "命令运行中",
+      execution: {
+        session_id: "session-2",
+        status: "running",
+        cursor: 2,
+        output: "first chunk",
+      },
+    }),
+  );
+  await waitFor(() =>
+    expect(
+      session.getSnapshot().turns.at(-1)?.tools?.[0]?.execution?.cursor,
+    ).toBe(2),
+  );
+  await session.refreshExecution("cmd-2");
+  expect(
+    session.getSnapshot().turns.at(-1)?.tools?.[0]?.execution,
+  ).toMatchObject({
+    cursor: 7,
+    output: "first chunksecond chunk",
+  });
+  await session.stopExecution("cmd-2");
+  expect(
+    session.getSnapshot().turns.at(-1)?.tools?.[0]?.execution?.status,
+  ).toBe("cancelled");
+  expect(calls).toContain("refresh:session-2:run-1:chat:2");
+  expect(calls).toContain("cancel:session-2:run-1:chat");
+  session.detach();
+});
+
+test("从原事件游标恢复运行，不重新发送原消息", async () => {
+  const calls: string[] = [];
+  const initial = openStream();
+  const resumed = openStream();
+  const recoverableRun: ChatRun = {
+    id: "run-1",
+    agent_id: "ling-1",
+    request_id: "req-1",
+    profile_id: "p",
+    status: "interrupted" as const,
+    conversation_id: "conversation-1",
+    user_message_id: "user-1",
+    created_at: "2026-10-11T00:00:00Z",
+    finished_at: null,
+    recoverable: true,
+    verification: { status: "stale" as const },
+  };
+  let currentRun = recoverableRun;
+  const session = await startTurn(initial.response, initial.send, calls, {
+    chatRun: async () => currentRun,
+    recoverChat: async (runId) => {
+      calls.push("recover:" + runId);
+      currentRun = { ...recoverableRun, status: "running", recoverable: false };
+      return currentRun;
+    },
+    chatEvents: async (_runId, after) => {
+      calls.push("events:" + after);
+      currentRun = {
+        ...recoverableRun,
+        status: "completed",
+        recoverable: false,
+        verification: { status: "passed", kind: "command" },
+      };
+      resumed.send(
+        frame(3, "complete", {
+          run_id: "run-1",
+          status: "completed",
+          assistant_message_id: "assistant-1",
+          verification: { status: "passed", kind: "command" },
+        }),
+      );
+      return resumed.response;
+    },
+  });
+  initial.send(
+    frame(2, "error", {
+      run_id: "run-1",
+      code: "interrupted",
+      message: "中断",
+    }),
+  );
+  await waitFor(() =>
+    expect(session.getSnapshot().turns.at(-1)?.recoverable).toBe(true),
+  );
+  const restored = new ChatSession(
+    apiFor(initial.response, calls),
+    "ling-1",
+    "conversation-1",
+  );
+  expect(restored.getSnapshot().turns.at(-1)).toMatchObject({
+    status: "error",
+    runId: "run-1",
+    recoverable: true,
+  });
+
+  expect(await session.recover()).toBe(true);
+
+  expect(calls.filter((call) => call === "start")).toHaveLength(1);
+  expect(calls).toContain("recover:run-1");
+  expect(calls).toContain("events:2");
+  expect(session.getSnapshot().turns.at(-1)).toMatchObject({
+    status: "complete",
+    verification: { status: "passed", kind: "command" },
+  });
   session.detach();
 });
 
@@ -261,7 +443,8 @@ test("决策与回读并发时，已决策的确认卡不会复活，新指纹�
     expect(
       session
         .getSnapshot()
-        .turns.at(-1)?.confirmations?.map((item) => item.fingerprint),
+        .turns.at(-1)
+        ?.confirmations?.map((item) => item.fingerprint),
     ).toEqual(["fp2"]),
   );
   session.detach();

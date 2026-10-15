@@ -1,9 +1,21 @@
 """Explicit directory grants for file tools, supplied by a trusted caller."""
+import hashlib
 import os
+import secrets
+import stat
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._paths import FileAccessDenied, directory, local_path, open_file
+from ._paths import (
+    FileAccessDenied,
+    directory,
+    local_path,
+    open_child,
+    open_file,
+    open_parent,
+    regular_file,
+)
 
 
 class FileLimitExceeded(ValueError):
@@ -63,10 +75,43 @@ class WorkspaceTools:
             raise TypeError("Expected bytes")
         if len(data) > self.max_write_bytes:
             raise FileLimitExceeded("Data exceeds the write limit")
-        with open_file(candidate, operation) as stream:
-            # The descriptor is verified before truncating, including hardlink checks.
-            stream.truncate(0)
-            stream.write(data)
+        with open_parent(candidate) as parent_fd:
+            if operation == "create":
+                created_identity = None
+                try:
+                    with _open_leaf(candidate, operation, parent_fd) as stream:
+                        created_identity = _object_identity(os.fstat(stream.fileno()))
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                except BaseException:
+                    _remove_created_file(candidate, created_identity, parent_fd)
+                    raise
+                return
+
+            # Preserve the old write-access requirement before replacing the
+            # inode; an application write grant alone cannot bypass OS mode bits.
+            with _open_leaf(candidate, "write", parent_fd):
+                pass
+            original_stat, original_digest = _read_version(candidate, parent_fd)
+            mode = stat.S_IMODE(original_stat.st_mode)
+            descriptor, temporary, temporary_name = _create_temporary(candidate, parent_fd)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(data)
+                    stream.flush()
+                    if hasattr(os, "fchmod"):
+                        os.fchmod(stream.fileno(), mode)
+                    os.fsync(stream.fileno())
+                current_stat, current_digest = _read_version(candidate, parent_fd)
+                changed_identity = _file_identity(current_stat) != _file_identity(original_stat)
+                if changed_identity or current_digest != original_digest:
+                    raise OSError("File changed during write; replacement was not applied")
+                if not hasattr(os, "fchmod"):
+                    os.chmod(temporary, mode)
+                _replace_temporary(candidate, temporary, temporary_name, parent_fd)
+            finally:
+                _remove_temporary(temporary, temporary_name, parent_fd)
 
     def create_bytes(self, path: str | os.PathLike[str], data: bytes) -> None:
         self._write(path, data, "create")
@@ -79,3 +124,101 @@ class WorkspaceTools:
 
     def write_text(self, path: str | os.PathLike[str], text: str) -> None:
         self.write_bytes(path, text.encode("utf-8"))
+
+
+def _open_leaf(path: Path, operation: str, parent_fd: int | None):
+    if parent_fd is not None:
+        return open_child(parent_fd, path, operation)
+    return open_file(path, operation)
+
+
+def _read_version(path: Path, parent_fd: int | None):
+    """Read one authorized target version without following aliases."""
+    with _open_leaf(path, "read", parent_fd) as stream:
+        before = os.fstat(stream.fileno())
+        digest = hashlib.sha256()
+        while chunk := stream.read(64 * 1024):
+            digest.update(chunk)
+        after = os.fstat(stream.fileno())
+    if _file_identity(before) != _file_identity(after):
+        raise OSError("File changed while its version was being checked")
+    return after, digest.digest()
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_nlink,
+    )
+
+
+def _object_identity(info: os.stat_result) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
+
+
+def _remove_created_file(
+    path: Path,
+    identity: tuple[int, int] | None,
+    parent_fd: int | None,
+) -> None:
+    """Remove only the still-identical file created by a failed exclusive write."""
+    if identity is None:
+        return
+    try:
+        info = (
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+            if parent_fd is not None
+            else path.lstat()
+        )
+        regular_file(info)
+        if _object_identity(info) == identity:
+            os.unlink(path.name, dir_fd=parent_fd) if parent_fd is not None else path.unlink()
+    except (OSError, FileAccessDenied):
+        # A vanished, linked, or replaced target is not ours to clean up.
+        return
+
+
+def _create_temporary(candidate: Path, parent_fd: int | None):
+    if parent_fd is None:
+        descriptor, name = tempfile.mkstemp(prefix=".ling-write-", dir=candidate.parent)
+        return descriptor, Path(name), Path(name)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
+    for _ in range(16):
+        name = ".ling-write-" + secrets.token_hex(12)
+        try:
+            descriptor = os.open(name, flags, 0o600, dir_fd=parent_fd)
+            return descriptor, candidate.parent / name, name
+        except FileExistsError:
+            continue
+    raise FileExistsError("Unable to allocate a unique temporary file")
+
+
+def _replace_temporary(
+    candidate: Path,
+    temporary: Path,
+    temporary_name: Path | str,
+    parent_fd: int | None,
+) -> None:
+    if parent_fd is None:
+        os.replace(temporary, candidate)
+    else:
+        os.replace(temporary_name, candidate.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+
+
+def _remove_temporary(
+    temporary: Path,
+    temporary_name: Path | str,
+    parent_fd: int | None,
+) -> None:
+    try:
+        if parent_fd is None:
+            temporary.unlink(missing_ok=True)
+        else:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+    except OSError:
+        pass

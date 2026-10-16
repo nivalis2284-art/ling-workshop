@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import Field
 
+from lingnexus.api.input_invalidation import cancel_inputs
 from lingnexus.api.schemas import Input
 from lingnexus.api.security import require_owner
 from lingnexus.browser import ActionInput, BrowserService, OriginGrant
@@ -75,9 +76,11 @@ async def origins(agent_id: str, request: Request):
 
 @router.put("/agents/{agent_id}/browser/origins")
 async def configure(agent_id: str, value: OriginInput, request: Request):
-    return await service(request).configure_origins(
+    result = await service(request).configure_origins(
         agent_id, value.grants, expected_revision=value.expected_revision
     )
+    await cancel_inputs(request, agent_id=agent_id)
+    return result
 
 
 @router.get("/agents/{agent_id}/browser/state")

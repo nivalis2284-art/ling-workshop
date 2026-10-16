@@ -33,6 +33,7 @@ from lingnexus.runtime.store import RunStore
 from lingnexus.skillpacks import SkillLibrary
 from lingnexus.storage.db import Database
 from lingnexus.tasks.sandbox import SandboxService
+from lingnexus.work_events import WorkEvents
 
 
 class Application:
@@ -100,6 +101,7 @@ class Application:
         self.browser: BrowserService | None = None
         self.dependencies: DependencyService | None = None
         self.automatic_backups: AutomaticBackups | None = None
+        self.work_events = WorkEvents(self)
 
     def create_agent(self, name: str) -> str:
         """Register an individual by name only; the first part needs just id + name."""

@@ -22,6 +22,7 @@ from lingnexus.models import APIFamily, ModelProfile, ToolCall
 
 from . import attachments
 from .checkpoints import RunCheckpoints
+from .input_guard import prefix_guards
 
 if TYPE_CHECKING:
     from lingnexus.app import Application
@@ -41,13 +42,25 @@ def build_payload(
     """
     output = profile.max_output_tokens or 4096
     limit = profile.context_window_tokens or 32768
+    # Resolve provenance on the real selected branch, then project *before*
+    # native replay, attachments and the ordinary window selection.
+    conversation_id = next((m.get("conversation_id") for m in messages if m.get("conversation_id")), None)
+    source_guards = None
+    event_manifest = []
+    if conversation_id:
+        source_guards = prefix_guards(app, agent_id, conversation_id, messages)
+        from lingnexus.work_events.projection import project_history
+
+        messages, event_manifest = project_history(app, agent_id, conversation_id, messages)
     plans_by_message = {}
     entries = []
     original_turns = {}
     checkpoints = RunCheckpoints(app.database)
     for message in messages:
         if message["role"] == "assistant":
-            items = checkpoints.completed_items(message["id"], profile.model_dump(mode="json"))
+            items = checkpoints.completed_items(
+                message["id"], profile.model_dump(mode="json"), source_guards=source_guards
+            )
             if items:
                 original_turns[message["id"]] = items
         plans = (
@@ -115,11 +128,10 @@ def build_payload(
         "sent_messages": len(selected),
         "truncated_messages": context.manifest["truncated_messages"] + dropped,
         "attachments": attachment_manifest,
-        "estimated_input_tokens": (
-            context.manifest["estimated_input_tokens"] + attachment_tokens
-        ),
+        "estimated_input_tokens": context.manifest["estimated_input_tokens"],
         "token_count_exact": context.manifest["token_count_exact"] and not attachment_tokens,
-        "strategy_version": 2,
+        "strategy_version": 3,
+        "work_events": [dict(item, sent=any(m["id"] == item["projection_id"] for m in selected)) for item in event_manifest],
     }
     instructions = context.instructions
     if profile.api_family == APIFamily.ANTHROPIC_MESSAGES:

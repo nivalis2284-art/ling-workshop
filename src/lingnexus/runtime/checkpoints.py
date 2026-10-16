@@ -6,6 +6,10 @@ from lingnexus.common.errors import Conflict
 from lingnexus.common.types import utc_now
 
 
+class CheckpointLimit(Conflict):
+    """Semantic capture and side-effect fences remain valid; native replay is full."""
+
+
 class RunCheckpoints:
     def __init__(self, database):
         self.database = database
@@ -18,7 +22,7 @@ class RunCheckpoints:
     def save(self, run_id: str, state: dict, *, secret: str | None = None) -> None:
         encoded = json.dumps(state, ensure_ascii=False)
         if len(encoded.encode()) > 8 * 1_048_576:
-            raise Conflict("运行检查点超过大小上限。")
+            raise CheckpointLimit("运行检查点超过大小上限。")
         if secret and secret in encoded:
             raise Conflict("运行检查点包含凭据，已拒绝保存。")
         with self.database.transaction() as db:
@@ -49,13 +53,18 @@ class RunCheckpoints:
             return db.execute("SELECT 1 FROM chat_tool_effects WHERE run_id=? AND status='executing' LIMIT 1",
                               (run_id,)).fetchone() is not None
 
-    def completed_items(self, message_id: str, profile: dict) -> list | None:
+    def completed_items(self, message_id: str, profile: dict, *, source_guards: dict | None = None) -> list | None:
         with self.database.transaction() as db:
-            rows = db.execute("SELECT c.state FROM chat_run_checkpoints c JOIN chat_runs r ON r.id=c.run_id "
+            rows = db.execute("SELECT c.state,r.user_message_id FROM chat_run_checkpoints c JOIN chat_runs r ON r.id=c.run_id "
                               "WHERE r.status='completed' AND c.assistant_message_id=? ORDER BY r.finished_at DESC",
                               (message_id,)).fetchall()
             for entry in rows:
                 value = json.loads(entry[0])
+                if source_guards is not None and (
+                    not value.get("input_guard")
+                    or source_guards.get(entry["user_message_id"]) != value["input_guard"]
+                ):
+                    continue
                 if value.get("assistant_message_id") == message_id and value.get("profile") == profile:
                     payload = value["payload"]
                     key = "input" if "input" in payload else "messages"

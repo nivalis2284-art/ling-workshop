@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from pydantic import Field
 
+from lingnexus.api.input_invalidation import cancel_inputs
 from lingnexus.api.schemas import Input
 from lingnexus.api.security import require_owner
 
@@ -56,22 +57,28 @@ def branches(conversation_id: str, request: Request):
 
 
 @router.post("/conversations/{conversation_id}/edit")
-def edit(conversation_id: str, value: EditInput, request: Request):
-    return request.app.state.services.conversations.edit_user(
+async def edit(conversation_id: str, value: EditInput, request: Request):
+    result = request.app.state.services.conversations.edit_user(
         conversation_id, value.message_id, value.content, request_id=value.request_id
     )
+    await cancel_inputs(request, conversation_id=conversation_id)
+    return result
 
 
 @router.post("/conversations/{conversation_id}/head")
-def select(conversation_id: str, value: HeadInput, request: Request):
-    return request.app.state.services.conversations.select_head(conversation_id, value.message_id)
+async def select(conversation_id: str, value: HeadInput, request: Request):
+    result = request.app.state.services.conversations.select_head(conversation_id, value.message_id)
+    await cancel_inputs(request, conversation_id=conversation_id)
+    return result
 
 
 @router.post("/conversations/{conversation_id}/delete-turns")
-def delete_turns(conversation_id: str, value: DeleteTurnsInput, request: Request):
-    return request.app.state.services.conversations.delete_turns(
+async def delete_turns(conversation_id: str, value: DeleteTurnsInput, request: Request):
+    result = request.app.state.services.conversations.delete_turns(
         conversation_id, value.anchors
     )
+    await cancel_inputs(request, conversation_id=conversation_id)
+    return result
 
 
 @router.get("/conversations/{conversation_id}/access")

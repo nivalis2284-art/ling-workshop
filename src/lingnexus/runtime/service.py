@@ -26,7 +26,7 @@ from lingnexus.models import (
 )
 
 from . import attachments, input_guard
-from .checkpoints import RunCheckpoints
+from .checkpoints import CheckpointLimit, RunCheckpoints
 from .failover import ChatFailover, FailoverBlocked
 from .hooks import HookEvent
 from .payload import (
@@ -67,7 +67,8 @@ ERROR_MESSAGES = {
     "runtime_error": "The chat run could not be completed.",
     "cancelled": "The owner cancelled this run.",
     "interrupted": "The server stopped before this run completed.",
-    "context_limit": "完整工具交换已超出模型窗口，请拆分任务；本阶段暂未提供上下文压缩。",
+    "context_limit": "当前运行的完整工具交换已超出模型窗口，请拆分任务；可以关闭已结束的工作后折叠其历史。",
+    "checkpoint_limit": "当前运行超出原生恢复点大小上限，不能自动续跑；已安全保留的经历可在核对结果后关闭。",
     "command_session_active": "命令在模型准备结束时仍处于活动状态；已请求停止，请核对命令结果后新建请求。",
     "command_session_unknown": "命令清理状态未知；请人工核对命令与工作目录后再继续。",
     "command_cleanup_unknown": "取消后命令清理未能确认；请人工核对命令与工作目录。",
@@ -235,9 +236,10 @@ class ChatRuntime:
                            and bool(checkpoint) and not self.checkpoints.uncertain(run_id)
                            and not checkpoint.get("evidence", {}).get("unknown_failures")
                            and checkpoint.get("phase") != "completed"
-                           and terminal_code != "context_limit" and not version_unknown
-                           and source_valid)
+                           and terminal_code not in {"context_limit", "checkpoint_limit"} and not version_unknown
+                           and source_valid and not self.app.work_events.run_closed(run_id))
             reason = (
+                ERROR_MESSAGES["checkpoint_limit"] if terminal_code == "checkpoint_limit" else
                 "上下文超出模型窗口，无法从相同输入续跑；请拆分任务或新建请求。"
                 if terminal_code == "context_limit"
                 else "原对话、来源授权或恢复点已失效，请新建请求。"
@@ -335,6 +337,11 @@ class ChatRuntime:
             self.store.append(
                 run_id, "started", {"run_id": run_id, "conversation_id": conversation["id"]}
             )
+            from lingnexus.work_events.service import scope_snapshot
+
+            self.app.work_events.record(run_id, "run_start", "运行开始", metadata={
+                "capture_version": 1, "scope_grants": scope_snapshot(self.app, value.agent_id),
+            })
             if manifest["truncated_messages"]:
                 self.store.append(
                     run_id,
@@ -351,10 +358,13 @@ class ChatRuntime:
                 )
             self.failover.save_selection(run_id, selected)
             effort = self.failover.effort(run_id, profile_id, profile, value.effort)
+            admission = {"input_guard": input_guard.capture(self.app, self.store.get(run_id)),
+                         "source_grants": scope_snapshot(self.app, value.agent_id),
+                         "event_projection": manifest.get("work_events", [])}
         self._control[run_id] = _RunControl()
         self._evidence[run_id] = initial(coding=True)
         task = loop.create_task(
-            self._execute(run_id, profile, selected.credentials, payload, effort, value.effort)
+            self._execute(run_id, profile, selected.credentials, payload, effort, value.effort, admission=admission)
         )
         self._tasks[run_id] = task
         task.add_done_callback(lambda done: self._finish_task(run_id, done))
@@ -497,20 +507,40 @@ class ChatRuntime:
         saved["profile"] = state["profile"].model_dump(mode="json")
         saved["evidence"] = self._evidence.get(run_id, initial(coding=True))
         saved["workspace_version"] = workspace_version(ChatToolScope(self.app, run["agent_id"], run_id).workdir)
-        saved["grants"] = self.app.permissions.current(run["agent_id"])
+        saved["grants"] = state.get("source_grants", {}).get("permissions", self.app.permissions.current(run["agent_id"]))
         self.checkpoints.save(run_id, saved, secret=state["credentials"].api_key)
 
     def _assert_input_current(self, run_id: str) -> None:
         state = self._states.get(run_id, {})
         if not input_guard.matches(self.app, self.store.get(run_id), state.get("input_guard")):
             raise FailoverBlocked("context_invalidated")
+        for projection in state.get("event_projection", []):
+            if not projection.get("sent"):
+                continue
+            event_id = projection.get("event_id")
+            if event_id:
+                try:
+                    event = self.app.work_events.get(event_id)
+                except DomainError as error:
+                    raise FailoverBlocked("context_invalidated") from error
+                if event["revision"] != projection["revision"] or (not event["valid"] and projection["strategy"] != "unavailable"):
+                    raise FailoverBlocked("context_invalidated")
 
     def guide(self, run_id: str, text: str) -> dict:
         """Queue a mid-run instruction, injected as a user turn at the next boundary."""
-        self.get_run(run_id)
+        run = self.get_run(run_id)
         control = self._control.get(run_id)
         if control is None:
             raise Conflict("该对话回合不在进行中，无法提交指导。")
+        state = self._states.get(run_id)
+        credentials = state["credentials"] if state else self.app.profiles.resolve(run["profile_id"])[1]
+        if credentials.api_key in text:
+            raise Conflict("指导包含当前模型凭据，无法保存。")
+        from lingnexus.work_events.service import scope_snapshot
+
+        self.app.work_events.record(run_id, "guidance", text, call_id=new_id(), metadata={
+            "delivery": "queued", "scope_grants": state.get("source_grants") if state else scope_snapshot(self.app, run["agent_id"]),
+        })
         control.guides.append(text)
         return {"run_id": run_id, "queued": len(control.guides)}
 
@@ -564,6 +594,7 @@ class ChatRuntime:
         effort: str | None,
         requested_effort: str | None,
         recovery: dict | None = None,
+        admission: dict | None = None,
     ) -> None:
         from lingnexus.common.diagnostics import diagnostic
 
@@ -572,6 +603,8 @@ class ChatRuntime:
             if self._client is None:
                 self._client = httpx.AsyncClient()
             run = self.store.get(run_id)
+            from lingnexus.work_events.service import scope_snapshot
+
             scope = ChatToolScope(self.app, run["agent_id"], run_id)
             state = {
                 "profile": profile,
@@ -583,11 +616,14 @@ class ChatRuntime:
                 "phase": "ready",
                 "initial_length": len(payload.get("input", payload.get("messages", []))),
                 "input_guard": input_guard.capture(self.app, run),
+                "source_grants": scope_snapshot(self.app, run["agent_id"]),
             }
             if recovery:
                 state.update({key: recovery[key] for key in (
-                    "payload", "effort", "step", "phase", "initial_length", "pending", "step_limit", "input_guard"
+                    "payload", "effort", "step", "phase", "initial_length", "pending", "step_limit", "input_guard", "source_grants", "event_projection"
                 ) if key in recovery})
+            elif admission:
+                state.update(admission)
             self._states[run_id] = state
             # Discovery can block on first use (spawning servers, handshakes);
             # keep it off the event loop like the remote calls themselves.
@@ -673,6 +709,8 @@ class ChatRuntime:
             self._fail(run_id, "credential_in_response")
         except FailoverBlocked as exc:
             self._fail(run_id, exc.code)
+        except CheckpointLimit:
+            self._fail(run_id, "checkpoint_limit")
         except asyncio.CancelledError:
             if run_id not in self._stop_requested:
                 self._fail(run_id, "interrupted", status="interrupted")
@@ -696,7 +734,11 @@ class ChatRuntime:
                 await control.resume_event.wait()
             self.store.append(run_id, "resumed", {"run_id": run_id})
         while control.guides:
-            append_user_message(state["payload"], state["profile"], control.guides.pop(0))
+            guidance = control.guides.pop(0)
+            self._assert_input_current(run_id)
+            self.app.work_events.record(run_id, "guidance_applied", guidance,
+                step=state["step"], call_id=new_id(), metadata={"scope_grants": state["source_grants"]})
+            append_user_message(state["payload"], state["profile"], guidance)
 
     async def _step_call(
         self, run_id: str, step: int, state: dict, requested_effort: str | None
@@ -931,6 +973,9 @@ class ChatRuntime:
             self.checkpoints.finish(run_id, step, call.id, ["sensitive_result_discarded", "unknown", auto_full])
             raise CredentialEcho()
         self.checkpoints.finish(run_id, step, call.id, [text, result.status, auto_full])
+        # The safe full result must survive even when the growing private native
+        # checkpoint crosses its separate 8 MiB cap immediately after this call.
+        self._capture_tool_result(run_id, step, call, text, result.status)
         self._save_checkpoint(run_id, self._states[run_id])
         await self.app.hooks.run(
             HookEvent.AFTER_TOOL,
@@ -946,6 +991,12 @@ class ChatRuntime:
         return call, text, result.status, auto_full
 
     def _emit_tool_started(self, run_id: str, step: int, call: ToolCall) -> None:
+        self._assert_input_current(run_id)
+        state = self._states[run_id]
+        if state["credentials"].api_key in call.arguments_json:
+            raise CredentialEcho()
+        self.app.work_events.record(run_id, "tool_call", call.arguments_json, step=step, call_id=call.id,
+            metadata={"name": call.name, "scope_grants": state["source_grants"]})
         self.store.append(
             run_id,
             "tool_started",
@@ -967,6 +1018,7 @@ class ChatRuntime:
         status: str,
         auto_full: bool,
     ) -> None:
+        self._capture_tool_result(run_id, step, call, text, status)
         data = {
             "run_id": run_id,
             "step": step,
@@ -983,10 +1035,22 @@ class ChatRuntime:
         except (ValueError, TypeError):
             pass
         if auto_full:
-            # Released by the conversation's full-access mode, not by the owner;
-            # the record stays honest about which calls skipped the gate.
             data["access"] = "full"
         self.store.append(run_id, "tool_result", data)
+
+    def _capture_tool_result(self, run_id, step, call, text, status):
+        state = self._states[run_id]
+        if state["credentials"].api_key in text:
+            raise CredentialEcho()
+        bounded = False
+        try:
+            decoded = json.loads(text)
+            if isinstance(decoded, dict):
+                bounded = bool(decoded.get("truncated") or decoded.get("output_truncated") or decoded.get("execution", {}).get("output_truncated"))
+        except (ValueError, TypeError, AttributeError):
+            pass
+        self.app.work_events.record(run_id, "tool_result", text, step=step, call_id=call.id,
+            metadata={"name": call.name, "status": status, "coverage": "bounded" if bounded else "retained", "scope_grants": state["source_grants"]})
 
     async def _before_turn_end(self, run_id: str, text: str) -> None:
         """Trigger the turn-end mount point before anything is persisted.

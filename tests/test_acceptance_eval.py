@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).absolute().parents[1] / "scripts"))
-from evaluate_acceptance import browser_goal
+from evaluate_acceptance import browser_goal, evaluation_directory
 
 
 def test_translated_browser_facts_still_require_all_facts_and_source():
@@ -26,3 +26,25 @@ def test_model_claim_cannot_replace_browser_confirmation_or_exactly_one_submissi
     for change in ({"read_confirmed": False}, {"submissions": 0}, {"submissions": 2},
                    {"values": [{"code": ["WRONG"]}]}):
         assert not browser_goal(**(args | change))
+
+
+def test_disappearing_nested_file_does_not_falsely_confirm_root_cleanup(monkeypatch):
+    import evaluate_acceptance as evaluation
+
+    real_remove = evaluation.shutil.rmtree
+    attempts = []
+
+    def unstable_remove(root):
+        attempts.append(root)
+        if len(attempts) == 1:
+            assert root.exists()
+            raise FileNotFoundError("A nested browser file disappeared")
+        real_remove(root)
+
+    monkeypatch.setattr(evaluation.shutil, "rmtree", unstable_remove)
+    monkeypatch.setattr(evaluation.time, "sleep", lambda _: None)
+    with evaluation_directory() as (root, cleanup):
+        (root / "file.txt").write_text("fixture")
+    assert len(attempts) == 2
+    assert not root.exists()
+    assert cleanup["temporary_data_removed"] is True

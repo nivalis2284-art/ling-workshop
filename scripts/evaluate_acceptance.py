@@ -71,14 +71,12 @@ def evaluation_directory():
                 raise ValueError("linked_evaluation_directory")
             try:
                 shutil.rmtree(root)
-            except FileNotFoundError:
-                cleanup["temporary_data_removed"] = True
-                break
             except OSError:
-                time.sleep(0.2)
-            else:
+                pass  # A disappearing nested Chrome file does not prove root removal.
+            if not root.exists():
                 cleanup["temporary_data_removed"] = True
                 break
+            time.sleep(0.2)
 
 
 @contextlib.contextmanager
@@ -198,7 +196,7 @@ async def delivery_checks(runtime, app, tid, source):
     return {"source_conflict_refused": True, "remaining_only": True, "repeated_apply_no_replay": True}
 
 
-async def custom_trial(case, output_dir, budget, key, timeout):
+async def custom_trial(case, output_dir, budget, key, timeout, api_family="openai_chat_completions"):
     from lingnexus.app import Application
     from lingnexus.browser.policy import OriginGrant
     from lingnexus.browser.service import BrowserService
@@ -223,7 +221,7 @@ async def custom_trial(case, output_dir, budget, key, timeout):
             try:
                 agent = app.create_agent("M1验收夹具")
                 saved = app.profiles.save("验收模型", ModelProfile(
-                    api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model=DEFAULT_MODEL,
+                    api_family=APIFamily(api_family), model=DEFAULT_MODEL,
                     base_url=DEFAULT_BASE_URL, max_output_tokens=1024, context_window_tokens=32768,
                     input_price_per_million=INPUT_RATE, output_price_per_million=OUTPUT_RATE), api_key=key)
                 app.profiles.select(saved["id"], None)
@@ -326,6 +324,7 @@ async def custom_trial(case, output_dir, budget, key, timeout):
                 record = {"case": case, "trial_id": trial_id, "accepted": bool(passed),
                     "status": "budget_limited" if transport.budget_limited else "framework_failure" if infra
                               else "passed" if passed else "goal_not_completed",
+                    "api_family": api_family,
                     "task": {k: task.get(k) for k in ("status", "error_code", "step_count", "verified")},
                     "checks": checks, "tools": names, "diagnostics": [e["data"] for e in events if e["type"] == "diagnostic"],
                     "seconds": round(time.monotonic() - started, 3), "budget": budget.snapshot(trial_id),
@@ -352,14 +351,15 @@ async def run(args):
     args.output_dir.mkdir(parents=True, exist_ok=True)
     path = args.output_dir / ("m1-acceptance-" + uuid4().hex + ".json")
     report = {"source": _source_identity(Path(__file__).absolute().parents[1]), "model": DEFAULT_MODEL,
-              "base_url": DEFAULT_BASE_URL, "schedule": schedule, "records": [], "complete": False}
+              "base_url": DEFAULT_BASE_URL, "api_family": args.api_family,
+              "schedule": schedule, "records": [], "complete": False}
     previous_failure = None
     for case, group in schedule:
         try:
             if case in {"information", "documents", "tools"}:
-                record = await trial(case, args.output_dir, budget, key, args.timeout_seconds)
+                record = await trial(case, args.output_dir, budget, key, args.timeout_seconds, args.api_family)
             else:
-                record = await custom_trial(case, args.output_dir, budget, key, args.timeout_seconds)
+                record = await custom_trial(case, args.output_dir, budget, key, args.timeout_seconds, args.api_family)
             record["group"] = group
             report["records"].append(record)
         except Exception as error:
@@ -388,6 +388,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
     parser.add_argument("--case", action="append", choices=CASES)
+    parser.add_argument("--api-family", choices=("openai_chat_completions", "openai_responses"),
+                        default="openai_chat_completions")
     parser.add_argument("--timeout-seconds", type=int, default=240)
     parser.add_argument("--output-dir", type=Path, default=Path(".artifacts/m1-acceptance"))
     args = parser.parse_args()

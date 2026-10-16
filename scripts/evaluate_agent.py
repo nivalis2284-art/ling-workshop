@@ -65,7 +65,7 @@ def prepare(case, root):
             'Read back answer.txt, then run a verification command that asserts it equals 42.')
 
 
-async def trial(case, output_dir, budget, key, timeout):
+async def trial(case, output_dir, budget, key, timeout, api_family="openai_chat_completions"):
     from lingnexus.app import Application
     from lingnexus.models import APIFamily, ModelProfile
     from lingnexus.tasks import TaskRuntime
@@ -85,7 +85,7 @@ async def trial(case, output_dir, budget, key, timeout):
             try:
                 agent = app.create_agent("通用任务评测")
                 profile = app.profiles.save("评测模型", ModelProfile(
-                    api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model=DEFAULT_MODEL,
+                    api_family=APIFamily(api_family), model=DEFAULT_MODEL,
                     base_url=DEFAULT_BASE_URL, max_output_tokens=512, context_window_tokens=32768,
                     input_price_per_million=INPUT_RATE, output_price_per_million=OUTPUT_RATE,
                 ), api_key=key)
@@ -119,6 +119,7 @@ async def trial(case, output_dir, budget, key, timeout):
                 hashes = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in artifact_root.iterdir()
                           if p.name in {"notes.txt", "summary.txt", "input.txt", "answer.txt"} and p.is_file()}
                 record = {"case": case, "trial_id": trial_id, "status": status, "accepted": passed,
+                    "api_family": api_family,
                     "task": {k: task.get(k) for k in ("status", "error_code", "step_count", "verified")},
                     "diagnostics": [e["data"] for e in events if e["type"] == "diagnostic"],
                     "tools": names, "artifact_hashes": hashes, "seconds": round(time.monotonic()-started, 3),
@@ -163,7 +164,7 @@ async def live(args):
     budget = BudgetFile(DEFAULT_BUDGET, DEFAULT_BUDGET_USD)
     records = []
     for case in args.case or CASES:
-        record = await trial(case, args.output_dir, budget, key, args.timeout_seconds)
+        record = await trial(case, args.output_dir, budget, key, args.timeout_seconds, args.api_family)
         records.append(record)
         if record["status"] in {"framework_failure", "budget_limited"}:
             break
@@ -179,6 +180,8 @@ def main():
     mode.add_argument("--live", action="store_true")
     mode.add_argument("--dry-run", action="store_true")
     parser.add_argument("--case", action="append", choices=CASES)
+    parser.add_argument("--api-family", choices=("openai_chat_completions", "openai_responses"),
+                        default="openai_chat_completions")
     parser.add_argument("--timeout-seconds", type=int, default=120)
     parser.add_argument("--output-dir", type=Path, default=Path(".artifacts/agent-eval"))
     args = parser.parse_args()

@@ -274,7 +274,7 @@ class Snapshots:
         self._require_commands_resolved(tid)
         if task["status"] in {"running", "queued"}:
             raise Conflict("Pause the task before reconciling application.")
-        with self.app.actions.reconciliation_guard(), self.app.database.transaction():
+        with self.app.actions.reconciliation_guard(), self.app.database.transaction() as db:
             source = authorize(self.app, task["agent_id"], task["workspace"])
             review = self.store.get_review(tid, rid)
             prior = review.get("result") or {}
@@ -292,6 +292,15 @@ class Snapshots:
                 if staged.get(path) != change["after"]:
                     raise Conflict("Staged artifacts changed; inspect a new task before reconciliation.")
                 # A live file effect is not resolved by a matching content hash.
+                # execute() may fail before returning its ID (for example while
+                # persisting the result). Its deterministic request key still
+                # identifies the durable intent, including on older reviews.
+                action = db.execute(
+                    "SELECT status FROM actions WHERE agent_id=? AND request_id=?",
+                    (task["agent_id"], "task-apply:" + rid + ":" + path),
+                ).fetchone()
+                if action is not None and action["status"] == "executing":
+                    raise Conflict("A file effect is still executing.")
                 for item in prior.get("files", []):
                     if (item["path"] == path and item.get("effect_id")
                             and self.app.actions.get(item["effect_id"])["status"] == "executing"):

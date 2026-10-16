@@ -45,6 +45,24 @@ def test_partial_application_reconciliation_only_writes_remaining_files(tmp_path
         app.close()
 
 
+def test_reconciliation_refuses_executing_action_without_returned_effect_id(tmp_path, monkeypatch):
+    app, runtime, tid, project, _staged, review = _task_workspace(tmp_path)
+    try:
+        def fail_recording_result(*args, **kwargs):
+            raise RuntimeError("write finished but result persistence failed")
+
+        monkeypatch.setattr(app.actions, "_finish", fail_recording_result)
+        outcome = asyncio.run(runtime.apply(tid, review_id=review["review_id"]))
+        assert outcome["status"] == "unknown"
+        assert "effect_id" not in outcome["files"][0]
+        assert (project / "a.txt").read_text() == "new-a"
+        with pytest.raises(Conflict, match="still executing"):
+            asyncio.run(runtime.reconcile(tid, review_id=review["review_id"]))
+    finally:
+        asyncio.run(runtime.aclose())
+        app.close()
+
+
 @pytest.mark.parametrize("target", ["source", "staged", "unrelated", "revoked"])
 def test_reconciliation_refuses_changes_or_revoked_permissions(tmp_path, monkeypatch, target):
     app, runtime, tid, project, staged, review = _task_workspace(tmp_path)

@@ -4,6 +4,36 @@ import { expect, test, vi } from "vitest";
 import { TaskChanges } from "./TaskChanges";
 import { backend, task } from "./test/fixtures";
 
+test("刷新后可读取持久写回状态，并单独审阅剩余文件后确认", async () => {
+  const { api, requests } = backend(({ path }) => {
+    if (path.endsWith("/application")) return {
+      review_id: "old-review", status: "unknown", result: {
+        review_id: "old-review", status: "unknown", effect_ids: [],
+        files: [{path: "a.txt", status: "applied"}, {path: "b.txt", status: "unknown"}],
+      },
+    };
+    if (path.endsWith("/reconcile")) return {
+      review_id: "remaining-review", files: [{path: "b.txt", operation: "modify",
+        before: "old", after: "new", diff: "-old\n+new", artifact: "b.txt"}],
+    };
+    if (path.endsWith("/apply")) return {
+      review_id: "remaining-review", status: "applied", effect_ids: ["effect-b"],
+    };
+  });
+  const user = userEvent.setup();
+  render(<TaskChanges api={api} task={task} onApplied={async () => {}} />);
+  await user.click(screen.getByRole("button", {name: "读取上次写回记录"}));
+  expect(await screen.findByRole("list", {name: "持久写回记录"})).toHaveTextContent("a.txt：已应用");
+  await user.click(screen.getByRole("button", {name: "核对并审阅剩余改动"}));
+  expect(await screen.findByRole("heading", {name: "b.txt"})).toBeInTheDocument();
+  expect(screen.queryByRole("heading", {name: "a.txt"})).not.toBeInTheDocument();
+  expect(requests.filter(r => r.path.endsWith("/apply"))).toHaveLength(0);
+  await user.click(screen.getByRole("button", {name: "应用这些改动"}));
+  await user.click(screen.getByRole("button", {name: "确认写回项目"}));
+  await screen.findByText("改动已写回项目。");
+  expect(requests.filter(r => r.path.endsWith("/apply"))).toHaveLength(1);
+});
+
 test("成果通过鉴权二进制接口下载，保留字节与文件名", async () => {
   const { api, requests } = backend(({ path }) => {
     if (path.endsWith("/changes"))

@@ -186,6 +186,7 @@ class ModelError:
     code: str
     message: str
     status_code: int | None = None
+    reason: str | None = None
 
 
 EventType = Literal[

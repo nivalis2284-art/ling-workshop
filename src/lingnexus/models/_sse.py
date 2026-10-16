@@ -9,8 +9,9 @@ from .types import StreamLimits
 
 
 class ProtocolError(Exception):
-    def __init__(self, code: str = "malformed_stream") -> None:
+    def __init__(self, code: str = "malformed_stream", *, reason: str | None = None) -> None:
         self.code = code
+        self.reason = reason
         super().__init__(code)
 
 
@@ -22,7 +23,7 @@ def json_object(text: str, code: str = "malformed_stream") -> dict[str, Any]:
     try:
         value = json.loads(text, parse_constant=_reject_constant)
     except (ValueError, RecursionError):
-        raise ProtocolError(code) from None
+        raise ProtocolError(code, reason="invalid_json") from None
     if not isinstance(value, dict):
         raise ProtocolError(code)
     return value
@@ -59,7 +60,7 @@ async def frames(chunks: AsyncIterable[bytes], limits: StreamLimits) -> AsyncIte
             try:
                 decoded = line.decode("utf-8-sig" if first_line else "utf-8")
             except UnicodeDecodeError:
-                raise ProtocolError() from None
+                raise ProtocolError(reason="invalid_utf8") from None
             first_line = False
             line.clear()
             if not decoded:

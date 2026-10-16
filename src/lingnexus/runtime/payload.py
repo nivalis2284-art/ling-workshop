@@ -149,6 +149,9 @@ def _environment_block(app, agent_id: str) -> str:
         "- 可读目录：" + ("；".join(readable) if readable else "无"),
     ]
     if writable:
+        from lingnexus.common.workspace_scan import policy
+
+        lines.append("- 工作区验证范围与上限：" + json.dumps(policy(), ensure_ascii=False))
         lines.append("- 命令执行：可用（" + _sandbox_summary(app) + "）")
         lines.append("- 命令工作目录：" + writable[0])
         sandbox = getattr(app, "sandbox", None)

@@ -137,10 +137,13 @@ class TaskRuntime:
             import platform
 
             actual_root = str(self.snapshots.root / tid / "workspace") if spec["workspace"] else "none"
+            from lingnexus.common.workspace_scan import policy
+
             stated_root = "/workspace" if self.sandbox.level() == "container" else actual_root
             system_rules += (f"\nPlatform: {'Linux' if self.sandbox.level() == 'container' else platform.system()}"
                              f"\nWorkspace: {stated_root}\nSandbox: {self.sandbox.level()}"
-                             f"\nProtections and limits: {encode(self.sandbox.info())}")
+                             f"\nProtections and limits: {encode(self.sandbox.info())}"
+                             f"\nSnapshot coverage and limits: {encode(policy())}")
             state = {
                 "environment": spec["environment"],
                 "coding_workspace": bool(spec["workspace"]),
@@ -305,6 +308,10 @@ class TaskRuntime:
         async with self._apply_lock, self._dependency_guard(tid):
             return self.snapshots.apply(tid, review_id)
 
+    async def reconcile(self, tid, *, review_id):
+        async with self._apply_lock, self._dependency_guard(tid):
+            return self.snapshots.reconcile(tid, review_id)
+
     @asynccontextmanager
     async def _dependency_guard(self, tid):
         dependencies = getattr(self.app, "dependencies", None)
@@ -405,6 +412,9 @@ class TaskRuntime:
         return await run_model(self, tid, state)
 
     async def _worker(self, tid):
+        from lingnexus.common.diagnostics import diagnostic
+
+        stage = "initialization"
         try:
             if not self.store.claim(tid):
                 return
@@ -413,6 +423,7 @@ class TaskRuntime:
                 if not await self._priority(tid):
                     return
                 if state["pending"]:
+                    stage = "tools"
                     if not await self._consume(tid, state):
                         return
                     continue
@@ -421,6 +432,7 @@ class TaskRuntime:
                     self.store.status(tid, "paused", "step_limit")
                     return
                 async with self._model_lock:
+                    stage = "model"
                     if not await self._priority(tid) or not await self._model(tid, state):
                         return
         except asyncio.CancelledError:
@@ -430,8 +442,9 @@ class TaskRuntime:
             self.store.status(tid, "blocked", "credentials_required")
         except DomainError:
             self.store.status(tid, "blocked", "task_state_invalid")
-        except Exception:  # noqa: BLE001 -- worker errors must remain static and credential-free
+        except Exception as exc:  # noqa: BLE001 -- worker errors must remain static and credential-free
             # No provider bodies, native exception text, paths or keys in errors.
+            self.store.event(tid, "diagnostic", diagnostic(stage, exc))
             self.store.status(tid, "blocked", "task_runtime_error")
         finally:
             key = (self._db_key, tid)

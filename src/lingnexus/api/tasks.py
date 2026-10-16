@@ -111,4 +111,25 @@ def artifact(task_id: str, path: str, request: Request):
 
 @router.post("/{task_id}/apply")
 async def apply(task_id: str, value: ApplyInput, request: Request):
-    return await request.app.state.tasks.apply(task_id, review_id=value.review_id)
+    result = await request.app.state.tasks.apply(task_id, review_id=value.review_id)
+    return {k: v for k, v in result.items() if k != "source_baseline"}
+
+
+@router.post("/{task_id}/reconcile")
+async def reconcile(task_id: str, value: ApplyInput, request: Request):
+    return await request.app.state.tasks.reconcile(task_id, review_id=value.review_id)
+
+
+@router.get("/{task_id}/application")
+def application(task_id: str, request: Request):
+    runtime = request.app.state.tasks
+    runtime.get(task_id)
+    with runtime.app.database.transaction() as db:
+        row = db.execute("SELECT id FROM task_reviews WHERE task_id=? AND status!='reviewed' "
+                         "ORDER BY created_at DESC,rowid DESC LIMIT 1", (task_id,)).fetchone()
+        if row is None:
+            return None
+        review = runtime.store.get_review(task_id, row[0])
+        return {"review_id": row[0], "status": review["status"],
+                "result": {k: v for k, v in (review["result"] or {}).items()
+                           if k in {"status", "review_id", "files", "effect_ids", "replacement_review_id", "observations"}}}

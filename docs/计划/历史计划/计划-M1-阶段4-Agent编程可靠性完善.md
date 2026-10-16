@@ -1,0 +1,177 @@
+# 阶段计划：Agent 编程可靠性完善
+
+> 2026-10-15立项，2026-10-16更新 ｜ 状态：实现已接线，真实评测未通过、阶段不关闭 ｜ 所属里程碑：M1「继续优化地基」阶段4
+
+## 目标
+
+在现有上下文窗口内，让一次编程任务的模型续接、执行、恢复、修改和验证形成可追溯的闭环；用真实项目任务检验交付质量，并如实报告仍需人工介入的边界。
+
+## 依据
+
+- 所有者本轮指令：下一阶段继续完善 Agent 地基；先拟计划，写清如何优化和完善。**上下文压缩准备与长期记忆系统一起解决，本阶段暂缓。**
+- 2026-10-15 所有者确认开始执行本计划，并授权将简单重复工作及测试验收交给 Luna 子代理；随后指定模型、费率及总预算，见执行记录。
+- 现有阶段1～3的实现与复核已有记录，但仍待所有者实测；状态保留，见 [当前里程碑](../../里程碑/当前里程碑.md)。旧联合计划已移到 [历史计划](计划-M1-阶段2+3-完全访问与前端重构.md)，归档不代表验收完成。
+- 本轮代码取证与局部复现：
+
+| 事实 | 证据 | 本阶段对应工作 |
+|---|---|---|
+| 任务证据统计漏掉 `edit_file`；已验证后编辑仍为已验证；编辑后只回读也能变成已验证 | `src/lingnexus/tasks/execution.py::account`；隔离执行原函数的两项内存复现，未调用真实模型 | 任务1 |
+| 普通聊天忽略完成事件中的原生 continuation，按显示文本与工具调用重建请求；任务运行器会保存原生响应 | `src/lingnexus/runtime/service.py::_stream_turn`、`runtime/payload.py::append_tool_calls`、`tasks/protocol.py::append_response` | 任务2 |
+| 聊天重启后仅标记 interrupted；任务副本有持久状态与人工恢复路径；聊天后续请求从消息分支重建，不自动回填全部工具证据 | `src/lingnexus/runtime/service.py`、`tasks/service.py`、`conversations/service.py` | 任务2、3 |
+| 默认命令30秒、256 MiB内存、64 KiB输出；无持久命令会话；任务提示固定描述 Docker，但执行器默认允许本地档 | `src/lingnexus/tools/docker.py::ExecutionLimits`、`tools/_process.py`、`tools/sandbox.py`、`tasks/protocol.py::INSTRUCTIONS` | 任务4 |
+| 编辑是精确字符串替换；副本写回有指纹校验，部分写入失败会标记 unknown；删除与二进制需人工应用 | `src/lingnexus/actions/dispatch.py::_edit`、`tools/workspace.py`、`tasks/workspace.py::apply` | 任务5 |
+| 真实编程探针主要为最多15步的单文件修错；现有模拟响应测试不等于复杂编程成功率 | `scripts/probe_task.py`、`scripts/verify_task_ui.py`、`tests/test_chat_loop.py` | 任务6 |
+
+- Codex仅作为公开机制参照：原生协议状态、持续验证、持久任务状态和可审阅修改值得借鉴；不据此声称成功率相同。参考 [Codex 长任务实践](https://developers.openai.com/blog/run-long-horizon-tasks-with-codex)、[Codex 工具与续接指引](https://developers.openai.com/cookbook/examples/gpt-5/codex_prompting_guide)。本阶段不照搬其中的压缩方案。
+
+## 改什么（范围清单）
+
+以下为拟修改或新增的路径；新增模块的职责在任务中定义，代码尚未创建。
+
+| 范围 | 文件 |
+|---|---|
+| 共用验证证据 | `src/lingnexus/common/`、`src/lingnexus/runtime/`、`src/lingnexus/tasks/`；精确文件及新增模块见任务1 |
+| 原生续接、检查点与恢复 | `src/lingnexus/models/`、`src/lingnexus/conversations/`、`src/lingnexus/storage/migrations/`；运行器与界面接线见任务2、3 |
+| 命令会话与环境配置 | `src/lingnexus/tools/`、`src/lingnexus/actions/`、`src/lingnexus/permissions/`、`src/lingnexus/api/`、`frontend/src/features/settings/`；见任务4 |
+| 编辑、审阅与写回 | 文件工具、授权与动作服务、任务副本、`frontend/src/features/tasks/`；见任务5 |
+| 测试与真实评测 | `tests/`、`frontend/src/test/`、各功能测试；`scripts/evaluate_coding.py` 与固定任务清单见任务6 |
+| 文档与收尾 | `docs/计划/`、`docs/里程碑/`、`docs/审查记录/`、`docs/地图.md`、`docs/交接.md`；现有模块 README 见任务7 |
+
+迁移编号以实际执行时的最新编号顺延；旧迁移不重写。现有前端样式仅为新增状态和控制补齐，不重新设计整套界面。
+
+## 不改什么（边界）
+
+- 本阶段暂缓上下文压缩、滚动摘要、长期记忆检索、人格与经历系统；第二部分仍不装配。这里保存原始运行状态，不生成记忆或摘要。
+- 不把更大窗口、更多步数或更高资源上限当作长任务可靠性的完成依据；暂不承诺跨窗口持续完成复杂编程。
+- 沿用按对话的完全访问语义、目录授权、沙箱档位、审计和浏览器点击审批；新增会话控制接入同一权限边界。
+- 暂不扩展多代理调度、插件生态、任意交互式终端、跨主机进程迁移；本轮命令会话面向可轮询、可取消的非交互程序。
+- 暂不新增通用补丁语言、自动应用文件删除或二进制改动；保留人工应用入口，并明确标出未应用项。
+- 不改 `docs/愿景/`、文档六类别、`AGENTS.md`；不改 `start.bat`，保持其 GBK + CRLF 约定；不做安装包发布。
+
+## 执行步骤（任务清单）
+
+按任务1→2→3→4→5→6→7推进；每项均交付后端、必要界面和回归证据，单独提交和复核。任务4、5分别复用前面的检查点、证据版本机制。计划确认后再开始实现；具体重要取舍若超出下列范围，先修订计划。
+
+### 任务1：修正并统一“已验证”的含义
+
+- 文件：`src/lingnexus/common/verification.py`（新增）、`src/lingnexus/tasks/execution.py`、`src/lingnexus/tasks/protocol.py`、`src/lingnexus/runtime/service.py`、`src/lingnexus/runtime/scope.py`、`frontend/src/api/types.ts`、`frontend/src/features/chat/session.ts`、`frontend/src/features/chat/ChatTranscript.tsx`、`tests/test_verification.py`（新增）、`tests/test_chat_loop.py`。
+- 做法：
+  1. 提取两种运行器共用的证据状态，区分运行结束、命令执行成功、检查通过和任务交付结论；普通闲聊不强制执行编程验证。
+  2. 把 `edit_file` 纳入修改集合与证据失效规则；所有修改入口，包括命令产生的改动，都使旧代码验证失效。证据绑定本次工作区、相关文件内容版本、检查命令和实际结果；无法确定版本或清理状态时记为 unknown。
+  3. 编程任务的回读只能证明内容可读，不能替代检查。成功退出的任意命令也不直接等于需求达成：交付同时列出检查内容、覆盖范围及未验证项。
+  4. 整理失败记录：失败过的探索命令保留历史；后续修正并重新验证后，可解除对应的当前阻塞，不要求重放完全相同的错误参数；未知副作用单独处理，不因后续测试成功而抹去。
+  5. 对话和任务界面显示“未验证／验证已失效／检查通过／检查失败／结果未知”等事实状态，避免把普通 `completed` 渲染成代码已经验证。
+- 验证：专项测试覆盖“验证→编辑”“编辑→回读”“验证→命令改文件”“失败→修正→重新验证”、超时／截断／清理未知、无修改的普通聊天；真实命令检查结果通过 API 与前端映射回读。
+- 完成标准：本轮复现的两条漏洞均先有失败回归用例、修复后通过；两种运行器对同一序列给出一致证据状态；所有代码修改后旧验证均失效，界面与后端一致。
+
+### 任务2：保存并使用模型原生续接状态
+
+- 文件：`src/lingnexus/runtime/checkpoints.py`（新增）、`src/lingnexus/storage/migrations/029_run_checkpoints.sql`（新增）、`src/lingnexus/runtime/service.py`、`src/lingnexus/runtime/payload.py`、`src/lingnexus/runtime/store.py`、`src/lingnexus/models/types.py`、`src/lingnexus/tasks/protocol.py`、`src/lingnexus/conversations/service.py`、`tests/test_run_recovery.py`（新增）、`tests/test_chat_loop.py`。
+- 做法：
+  1. 普通对话复用任务运行器已验证的原生响应保存方式，分别保留三协议需要的完整块、工具调用标识及必要的不透明续接状态；显示文本不再作为协议状态的替代品。
+  2. 在模型响应完整结束、工具执行前后保存检查点；记录运行、消息分支、模型配置版本、工具结果与验证状态。密钥不写入检查点；内部协议状态不通过普通 API、日志或界面返回。
+  3. 同一分支的后续用户轮次重建已完成的工具调用和结果，保留足够事实证据；编辑、重新生成或切换分支时只使用该分支的状态，不能串入被放弃分支。
+  4. 旧消息没有完整原生记录时明确降级，保留现有文本历史；不从工具预览或思考显示文本伪造原生块。模型切换不跨协议硬拼状态，保留当前安全回退语义。
+  5. 请求预算包含工具声明、附件与原生块；工具调用和结果按完整交换保留，不能裁出孤立结果。原始历史增长仍受现有窗口边界约束；接近预算时提示，无法容纳完整交换时明确停止，不在本任务引入压缩。
+- 验证：三协议合成流检查第二次及后续请求的完整原生内容；覆盖带思考签名／加密续接、多个工具结果、分支编辑、模型切换、旧数据降级和敏感字段不外泄；真实协议验证在任务6进行。
+- 完成标准：原生状态被实际用于下一步和可用的后续轮次；当前分支可追溯，其他分支不混入；缺失／不兼容状态明确报告；现有文本历史可继续读取。
+
+### 任务3：让中断恢复可判断、可操作、不会重复副作用
+
+- 文件：`src/lingnexus/runtime/checkpoints.py`、`src/lingnexus/runtime/service.py`、`src/lingnexus/runtime/confirmations.py`、`src/lingnexus/tasks/service.py`、`src/lingnexus/tasks/store.py`、`src/lingnexus/tasks/execution.py`、`src/lingnexus/api/chat.py`、`src/lingnexus/api/tasks.py`、`frontend/src/features/chat/session.ts`、`frontend/src/features/chat/ChatRunControls.tsx`、`frontend/src/features/tasks/TaskDetails.tsx`、`tests/test_run_recovery.py`、`frontend/src/test/Session.test.tsx`、`frontend/src/test/ChatControls.test.tsx`。
+- 做法：
+  1. 区分模型请求中断、工具尚未执行、工具结果已落盘、工具副作用未知四类恢复点；两种运行器沿用统一分类，不强行合并为一个巨型循环。
+  2. 增加普通对话的可恢复入口，复用已有恢复操作的含义；恢复前检查消息分支、配置、当前授权、文件版本和待确认状态，发生冲突时返回原因与可采取的操作。
+  3. 已有确定结果的工具不重复执行；命令／MCP等副作用未知时进入核对流程，不自动重试。模型网络失败可在未产生工具副作用的安全边界重试，重试次数有界并记账。
+  4. 页面断线只重新订阅；进程重启只恢复持久状态，由所有者选择继续；暂停、取消、指导分别有明确响应。未完成工作不会因为模型输出一段总结就被改为已验收。
+- 验证：故障注入覆盖上述四个边界，检查真实副作用计数；覆盖重复点恢复、过期分支、权限撤回、配置变化、确认等待、前端重连和任务步数用尽后的扩额恢复。
+- 完成标准：可安全续跑的运行继续原任务；不能确定的运行保留证据并说明阻塞；重复请求不重复副作用；两种界面都有可用入口和错误提示。
+
+### 任务4：补齐真实环境说明与长命令管理
+
+- 文件：`src/lingnexus/tools/sessions.py`、`src/lingnexus/api/execution.py`、`src/lingnexus/storage/migrations/030_execution_sessions.sql`（均新增）；`src/lingnexus/tools/_process.py`、`src/lingnexus/tools/sandbox.py`、`src/lingnexus/tools/docker.py`、`src/lingnexus/tasks/sandbox.py`、`src/lingnexus/tasks/protocol.py`、`src/lingnexus/tasks/service.py`、`src/lingnexus/tasks/execution.py`、`src/lingnexus/runtime/payload.py`、`src/lingnexus/runtime/scope.py`、`src/lingnexus/runtime/confirmations.py`、`src/lingnexus/permissions/hooks.py`、`src/lingnexus/actions/catalog.py`、`src/lingnexus/actions/dispatch.py`、`src/lingnexus/app.py`、`src/lingnexus/api/sandbox.py`、`src/lingnexus/api/app.py`、`frontend/src/features/settings/SandboxSettings.tsx`、`frontend/src/features/chat/session.ts`、`frontend/src/features/chat/ChatTranscript.tsx`、`frontend/src/features/tasks/TaskEvents.tsx`、`tests/test_execution_sessions.py`（新增）、`tests/test_sandbox_tiers.py`、`frontend/src/features/settings/SandboxSettings.test.tsx`。
+- 做法：
+  1. 两种运行器均从实际执行器生成平台、工作目录、档位、网络与文件隔离能力、命令格式、依赖状态和资源额度；移除任务提示中固定的 Docker/Linux 描述。授予多个目录时，明确本次命令工作目录，不让模型自行猜测。
+  2. 为超出前台等待时长的非交互命令返回会话标识；新增模型可用的状态查询和终止工具，HTTP与界面使用同一服务。短命令保留现有结果结构的兼容路径。
+  3. 输出按游标增量读取、有总量上限；明确区分运行中、已退出、超时、已取消、输出截断和清理未知。会话归属运行与目录授权，查询／终止不能越过所属任务；命令结束后按当前文件版本更新任务1的验证证据。
+  4. 暂停停止产生新工作；已有进程由会话服务继续追踪，取消或到达硬时限时清理进程树。重启后先核对进程／容器与输出，不凭 PID 单独认领进程、不自动重跑；无法确认就标记 unknown。
+  5. 设置页提供可见、持久化的时间／内存／输出额度。本计划建议保留现有默认值，新增可选“编程档”：单命令120秒、1 GiB内存、256 KiB返回输出；长命令会话总时限15分钟、同一运行最多2个会话。以上数值待本计划确认，不作为长期硬性需求；模型不能自行提高所有者设置的硬上限。
+- 验证：本地档与容器档分别测试启动、轮询、增量输出、取消、超时、断线和进程树清理；真实运行一次超过旧30秒限制的受控程序；用模拟时钟验证15分钟上限；缺少容器时如实登记未测，不能算该档通过。
+- 完成标准：模型与界面看到的环境一致；长命令可追踪而不阻塞页面；游标不重复吞吐全文；取消／撤权／超时／退出后的资源状态有证据；额度可配置，验证状态仅在命令确实结束后更新。
+
+### 任务5：让编辑和副本交付可复核
+
+- 文件：`src/lingnexus/actions/catalog.py`、`src/lingnexus/actions/dispatch.py`、`src/lingnexus/actions/service.py`、`src/lingnexus/permissions/service.py`、`src/lingnexus/tools/workspace.py`、`src/lingnexus/tasks/workspace.py`、`src/lingnexus/common/verification.py`、`frontend/src/features/tasks/TaskChanges.tsx`、`frontend/src/features/tasks/TaskChanges.test.tsx`、`tests/test_workspace_delivery.py`（新增）。
+- 做法：
+  1. 完善现有精确编辑入口：可选预期内容指纹、唯一性检查、进程内按规范路径串行编辑；外部文件变化时明确报冲突，不覆盖刚出现的新内容。
+  2. 将直接截断覆写改为经校验的文件级原子替换方案，复核路径授权、符号链接／硬链接检查与 Windows 文件行为，避免为原子替换削弱原有边界。多文件修改不冒称文件系统事务。
+  3. 副本写回保留审阅版本与源文件指纹；界面逐文件显示已应用／未应用／冲突／结果未知。部分写回后保留可核对的记录和原内容恢复材料，不自动重复整批写回或覆盖所有者后续修改。
+  4. 删除、二进制、超限文件仍走人工应用，界面明确说明原因；提供的 diff 与下载内容对应本次审阅版本。每种实际修改入口接入任务1的证据失效机制。
+- 验证：重复片段、原文不匹配、并发编辑、写入中途失败、审阅后再修改、原目录变化、第二个文件写回失败、删除／二进制、链接攻击；核对界面状态与磁盘实际内容。
+- 完成标准：冲突不静默覆盖；失败不留下伪装成功的截断文件；部分交付能逐项核对；旧测试结果不覆盖新改动；跨进程竞争和人工应用边界在审查中如实保留。
+
+### 任务6：建立可重复的真实编程评测
+
+- 文件：`scripts/evaluate_coding.py`、`tests/fixtures/coding_tasks/编程任务集.json`（新增）、`scripts/probe_task.py`、`scripts/verify_task_ui.py`、`docs/审查记录/审查.md`。
+- 做法：
+  1. 建立6类固定任务：局部修错、跨文件功能、保持行为的重构、先失败后修复的测试任务、运行中指导与恢复、慢命令与交付冲突。任务使用可重建的小型仓库，预设独立验收，不依赖模型自行宣布成功。
+  2. 评测脚本调用实际产品运行器与工具，记录模型和配置、代码提交、输入、步数、耗时、费用、人工介入、最终 diff、独立验收及资源清理结果。每次从干净副本开始，凭据不进入产物。
+  3. 拟用同一个工具能力合格的模型，每类任务独立重复3次；选择待实施时由所有者指定的已配置模型，不在计划里擅自选择供应商。评测控制端支持独立指定产品源码目录：从 `pre-m1-phase4` 标签导出旧源码，在隔离目录与数据目录运行旧产品；以同一任务集、模型参数、预算和依赖版本对照新提交。新增评测脚本在控制端运行，不将新运行器复制进旧源码；旧版缺少某项接口时记录“不支持”，不伪造兼容结果。任务7的开工基线先跑确定性检查，真实模型基线待任务6控制端就绪后从标签复测；原始证据放 `.artifacts/coding-eval/`（已被忽略），审查记录只放脱敏汇总和复现命令。
+  4. 设置可中止的单次预算；建议每次最多40步、20分钟，费用上限由所有者在首次真实运行前给定；脚本展示本次配置与预计运行次数。未提供费用上限时可完成夹具和无网络自测，付费部分保留待运行。
+  5. 报告同时区分框架故障、模型未解题、环境缺失和预算耗尽；保留失败样本，不靠挑最好的一次或放宽断言达成指标。若要给出与 Codex 的量化差距，再按可对齐的模型、题目和额度单独对照；无法对齐时不报百分比。
+- 验证：先验证夹具的正确版本通过、错误版本失败；再运行真实评测并人工抽查 diff 与验收记录；命令和原始证据可在干净副本复跑。
+- 完成标准：建议验收规模为6类×3次，所有尝试均有记录；确定性缺陷回归全部通过；框架层无静默丢状态、重复副作用或过期验证被报通过。任务成功率如实统计，模型未解题不伪装成框架成功，也不自动归咎于模型。模型、费用和缺失环境未落实时，此项标“待运行”，不关闭阶段。
+
+### 任务7：独立复核、真实启动与收尾
+
+- 文件：任务1～6列出的后端／前端用例；`docs/审查记录/审查.md`、`docs/里程碑/当前里程碑.md`、`docs/地图.md`、`docs/交接.md`、`docs/计划/计划.md`；`src/lingnexus/models/README.md`、`src/lingnexus/tools/README.md`、`src/lingnexus/tasks/README.md`；`src/lingnexus/maintenance/backup.py`、`src/lingnexus/maintenance/restore.py`、`src/lingnexus/maintenance/assets.py`（核对新增数据的备份覆盖）。
+- 做法：在实施前先按现有启动流程建立 Python 3.12 与 Node 24 环境并跑旧基线；当前工作区缺少 `.venv`、`frontend/node_modules`、`frontend/dist`，不沿用旧会话的环境就绪结论。实现后完整回归，实际通过 `start.bat` 启动并走查恢复、长命令、验证提示与变更审阅。
+- 验证：仓库根目录 `.venv/Scripts/python.exe -m pytest tests/ -q`；`.venv/Scripts/ruff.exe check src tests scripts`；`frontend/` 内分别执行 `npm run typecheck`、`npm test`、`npm run build`（Node 24）；检查文档链接。使用安全删除保护插件的环境按其实际要求设置测试环境变量，记录实际命令，不机械复制旧 Bash 前缀。
+- 完成标准：由未参与实现的只读子代理或独立上下文按下方清单复核，登记实测输出和未测范围；所有者体验验收单独登记。阶段1～3欠缺的所有者实测继续保留，不因阶段4完成而补勾；本阶段所有验收项有证据后再关闭与归档。
+
+## 验收标准
+
+- [x] 本计划已由所有者确认，当前环境基线已实测；恢复点和未提交改动去向已记录。
+- [x] `edit_file` 漏记的两条复现均有回归证据；其他修改入口不会沿用旧代码验证；失败修复和 unknown 各有正确状态。
+- [x] 三协议原生续接实际接入，当前分支与工具事实可恢复；旧历史与模型切换的降级有证据（合成协议测试，不等于三家真实服务全部验证）。
+- [x] 模型请求、工具前后、未知副作用的重启／重连测试通过；恢复不重复已经发生的副作用；前端可操作（自动测试，体验待所有者）。
+- [x] 模型环境说明来自真实执行器；本地／容器档测试范围逐项登记；长命令可轮询、可取消，输出、超时和清理有界且可追踪（容器实机缺环境未测）。
+- [x] 编辑冲突、文件级写入失败、多文件部分写回和人工应用项均能如实展示；源文件变化不静默覆盖。
+- [ ] 6类×3次真实评测已运行、全记录、独立验收；成功率与人工介入如实报告，无框架层虚假验证和重复副作用。
+- [x] 后端测试与静态检查、前端检查／测试／构建、文档链接均有本轮输出；没有用旧结果替代。
+- [ ] 真实启动与独立复核完成；所有者实测结果另记；文档同步，暂缓项与未解决边界可查。
+
+## 风险与回退
+
+- 开始代码实施前记录恢复提交并建立 `pre-m1-phase4` 标签；提交、推送按所有者授权与仓库纪律执行。现有 `AGENTS.md` 是本轮前已存在的排版改动，不混入本计划改动。
+- 原生状态与会话元数据增加存储量和敏感性；只在运行数据目录保存，既有备份和清理流程覆盖新增数据，验证备份恢复后的可读性。运行状态与密钥分离，输出保留明确大小边界。
+- 新表采用增量迁移；回退优先回到已验证的代码版本并保留新表，不直接删除运行数据。任何数据回退先备份，避免旧版本误读新状态。
+- 长命令与原子写入在 Windows／容器上行为不同；每项按实际环境测试。未知进程或部分写回先核对，不通过重跑来掩盖状态不明。
+- 上下文仍会触及窗口限制；原始工具历史补齐后可能更早触及预算。这一残余问题明确留待上下文压缩与长期记忆联动，不以本阶段完成宣称解决。
+- 真实模型结果有波动；确定性回归、协议接线和产品运行器问题先单独定位。评测未完成、关键环境未测或所有者体验未确认时，在审查中保留状态，不写全量通过。
+
+## 确认记录
+
+所有者已确认执行七项计划，并指定评测模型与总费用上限，具体参数见执行记录；不再等待模型选择。界面体验仍留待所有者实测。
+
+## 执行记录
+
+- 2026-10-15：所有者确认执行；恢复点 `pre-m1-phase4`（`4fea4d1`）已推送。环境按锁文件安装，旧源码在 `.artifacts/phase4-baseline/source` 隔离保存；未将所有者的 `AGENTS.md` 排版改动收入提交。
+- 文件写入安全子块：同目录临时文件、刷新、版本核对与原子替换已实现；Windows 专项 pytest 9项中8通过、1项符号链接创建受环境限制跳过，ruff通过。此为任务5底层准备，尚不代表任务5整项验收。
+- 首次实现回归：专项22通过、1跳过；后端全量147通过、2失败、1跳过，失败为新增沙箱资源字段与旧精确字段集断言不一致，正在补充新版契约测试；未登记为全量通过。
+- 评测配置由所有者补充：模型 `glm-5.3-flash`，总预算0.20美元；每百万输入／输出／缓存 token 单价分别0.13／0.4355／0.0299美元。密钥仅运行时使用，不写入仓库或评测产物。
+- 共用证据组件已具备版本失效、编程回读不替代检查、已修复失败与未知副作用分离；9项纯函数专项回归通过。两种运行器的实际接线和原生恢复仍在集成，未以独立组件提交代替整体验收。
+- 旧恢复点隔离全量后端测试124通过；首次执行因深层临时路径导致的备份用例失败，改用短 `--basetemp=.artifacts/b0` 后通过。旧前端138项测试、typecheck、build及ruff通过。
+- 任务6控制端与固定夹具：`tests/test_coding_eval.py` 8通过；`scripts/evaluate_coding.py --dry-run` 六类正确版本全通过、错误版本全拒绝、网络调用0；ruff通过。控制端按请求体字节数与输出上限预留费用，跨进程共用账本且不退还预留。真实新旧评测已启动，完整记录与脱敏汇总在 `.artifacts/coding-eval/`。
+- 独立只读复核指出任务停止后的后台命令、编辑读取与写入之间的版本窗口、写后路径式chmod、备用模型检查点和超上下文可恢复标记的缺口。正在补强并补集成回归；此轮复核未因此登记通过。
+- 后端闭环修复后，全量180通过、1跳过；随后补齐的显式任务取消专项2通过。恢复专项14通过，原子编辑与交付专项14通过、1跳过，ruff通过。第二轮只读复核未发现新的P1；重启后unknown会话缺少人工核销入口，保留为P2可恢复性欠项，继续阻断恢复／自动应用，可另起任务并人工核对已有产物。
+- Windows真实启动：初次Node子进程启动命令被cmd判为语法错误，改用PowerShell直接 `cmd.exe /d /c start.bat` 后启动；发现虚拟环境editable仍指旧基线，停止后离线重新绑定当前源码，再经同一入口启动，首页与新版 `/api/sandbox` 返回200、保守档与全部资源字段可回读。启动脚本与恢复点字节一致（GBK、89个CRLF），未修改。
+- 前端接线由Luna实测：Node24 typecheck、build通过，22文件151项测试通过；覆盖对话恢复、验证状态、命令会话及部分交付。真实启动页面用Chrome走查编程档切换与页面重载持久化，再恢复保守档；浏览器异常0，截图 `.artifacts/phase4-settings.png` 已目视核对资源数值与布局。此为自动走查，不代替所有者体验确认。
+- 2026-10-16继续：普通对话补齐同样的命令生命周期闸门，取消与关闭等待清理，活动命令不能因模型final而被遗留；加入真实延迟写入的取消／提前final回归。对话、恢复及生命周期合计40通过，ruff通过。首请求也检查包含工具声明的完整窗口预算，模型环境明确首个可写目录为命令工作目录，并回读所有者额度档位。
+- 最终窗口与恢复补强：工作区指纹不可用不再把两次unknown当一致；开场裁剪预留实际本地工具声明体积，MCP追加声明仍由每请求完整检查兜底。专项17通过；最新后端全量188通过、1跳过，ruff通过。
+- 评测器复核补强：行为重构验收加入实际函数抽取结构检查，慢命令按成功退出与持久会话时长验收；记录验收器版本、安全异常栈和实际资源。旧版首轮6条里2条子进程异常缺少成品证据，保留unknown；有产物的4条按hash重建离线复验。新版控制器启动曾因扫描运行数据目录报PermissionError、未付费，已剪枝修复。新旧采用同一v2验收器补跑，共用原0.20美元账本，不另开预算。
+- 评测器最新专项17通过、ruff通过、离线六类正反夹具全部通过且网络调用0；离线重建4条有diff的旧成品全部匹配after hash并通过v2，另2条因缺diff保留unknown。该离线结果不替代6类×3次真实重复评测。
+- 真实评测收尾：共20次任务尝试、68个已预留请求，保守费用预留0.157763086美元；有用量的费用估算0.0241030049美元，13次用量缺失，实际账单仍unknown，不把缺失算零。未达0.20美元上限，因重复协议错误停止新增付费尝试，原账本保留供后续累计。
+- 新版v2六类首轮：1条独立验收通过、4条协议异常、1条输出未完成；旧版v2六条受到2条采集器缺表错误、3条task_runtime_error与1条provider_error影响。另有旧首轮6条与两次重构诊断，全部原始记录保留；派生分类 `.artifacts/coding-eval/reviewed-summary.json` 不覆盖原始记录。不能计算有效提升百分比，也未完成新旧各6类×3次。
+- 已确认一条真实响应的前154个SSE事件ID一致，最后tool_calls终止事件更换ID，在 `ChatParser` 一致性检查处被拒绝；此前无响应trace的异常根因仍unknown。新增回归证明此类响应不执行已缓冲工具。未放宽一致性约束来换取成功率。
+- 评测采集补丁处理旧版本无会话表、同步命令独立时长证据、响应脱敏有界采集、HTTPX真实传输尚未绑定request的边界；候选文件缺失不会覆盖框架故障归因。恢复与评测合计39专项通过，最新评测23通过；ruff通过。最后全量200通过、1跳过（随后新增的一条分类优先级回归在23项评测专项中通过，未计入该200）。

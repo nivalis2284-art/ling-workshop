@@ -18,6 +18,10 @@ class Actions:
         self.app = app
         self._lock = RLock()
 
+    def reconciliation_guard(self):
+        """Serialize owner content observations with in-process file effects."""
+        return self._lock
+
     def get(self, action_id: str) -> dict:
         with self.app.database.transaction() as db:
             row = db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()

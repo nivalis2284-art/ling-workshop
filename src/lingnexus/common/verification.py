@@ -6,8 +6,6 @@ from pathlib import Path
 
 MUTATIONS = frozenset({"create_file", "write_file", "edit_file"})
 _CODE = {".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".java", ".cs", ".cpp", ".c"}
-_SKIP = {".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache",
-         ".ruff_cache", ".tmp", ".home", ".deps", ".artifacts"}
 
 
 def workspace_version(root: Path | None) -> str | None:
@@ -15,32 +13,9 @@ def workspace_version(root: Path | None) -> str | None:
     if root is None:
         return None
     try:
-        from lingnexus.tools._paths import directory, regular_file, reject_link
-        from lingnexus.tools.workspace import FilePermissions, WorkspaceTools
+        from lingnexus.common.workspace_scan import scan
 
-        root = directory(root)
-        access = WorkspaceTools(root, FilePermissions((root,), ()))
-        digest = hashlib.sha256()
-        pending, count, size = [root], 0, 0
-        while pending:
-            folder = pending.pop()
-            for path in sorted(folder.iterdir()):
-                if path.name in _SKIP or path.name.startswith(".env"):
-                    continue
-                info = path.lstat()
-                reject_link(info)
-                if path.is_dir():
-                    pending.append(directory(path))
-                else:
-                    regular_file(info)
-                    data = access.read_bytes(path)
-                    count += 1
-                    size += len(data)
-                    if count > 2000 or size > 32 * 1_048_576:
-                        return None
-                    digest.update(path.relative_to(root).as_posix().encode())
-                    digest.update(b"\0" + hashlib.sha256(data).digest())
-        return digest.hexdigest()
+        return scan(root)["version"]
     except (OSError, ValueError):
         return None
 

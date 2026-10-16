@@ -250,6 +250,10 @@ async def run_model(runtime, tid, state):
                     return False
                 calls.append({"id": tool.id, "name": tool.name, "arguments": tool.arguments})
             elif event.type == "error":
+                from lingnexus.common.diagnostics import diagnostic
+
+                runtime.store.event(tid, "diagnostic", diagnostic(
+                    "model", reason=event.error.reason if event.error else None))
                 runtime.store.status(
                     tid,
                     "blocked",

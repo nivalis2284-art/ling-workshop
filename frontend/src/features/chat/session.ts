@@ -538,6 +538,10 @@ export class ChatSession {
     const turn = this.state.turns.at(-1);
     if (isPending(turn) && !this.controller) await this.connect(turn!);
   };
+  refreshRecovery = async (): Promise<void> => {
+    const runId = this.state.turns.at(-1)?.runId;
+    if (runId) await this.syncRunState(runId);
+  };
   private async connect(turn: ChatTurn) {
     if (!this.attached || this.controller) return;
     const id = turn.request.request_id;
@@ -640,7 +644,9 @@ export class ChatSession {
         }
         break;
       case "notice":
-        if (event.data.code === "effort_omitted")
+        if (event.data.code === "runtime_diagnostic")
+          patch.notice = event.data.message ?? "运行失败，诊断信息已记录。";
+        else if (event.data.code === "effort_omitted")
           patch.notice = "备用模型不支持所选思考强度，已使用模型默认设置。";
         else if (event.data.code === "context_truncated")
           patch.notice =

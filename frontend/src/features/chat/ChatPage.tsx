@@ -4,6 +4,7 @@ import { errorMessage } from "../../api/client";
 import type { LingApi } from "../../api/client";
 import type { Agent } from "../../api/types";
 import { ConfirmDialog } from "../../shared/ConfirmDialog";
+import { RecoveryReview } from "../../shared/RecoveryReview";
 import { useResource } from "../../shared/useResource";
 import { ErrorNotice, Loading } from "../../shared/ui";
 import { ChatAttachments, attachmentProblem } from "./ChatAttachments";
@@ -365,6 +366,10 @@ export function ChatPage({
                 recovering={last.recovering}
                 disabled={false}
               />
+            )}
+          {(last?.status === "error" || last?.status === "stopped") &&
+            last.runId && (
+              <RecoveryReview key={last.runId} api={api} runId={last.runId} kind="chat" onUpdated={session.refreshRecovery} />
             )}
           {selecting && (
             <div className="chat-select-bar">

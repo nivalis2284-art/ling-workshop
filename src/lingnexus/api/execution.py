@@ -3,6 +3,7 @@
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
+from pydantic import Field
 
 from lingnexus.api.schemas import Input
 from lingnexus.api.security import require_owner
@@ -13,6 +14,30 @@ router = APIRouter(prefix="/execution", dependencies=[Depends(require_owner)])
 class Control(Input):
     run_id: str
     kind: Literal["chat", "task"] = "chat"
+
+
+class ReviewInput(Input):
+    request_id: str = Field(min_length=1, max_length=100)
+    expected_version: str = Field(pattern=r"^[a-f0-9]{64}$")
+    conclusion: Literal["reviewed", "unresolved", "abandon"]
+    note: str = Field(min_length=1, max_length=2000)
+
+
+def _reviews(request):
+    from lingnexus.runtime.reconciliation import RecoveryReview
+
+    state = request.app.state
+    return RecoveryReview(state.services, state.chat_runtime, state.tasks)
+
+
+@router.get("/recovery/{kind}/{run_id}")
+async def recovery_view(kind: Literal["chat", "task"], run_id: str, request: Request):
+    return _reviews(request).view(run_id, kind)
+
+
+@router.post("/recovery/{kind}/{run_id}")
+async def recovery_record(kind: Literal["chat", "task"], run_id: str, value: ReviewInput, request: Request):
+    return _reviews(request).record(run_id, kind, **value.model_dump())
 
 
 def _observe(request, session_id, run_id, kind, after=0, cancel=False):

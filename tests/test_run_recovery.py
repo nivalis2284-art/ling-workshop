@@ -317,6 +317,62 @@ def test_tool_call_without_any_name_is_still_rejected(app, agent_id, tmp_path):
     asyncio.run(scenario())
 
 
+def test_empty_finish_reason_is_not_a_terminal_event(app, agent_id, tmp_path):
+    """Providers may send finish_reason: "" while the choice is still streaming.
+
+    Only a non-empty value terminates the choice; the call must still run.
+    """
+    _configure(app)
+    folder = tmp_path / "empty-finish"
+    _grant(app, agent_id, folder)
+    target = folder / "readable.txt"
+    target.write_text("empty-finish content", encoding="utf-8")
+    stream = _sse(
+        {"id": "native-empty", "choices": [{"index": 0, "delta": {"role": "assistant",
+            "content": "", "refusal": "", "function_call": None, "extra_fields": None},
+            "finish_reason": ""}]},
+        {"id": "native-empty", "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "id": "read-call", "type": "function",
+             "function": {"name": "read_file", "arguments": json.dumps({"path": str(target)})}}]},
+            "finish_reason": ""}]},
+        {"id": "native-empty", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+    )
+    requests = []
+
+    async def scenario():
+        async with _mock_client([stream, _chat_reply()], requests) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(ChatRequest(agent_id=agent_id, message="empty finish", request_id="empty-finish-reason"))
+            events = await asyncio.wait_for(asyncio.create_task(_drain(runtime, run["id"])), 5)
+            assert not any(event["event"] == "error" for event in events), events
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+    assert len(requests) == 2
+    assert any(m.get("tool_call_id") == "read-call" and "empty-finish content" in m.get("content", "")
+               for m in requests[1]["messages"])
+
+
+def test_stream_without_a_real_finish_reason_never_completes(app, agent_id):
+    """An empty finish_reason must not be upgraded into a terminal event."""
+    _configure(app)
+    stream = _sse(
+        {"id": "native-never", "choices": [{"index": 0, "delta": {"role": "assistant",
+            "content": "partial"}, "finish_reason": ""}]},
+    )
+
+    async def scenario():
+        async with _mock_client([stream]) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(ChatRequest(agent_id=agent_id, message="no terminal", request_id="no-terminal-event"))
+            events = await asyncio.wait_for(asyncio.create_task(_drain(runtime, run["id"])), 5)
+            assert any(event["event"] == "error" for event in events), events
+            assert not any(event["event"] == "complete" for event in events), events
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_first_request_respects_window_including_output_and_tool_declarations(app, agent_id):
     profile = ModelProfile(api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model="fixture",
                            base_url="https://fixture.test", context_window_tokens=1000)

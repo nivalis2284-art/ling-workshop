@@ -303,7 +303,11 @@ class ChatParser(Parser):
             if self.tools:
                 self.message["tool_calls"] = [self.tools[i] for i in sorted(self.tools)]
             reason = choice.get("finish_reason")
-            if reason is not None:
+            # Some OpenAI-compatible providers send an empty string for "this
+            # choice has not finished yet". Only a non-empty value terminates
+            # the choice; the Anthropic parser already reads a falsy
+            # stop_reason the same way, and completion still needs a real one.
+            if reason:
                 self.finish_reason = string(reason, nonempty=True)
                 for native in self.tools.values():
                     if native.get("type") != "function":

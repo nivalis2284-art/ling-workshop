@@ -253,6 +253,70 @@ def test_changed_terminal_response_id_never_executes_buffered_tools(app, agent_i
     asyncio.run(scenario())
 
 
+def test_null_tool_call_fields_on_continuation_chunks_keep_the_call(app, agent_id, tmp_path):
+    """OpenAI-compatible providers repeat optional tool fields as explicit null.
+
+    A null carries no fragment, so it must not be treated as a protocol fault;
+    the name and arguments accumulated from earlier chunks must still drive a
+    real tool call.
+    """
+    _configure(app)
+    folder = tmp_path / "null-fields"
+    _grant(app, agent_id, folder)
+    target = folder / "readable.txt"
+    target.write_text("null-safe content", encoding="utf-8")
+    stream = _sse(
+        {"id": "native-null", "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+            {"index": 0, "id": "read-call", "type": "function",
+             "function": {"name": "read_file", "arguments": ""}}]}, "finish_reason": None}]},
+        {"id": "native-null", "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "function": {"name": None, "arguments": json.dumps({"path": str(target)})}}]},
+            "finish_reason": None}]},
+        {"id": "native-null", "choices": [{"index": 0, "delta": {"tool_calls": [
+            {"index": 0, "function": {"name": None, "arguments": None}}]}, "finish_reason": None}]},
+        {"id": "native-null", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+    )
+    requests = []
+
+    async def scenario():
+        async with _mock_client([stream, _chat_reply()], requests) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(ChatRequest(agent_id=agent_id, message="null fields", request_id="null-tool-fields"))
+            events = await asyncio.wait_for(asyncio.create_task(_drain(runtime, run["id"])), 5)
+            assert not any(event["event"] == "error" for event in events), events
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+    assert len(requests) == 2
+    assert any(m.get("tool_call_id") == "read-call" and "null-safe content" in m.get("content", "")
+               for m in requests[1]["messages"])
+
+
+def test_tool_call_without_any_name_is_still_rejected(app, agent_id, tmp_path):
+    _configure(app)
+    folder = tmp_path / "nameless"
+    _grant(app, agent_id, folder)
+    target = folder / "must-not-exist.txt"
+    stream = _sse(
+        {"id": "native-nameless", "choices": [{"index": 0, "delta": {"role": "assistant", "tool_calls": [
+            {"index": 0, "id": "nameless-call", "type": "function",
+             "function": {"name": None, "arguments": json.dumps({"path": str(target), "text": "unsafe"})}}]},
+            "finish_reason": None}]},
+        {"id": "native-nameless", "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+    )
+
+    async def scenario():
+        async with _mock_client([stream]) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(ChatRequest(agent_id=agent_id, message="nameless call", request_id="nameless-tool-call"))
+            events = await asyncio.wait_for(asyncio.create_task(_drain(runtime, run["id"])), 5)
+            assert next(e["data"]["code"] for e in events if e["event"] == "error") == "malformed_stream"
+            assert not target.exists()
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_first_request_respects_window_including_output_and_tool_declarations(app, agent_id):
     profile = ModelProfile(api_family=APIFamily.OPENAI_CHAT_COMPLETIONS, model="fixture",
                            base_url="https://fixture.test", context_window_tokens=1000)

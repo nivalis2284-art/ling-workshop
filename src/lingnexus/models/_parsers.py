@@ -280,17 +280,24 @@ class ChatParser(Parser):
                 function = obj(part.get("function", {}))
                 for key, value in function.items():
                     if key in ("name", "arguments"):
-                        native["function"][key] += string(value)
+                        # OpenAI-compatible providers repeat these optional
+                        # fields as an explicit null on continuation chunks.
+                        # A null carries no fragment and is not a protocol
+                        # fault; completion still requires a non-empty name
+                        # and valid JSON arguments before any tool can run.
+                        if value is not None:
+                            native["function"][key] += string(value)
                     else:
                         native["function"][key] = deepcopy(value)
-                if "arguments" in function:
+                fragment = function.get("arguments")
+                if isinstance(fragment, str):
                     result.append(
                         ModelEvent(
                             "tool_call_delta",
                             index=i,
                             tool_call_id=string(native.get("id"), nonempty=True),
                             tool_name=native["function"]["name"],
-                            arguments_delta=function["arguments"],
+                            arguments_delta=fragment,
                         )
                     )
             if self.tools:

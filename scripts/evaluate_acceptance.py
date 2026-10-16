@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -40,6 +41,32 @@ CASES = ("information", "source_information", "documents", "document_delivery",
          "tools", "interruption_recovery")
 HIGH_RISK = ("document_delivery", "browser_approval", "cross_file_feature", "interruption_recovery")
 CHROME = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
+
+
+@contextlib.contextmanager
+def evaluation_directory():
+    root = Path(tempfile.mkdtemp(prefix="ling-m1-live-")).resolve()
+    cleanup = {"temporary_data_removed": False}
+    try:
+        yield root, cleanup
+    finally:
+        # Chrome may finish background profile writes just after context.close().
+        # Verify the exact directory created here before each recursive cleanup.
+        for _ in range(6):
+            if root.parent != Path(tempfile.gettempdir()).resolve() or not root.name.startswith("ling-m1-live-"):
+                raise ValueError("unexpected_evaluation_directory")
+            if root.is_symlink():
+                raise ValueError("linked_evaluation_directory")
+            try:
+                shutil.rmtree(root)
+            except FileNotFoundError:
+                cleanup["temporary_data_removed"] = True
+                break
+            except OSError:
+                time.sleep(0.2)
+            else:
+                cleanup["temporary_data_removed"] = True
+                break
 
 
 @contextlib.contextmanager
@@ -114,6 +141,10 @@ def prepare(case, workspace, origin):
                 "a click on #submit. Wait for separate owner approval. After approval, read the page "
                 "with expected_text='Recorded ACCEPT-42', then report the observed result. "
                 "Submit exactly once. Do not use commands or HTTP libraries.")
+    if case == "source_information":
+        return (f"Read {origin}/details with browser tools. Return exactly one JSON object with keys "
+                "weekday, time, venue, room (an integer) and source_url, using the observed page facts and its URL. "
+                "No markdown, file changes or commands. Do not guess facts you have not read.")
     return (f"Use browser tools to inspect {origin}/ and its Workshop details link. Find the room, "
             "weekday, time and venue. Report those four facts and the exact details page URL as your source. "
             "Use only this granted fixture site. No commands or HTTP libraries.")
@@ -167,8 +198,7 @@ async def custom_trial(case, output_dir, budget, key, timeout):
                                 capture_dir=output_dir / "provider-traces", secret=key)
     started = time.monotonic()
     browser_case = case in {"browser_pages", "browser_approval", "source_information"}
-    with tempfile.TemporaryDirectory(prefix="ling-m1-live-") as temp, fixture_site() as (origin, site):
-        root = Path(temp)
+    with evaluation_directory() as (root, cleanup), fixture_site() as (origin, site):
         workspace = root / "workspace"
         workspace.mkdir()
         objective = prepare(case, workspace, origin)
@@ -259,6 +289,13 @@ async def custom_trial(case, output_dir, budget, key, timeout):
                     passed = (site["submissions"] == 1 and site["values"] == [{"code": ["ACCEPT-42"]}]
                               and "Recorded ACCEPT-42" in final and task["verified"]
                               and bool(checks.get("no_submit_before_approval")) and "browser_read" in names)
+                elif passed and case == "source_information":
+                    try:
+                        passed = json.loads(final.strip()) == {"weekday": "Tuesday", "time": "09:30",
+                            "venue": "Atrium", "room": 7, "source_url": origin + "/details"}
+                    except ValueError:
+                        passed = False
+                    passed = passed and "browser_read" in names and site["submissions"] == 0
                 elif passed:
                     passed = (all(text in final for text in ("7", "Tuesday", "09:30", "Atrium", origin + "/details"))
                               and {"browser_goto", "browser_read"} <= set(names) and site["submissions"] == 0)
@@ -270,7 +307,7 @@ async def custom_trial(case, output_dir, budget, key, timeout):
                     "task": {k: task.get(k) for k in ("status", "error_code", "step_count", "verified")},
                     "checks": checks, "tools": names, "diagnostics": [e["data"] for e in events if e["type"] == "diagnostic"],
                     "seconds": round(time.monotonic() - started, 3), "budget": budget.snapshot(trial_id),
-                    "provider_traces": transport.trace_records}
+                    "provider_traces": transport.trace_records, "cleanup": cleanup}
                 return record
             finally:
                 if runtime:
@@ -311,7 +348,7 @@ async def run(args):
         report["budget"] = budget.snapshot()
         path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         print(json.dumps({"case": case, "group": group, "status": record["status"], "report": str(path)}), flush=True)
-        failure = record.get("task", {}).get("error_code") if record["status"] == "framework_failure" else None
+        failure = (record.get("task", {}).get("error_code") or "model_timeout") if record["status"] == "framework_failure" else None
         if record["status"] == "budget_limited" or (failure and failure == previous_failure):
             report["stop_reason"] = "budget_or_repeated_infrastructure_failure"
             break

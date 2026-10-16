@@ -298,14 +298,31 @@ class BrowserDriver:
 
     async def read(self, agent_id: str, version: str, revision: int, max_chars: int) -> dict:
         session = await self.require_page(agent_id, version, revision)
-        text = await session.page.evaluate(
-            '(limit) => (document.body?.innerText || "").slice(0,limit)', max_chars + 1
-        )
+        content = await session.page.evaluate("""(limit) => {
+            const anchors = document.querySelectorAll('a[href]');
+            const links = [];
+            // Bound DOM inspection and payload independently. Links are evidence;
+            // navigating them still requires the ordinary exact-origin grant.
+            for (let i = 0; i < Math.min(anchors.length, 101); i++) {
+                const anchor = anchors[i];
+                if (!anchor.getClientRects().length || getComputedStyle(anchor).visibility !== 'visible') continue;
+                let url;
+                try { url = new URL(anchor.href, location.href); } catch { continue; }
+                if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password ||
+                        url.href.length > 8192) continue;
+                links.push({text:(anchor.innerText || anchor.getAttribute('aria-label') || '').trim().slice(0,500),
+                            url:url.href});
+            }
+            return {text:(document.body?.innerText || '').slice(0,limit),
+                    links:links.slice(0,100), links_truncated:anchors.length > 100};
+        }""", max_chars + 1)
         # A navigation during read must not return text from an ungranted document.
         await self.require_page(agent_id, version, revision)
         return {
-            "text": text[:max_chars],
-            "truncated": len(text) > max_chars,
+            "text": content["text"][:max_chars],
+            "truncated": len(content["text"]) > max_chars,
+            "links": content["links"],
+            "links_truncated": content["links_truncated"],
             **(await self.page_state(agent_id) or {}),
         }
 

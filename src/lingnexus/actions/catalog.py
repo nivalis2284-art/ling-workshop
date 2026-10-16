@@ -162,7 +162,7 @@ def _specs() -> list[ToolSpec]:
         ),
         ToolSpec(
             "browser_read",
-            "Read bounded visible DOM at the current page_version. Supply expected_text "
+            "Read bounded visible DOM and HTTP(S) links at the current page_version. Links never grant access. Supply expected_text "
             "to verify the actual visible confirmation after a click.",
             BrowserRead,
             "browser",

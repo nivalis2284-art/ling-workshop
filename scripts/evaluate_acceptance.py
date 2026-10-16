@@ -10,6 +10,7 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -41,6 +42,17 @@ CASES = ("information", "source_information", "documents", "document_delivery",
          "tools", "interruption_recovery")
 HIGH_RISK = ("document_delivery", "browser_approval", "cross_file_feature", "interruption_recovery")
 CHROME = Path("C:/Program Files/Google/Chrome/Application/chrome.exe")
+
+
+def browser_goal(case, final, origin, *, read_confirmed, submissions, values):
+    """Business evidence is separate from the runtime's conservative global flag."""
+    if case == "browser_approval":
+        return read_confirmed and submissions == 1 and values == [{"code": ["ACCEPT-42"]}]
+    room = re.search(r"(?:\bRoom\s*7\b|7\s*号房间|房间\s*[：:]?\s*7\b)", final, re.IGNORECASE)
+    source = re.search(re.escape(origin + "/details") + r"(?![A-Za-z0-9/_?%#&=.+-])", final)
+    return (bool(room) and "09:30" in final and bool(source)
+            and any(day in final for day in ("Tuesday", "周二", "星期二"))
+            and any(place in final for place in ("Atrium", "中庭")) and submissions == 0)
 
 
 @contextlib.contextmanager
@@ -286,9 +298,18 @@ async def custom_trial(case, output_dir, budget, key, timeout):
                               and (staged / "resumed.txt").read_text().strip() == "safe continuation"
                               and (staged / "slow.py").read_bytes() == originals["slow.py"] and task["verified"])
                 elif passed and case == "browser_approval":
-                    passed = (site["submissions"] == 1 and site["values"] == [{"code": ["ACCEPT-42"]}]
-                              and "Recorded ACCEPT-42" in final and task["verified"]
-                              and bool(checks.get("no_submit_before_approval")) and "browser_read" in names)
+                    reads = [e["data"]["result"] for e in events
+                             if e["type"] == "tool_result" and e["data"].get("name") == "browser_read"]
+                    last_read = reads[-1] if reads else {}
+                    checks["actual_confirmation_read"] = bool(
+                        last_read.get("status") == "completed" and last_read.get("verification_passed")
+                        and not (last_read.get("result") or {}).get("truncated")
+                        and "Recorded ACCEPT-42" in (last_read.get("result") or {}).get("text", ""))
+                    checks["submissions"] = site["submissions"]
+                    checks["submitted_values_match"] = site["values"] == [{"code": ["ACCEPT-42"]}]
+                    passed = (browser_goal(case, final, origin, read_confirmed=checks["actual_confirmation_read"],
+                                submissions=site["submissions"], values=site["values"])
+                              and bool(checks.get("no_submit_before_approval")))
                 elif passed and case == "source_information":
                     try:
                         passed = json.loads(final.strip()) == {"weekday": "Tuesday", "time": "09:30",
@@ -297,8 +318,9 @@ async def custom_trial(case, output_dir, budget, key, timeout):
                         passed = False
                     passed = passed and "browser_read" in names and site["submissions"] == 0
                 elif passed:
-                    passed = (all(text in final for text in ("7", "Tuesday", "09:30", "Atrium", origin + "/details"))
-                              and {"browser_goto", "browser_read"} <= set(names) and site["submissions"] == 0)
+                    passed = (browser_goal(case, final, origin, read_confirmed=False,
+                                submissions=site["submissions"], values=site["values"])
+                              and {"browser_goto", "browser_read"} <= set(names))
                 error = task.get("error_code")
                 infra = timed_out or bool(error and (error.startswith("model_") or error == "task_runtime_error"))
                 record = {"case": case, "trial_id": trial_id, "accepted": bool(passed),

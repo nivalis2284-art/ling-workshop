@@ -150,6 +150,9 @@ def test_write_refuses_symlink_without_touching_target(tmp_path):
         link.symlink_to(outside)
     except (OSError, NotImplementedError):
         pytest.skip("symlinks are unavailable")
+    if not link.is_symlink():
+        # Some Windows configurations neither raise nor create the link.
+        pytest.skip("symlinks are unavailable")
     workspace = _tools(tmp_path)
 
     with pytest.raises(FileAccessDenied):
@@ -166,6 +169,9 @@ def test_write_refuses_hard_link_without_touching_target(tmp_path):
     try:
         os.link(original, alias)
     except (OSError, NotImplementedError):
+        pytest.skip("hard links are unavailable")
+    if not alias.exists():
+        # Some Windows configurations neither raise nor create the alias.
         pytest.skip("hard links are unavailable")
     workspace = _tools(tmp_path)
 

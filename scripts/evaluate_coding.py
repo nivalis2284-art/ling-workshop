@@ -36,7 +36,8 @@ DEFAULT_OUTPUT = REPOSITORY / ".artifacts" / "coding-eval"
 DEFAULT_BUDGET = DEFAULT_OUTPUT / "budget.json"
 DEFAULT_MODEL = "glm-5.3-flash"
 DEFAULT_BASE_URL = "https://cf.hetune.top"
-DEFAULT_BUDGET_USD = Decimal("1.00")  # Owner-approved cumulative cap, 2026-10-16.
+DEFAULT_BUDGET_USD = None  # 2026-10-16 所有者要求移除累计上限；账本仍逐请求记账
+UNLIMITED = "unlimited"
 INPUT_RATE = Decimal("0.13")
 CACHED_INPUT_RATE = Decimal("0.0299")
 OUTPUT_RATE = Decimal("0.4355")
@@ -66,10 +67,11 @@ class BudgetFile:
     _local_guard = threading.Lock()
     _local_locks: ClassVar[dict[str, threading.RLock]] = {}
 
-    def __init__(self, path: str | Path, cap_usd: Decimal | str | float):
+    def __init__(self, path: str | Path, cap_usd: Decimal | str | float | None):
+        """``cap_usd=None`` records spend without enforcing a cumulative cap."""
         self.path = Path(path)
-        self.cap = Decimal(str(cap_usd))
-        if not self.cap.is_finite() or self.cap <= 0:
+        self.cap = None if cap_usd is None else Decimal(str(cap_usd))
+        if self.cap is not None and (not self.cap.is_finite() or self.cap <= 0):
             raise ValueError("budget_must_be_positive")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         key = str(self.path.resolve())
@@ -79,12 +81,13 @@ class BudgetFile:
             if state is None:
                 self._write_state(stream, {
                     "schema_version": 1,
-                    "budget_usd": _money(self.cap),
+                    "budget_usd": UNLIMITED if self.cap is None else _money(self.cap),
                     "reserved_usd": "0",
                     "actual_estimated_usd": "0",
                     "requests": [],
                 })
-            elif Decimal(state["budget_usd"]) != self.cap:
+            elif (self.cap is not None and state["budget_usd"] != UNLIMITED
+                  and Decimal(state["budget_usd"]) != self.cap):
                 raise ValueError("budget_file_cap_mismatch")
 
     def reserve(self, trial_id: str, model: str, body: bytes,
@@ -119,7 +122,7 @@ class BudgetFile:
                 "actual_estimated_usd": None,
                 "status": "budget_limited",
             }
-            if reserved + amount > self.cap:
+            if self.cap is not None and reserved + amount > self.cap:
                 state["requests"].append(item)
                 self._write_state(stream, state)
                 raise BudgetExceeded("budget_limited")
@@ -173,7 +176,7 @@ class BudgetFile:
                 "request_count": len(requests),
                 "budget_limited_count": sum(item["status"] == "budget_limited" for item in requests),
                 "usage_unavailable_count": sum(item["status"] == "usage_unavailable" for item in requests),
-                "remaining_reserved_capacity_usd": _money(
+                "remaining_reserved_capacity_usd": None if self.cap is None else _money(
                     max(Decimal(0), self.cap - Decimal(state["reserved_usd"]))
                 ),
             }

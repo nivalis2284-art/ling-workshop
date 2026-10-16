@@ -154,11 +154,12 @@ def test_scan_refuses_links_and_hard_links(tmp_path):
     except (OSError, NotImplementedError):
         pass
     else:
-        with pytest.raises(FileAccessDenied):
-            scanning.scan(root)
-        assert outside.read_bytes() == b"outside"
-        link.unlink()
-        checked += 1
+        if link.is_symlink():
+            with pytest.raises(FileAccessDenied):
+                scanning.scan(root)
+            assert outside.read_bytes() == b"outside"
+            link.unlink()
+            checked += 1
 
     alias = root / "alias.txt"
     try:
@@ -166,10 +167,11 @@ def test_scan_refuses_links_and_hard_links(tmp_path):
     except (OSError, NotImplementedError):
         pass
     else:
-        with pytest.raises(FileAccessDenied):
-            scanning.scan(root)
-        assert (root / "real.txt").read_bytes() == b"real"
-        checked += 1
+        if alias.exists():
+            with pytest.raises(FileAccessDenied):
+                scanning.scan(root)
+            assert (root / "real.txt").read_bytes() == b"real"
+            checked += 1
 
     if checked == 0:
         pytest.skip("neither symlinks nor hard links are available")

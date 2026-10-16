@@ -25,7 +25,7 @@ from lingnexus.models import (
     ToolCall,
 )
 
-from . import attachments
+from . import attachments, input_guard
 from .checkpoints import RunCheckpoints
 from .failover import ChatFailover, FailoverBlocked
 from .hooks import HookEvent
@@ -230,14 +230,18 @@ class ChatRuntime:
             ).fetchone()
             terminal_code = json.loads(error_row[0]).get("code") if error_row else None
             version_unknown = bool(checkpoint.get("grants", {}).get("writable")) and checkpoint.get("workspace_version") is None
+            source_valid = input_guard.matches(self.app, run, checkpoint.get("input_guard"))
             recoverable = (run["status"] in {"interrupted", "failed"}
                            and bool(checkpoint) and not self.checkpoints.uncertain(run_id)
                            and not checkpoint.get("evidence", {}).get("unknown_failures")
                            and checkpoint.get("phase") != "completed"
-                           and terminal_code != "context_limit" and not version_unknown)
+                           and terminal_code != "context_limit" and not version_unknown
+                           and source_valid)
             reason = (
                 "上下文超出模型窗口，无法从相同输入续跑；请拆分任务或新建请求。"
                 if terminal_code == "context_limit"
+                else "原对话、来源授权或恢复点已失效，请新建请求。"
+                if checkpoint and run["status"] in {"interrupted", "failed"} and not source_valid
                 else "无法确认工作目录版本，请人工核对后新建请求。" if version_unknown
                 else None if recoverable else "运行已结束或存在待核对的副作用。"
             )
@@ -465,6 +469,11 @@ class ChatRuntime:
         if checkpoint.get("grants") != self.app.permissions.current(run["agent_id"]):
             raise Conflict("目录授权已改变，请核对后新建请求。")
         with self.app.database.transaction() as db:
+            # Re-read under the transaction: deletion/relinking after get_run
+            # must not turn a stale checkpoint into a new model request.
+            current = self.store.get(run_id)
+            if not input_guard.matches(self.app, current, checkpoint.get("input_guard")):
+                raise Conflict("原对话或来源授权已失效，请新建请求。")
             if db.execute("SELECT 1 FROM chat_runs WHERE agent_id=? AND status='running'",
                           (run["agent_id"],)).fetchone():
                 raise Conflict("这个体已有其他正在运行的对话。")
@@ -490,6 +499,11 @@ class ChatRuntime:
         saved["workspace_version"] = workspace_version(ChatToolScope(self.app, run["agent_id"], run_id).workdir)
         saved["grants"] = self.app.permissions.current(run["agent_id"])
         self.checkpoints.save(run_id, saved, secret=state["credentials"].api_key)
+
+    def _assert_input_current(self, run_id: str) -> None:
+        state = self._states.get(run_id, {})
+        if not input_guard.matches(self.app, self.store.get(run_id), state.get("input_guard")):
+            raise FailoverBlocked("context_invalidated")
 
     def guide(self, run_id: str, text: str) -> dict:
         """Queue a mid-run instruction, injected as a user turn at the next boundary."""
@@ -568,10 +582,11 @@ class ChatRuntime:
                 "step": 1,
                 "phase": "ready",
                 "initial_length": len(payload.get("input", payload.get("messages", []))),
+                "input_guard": input_guard.capture(self.app, run),
             }
             if recovery:
                 state.update({key: recovery[key] for key in (
-                    "payload", "effort", "step", "phase", "initial_length", "pending", "step_limit"
+                    "payload", "effort", "step", "phase", "initial_length", "pending", "step_limit", "input_guard"
                 ) if key in recovery})
             self._states[run_id] = state
             # Discovery can block on first use (spawning servers, handshakes);
@@ -781,6 +796,7 @@ class ChatRuntime:
             "thinking": SecretGuard(credentials.api_key),
         }
         gateway = ModelGateway(self._client)
+        self._assert_input_current(run_id)
         async with aclosing(
             gateway.stream(profile, payload, credentials=credentials, effort=effort)
         ) as stream:
@@ -876,6 +892,7 @@ class ChatRuntime:
         identity is environment plumbing for the scope (a deterministic effect
         id), never a policy decision.
         """
+        self._assert_input_current(run_id)
         previous = self.checkpoints.effect(run_id, step, call.id)
         if previous:
             if previous["status"] != "completed":
@@ -903,6 +920,7 @@ class ChatRuntime:
             )
             return call, text, "blocked", False
         auto_full = bool(decision.replacement and decision.replacement.get("full_access"))
+        self._assert_input_current(run_id)
         self.checkpoints.begin(run_id, step, call.id)
         result = await self.dispatcher.execute(call.name, call.arguments, bound)
         account(self._evidence.setdefault(run_id, initial(coding=True)),
@@ -993,6 +1011,7 @@ class ChatRuntime:
         )
 
     async def _complete(self, run_id: str, text: str) -> None:
+        self._assert_input_current(run_id)
         run = self.store.get(run_id)
         sessions = self.app.sandbox.run_sessions(run["agent_id"], run_id, "chat")
         active = any(item["status"] in {"running", "cancelling"} for item in sessions)

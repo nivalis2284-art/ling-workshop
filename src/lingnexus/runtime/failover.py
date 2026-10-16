@@ -173,8 +173,12 @@ class ChatFailover:
     def validate_head(self, run: dict) -> dict:
         """The selected branch must not have moved while the reply was generating."""
         conversation = self.app.conversations.for_chat(run["agent_id"], run["conversation_id"])
-        if conversation["head_id"] != run["user_message_id"]:
+        anchor = run.get("user_message_id")
+        if not anchor or conversation["head_id"] != anchor:
             raise Conflict("The selected conversation head changed.")
+        path = self.app.conversations.messages(conversation["id"])
+        if not path or path[-1]["id"] != anchor or path[-1]["role"] != "user":
+            raise Conflict("The original user message is no longer available.")
         return conversation
 
     def retry(self, run_id: str, event: ModelEvent):

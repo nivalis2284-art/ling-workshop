@@ -537,6 +537,74 @@ def test_recovery_endpoint_requires_owner_auth(client):
     assert response.status_code == 401
 
 
+@pytest.mark.parametrize("mutation", ["delete_anchor", "delete_ancestor", "switch_branch", "legacy"])
+def test_recovery_refuses_invalidated_input_without_any_new_request(app, agent_id, mutation):
+    _configure(app)
+    conversation = app.conversations.default_real(agent_id)
+    ancestor = app.conversations.append_user(conversation["id"], "ancestor-private-fact", request_id="ancestor")
+    app.conversations.append_assistant(conversation["id"], "ack", request_id="ancestor-reply", expected_head=ancestor["id"])
+    run_id = _interrupt_run(app, agent_id, "invalid-source-" + mutation)
+    with app.database.transaction() as db:
+        run = dict(db.execute("SELECT * FROM chat_runs WHERE id=?", (run_id,)).fetchone())
+    if mutation == "delete_anchor":
+        app.conversations.delete_turns(conversation["id"], [run["user_message_id"]])
+    elif mutation == "delete_ancestor":
+        app.conversations.delete_turns(conversation["id"], [ancestor["id"]])
+        assert app.conversations.read(conversation["id"])["head_id"] == run["user_message_id"]
+    elif mutation == "switch_branch":
+        app.conversations.edit_user(conversation["id"], run["user_message_id"], "replacement", request_id="edit")
+    else:
+        with app.database.transaction() as db:
+            checkpoint = json.loads(db.execute("SELECT state FROM chat_run_checkpoints WHERE run_id=?", (run_id,)).fetchone()[0])
+            checkpoint.pop("input_guard", None)
+            db.execute("UPDATE chat_run_checkpoints SET state=? WHERE run_id=?", (json.dumps(checkpoint), run_id))
+    requests = []
+
+    async def scenario():
+        async with _mock_client([_chat_reply("must not be sent")], requests) as client:
+            runtime = ChatRuntime(app, client=client)
+            assert runtime.get_run(run_id)["recoverable"] is False
+            with pytest.raises(Conflict):
+                runtime.recover(run_id)
+            assert requests == []
+            assert runtime.checkpoints.load(run_id) is not None
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_deleting_anchor_during_model_call_prevents_tool_and_followup(app, agent_id, tmp_path):
+    _configure(app)
+    _grant(app, agent_id, tmp_path / "readable")
+    target = tmp_path / "readable" / "fact.txt"
+    target.write_text("not to be read", encoding="utf-8")
+    requests = []
+    runtime = None
+
+    def handler(request):
+        requests.append(json.loads(request.content))
+        with app.database.transaction() as db:
+            row = db.execute("SELECT conversation_id,user_message_id FROM chat_runs WHERE status='running'").fetchone()
+        app.conversations.delete_turns(row["conversation_id"], [row["user_message_id"]])
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=_chat_tool_response(str(target)))
+
+    async def scenario():
+        nonlocal runtime
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            runtime = ChatRuntime(app, client=client)
+            run = runtime.submit(ChatRequest(agent_id=agent_id, message="deleted-input", request_id="delete-inflight"))
+            events = await asyncio.wait_for(asyncio.create_task(_drain(runtime, run["id"])), 5)
+            assert any(e["event"] == "error" and e["data"]["code"] == "context_invalidated" for e in events)
+            assert len(requests) == 1
+            with app.database.transaction() as db:
+                assert db.execute("SELECT count(*) FROM chat_tool_effects WHERE run_id=?", (run["id"],)).fetchone()[0] == 0
+                assert db.execute("SELECT count(*) FROM conversation_messages").fetchone()[0] == 0
+            assert runtime.get_run(run["id"])["recoverable"] is False
+            await runtime.aclose()
+
+    asyncio.run(scenario())
+
+
 def test_full_backup_preserves_private_checkpoint_without_publicly_exposing_it(app, agent_id, tmp_path):
     _configure(app)
 

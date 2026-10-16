@@ -374,7 +374,9 @@ class TaskRuntime:
             try:
                 canonical = str(self.snapshots.file_path(tid, call["arguments"]["path"]))
                 evidence_call = {**call, "arguments": {**call["arguments"], "path": canonical}}
-            except (PermissionDenied, PermissionError, OSError, ValueError):
+            except (KeyError, PermissionDenied, PermissionError, OSError, ValueError):
+                # A model call that omits "path" (or any other unusable argument)
+                # is a tool-level failure the model must see, not a runtime crash.
                 pass  # Keep the failed request as unresolved evidence.
         state["coding_workspace"] = bool(task["workspace"])
         account(state, evidence_call, result)

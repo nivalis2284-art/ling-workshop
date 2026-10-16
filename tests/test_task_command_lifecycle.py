@@ -137,3 +137,61 @@ def test_task_cancel_waits_for_command_cleanup_before_returning(app, agent_id, t
             await runtime.aclose()
 
     asyncio.run(scenario())
+
+
+def test_tool_call_without_path_argument_does_not_crash_the_task_runtime(app, agent_id, tmp_path):
+    """A file call with no "path" must surface as a failed tool result.
+
+    The runtime used to read call["arguments"]["path"] while canonicalising
+    evidence, so a missing key escaped as a KeyError and the worker turned the
+    whole task into a fatal task_runtime_error instead of letting the model see
+    the rejected call and continue.
+    """
+    from lingnexus.models import APIFamily, ModelProfile
+    from lingnexus.tasks import TaskRuntime
+
+    async def scenario():
+        project = tmp_path / "missing-arg-project"
+        project.mkdir()
+        app.permissions.configure(agent_id, readable=[project], writable=[project], expected_revision=0)
+        profile = app.profiles.save(
+            "missing-arg", ModelProfile(
+                api_family=APIFamily.OPENAI_CHAT_COMPLETIONS,
+                model="offline-missing-arg", base_url="https://fixture.invalid/v1",
+            ), api_key="fixture-only",
+        )
+        app.profiles.select(profile["id"], None)
+        responses = [
+            _frame("Reading.", [("bad", "read_file", {})]),
+            _frame("Finished."),
+        ]
+
+        def handler(_request):
+            return httpx.Response(
+                200, headers={"content-type": "text/event-stream"}, text=responses.pop(0)
+            )
+
+        client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        runtime = TaskRuntime(app, client)
+        try:
+            tid = await runtime.submit({
+                "agent_id": agent_id, "objective": "Read without a path",
+                "request_id": "missing-path-argument", "workspace": str(project),
+            })
+            task = runtime.get(tid)
+            for _ in range(500):
+                task = runtime.get(tid)
+                if task["status"] not in {"queued", "running"}:
+                    break
+                await asyncio.sleep(0.02)
+            assert task.get("error_code") != "task_runtime_error", task
+            # The call was rejected, so the goal is not verified: needs_review is
+            # the correct terminal state, not a crash.
+            assert task["status"] in {"completed", "needs_review"}, task
+            results = [e["data"] for e in runtime.events(tid, limit=200) if e["type"] == "tool_result"]
+            assert results, "the rejected call must be recorded as a tool result"
+            assert results[0].get("status") != "ok", results
+        finally:
+            await runtime.aclose()
+
+    asyncio.run(scenario())

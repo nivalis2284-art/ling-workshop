@@ -18,6 +18,19 @@ type DetailedApplyResult = ApplyResult & {
     effect_id?: string;
   }[];
 };
+type ApplicationView = {
+  review_id: string;
+  status: string;
+  result?: DetailedApplyResult | null;
+} | null;
+
+const fileStatusLabels: Record<string, string> = {
+  applied: "已应用",
+  not_applied: "未应用",
+  conflict: "冲突，未覆盖",
+  unknown: "结果未知，需人工核对",
+  applying: "写回中断，需人工核对",
+};
 
 export function TaskChanges({
   api,
@@ -30,10 +43,35 @@ export function TaskChanges({
 }) {
   const [review, setReview] = useState<DetailedReview | null>(null);
   const [applyResult, setApplyResult] = useState<DetailedApplyResult | null>(null);
+  const [application, setApplication] = useState<ApplicationView>(null);
+  const [applied, setApplied] = useState(false);
   const [confirm, setConfirm] = useState<DetailedReview | null>(null);
   const [message, setMessage] = useState("");
   const action = useManagementAction();
   const active = task.status === "running" || task.status === "queued";
+  // 写回结果可能来自本次会话，也可能来自刷新前的持久记录；两者都逐文件展示。
+  const lastResult = applyResult ?? application?.result ?? null;
+  const reconcilable = !active && Boolean(lastResult?.review_id) && lastResult?.status !== "applied";
+  const loadApplication = () =>
+    void action.run(async () => {
+      setMessage("");
+      setApplication((await tasksApi(api).application(task.id)) as ApplicationView);
+    });
+  const reconcile = () =>
+    void action.run(async () => {
+      setMessage("");
+      const next = (await tasksApi(api).reconcile(
+        task.id,
+        lastResult!.review_id,
+      )) as { review_id: string; files: ChangeReview["changes"] };
+      setApplyResult(null);
+      setApplication(null);
+      setApplied(false);
+      setReview({ review_id: next.review_id, changes: next.files });
+      setMessage(
+        "已核对剩余改动，请重新审阅后再次确认写回；不会自动写回项目。",
+      );
+    });
   return (
     <section className="stack" aria-label="项目改动审阅">
       {active ? (
@@ -48,6 +86,8 @@ export function TaskChanges({
             void action.run(async () => {
               setMessage("");
               setApplyResult(null);
+              setApplication(null);
+              setApplied(false);
               setReview((await tasksApi(api).changes(task.id)) as DetailedReview);
             })
           }
@@ -60,6 +100,25 @@ export function TaskChanges({
         <p className="management-status" role="status">
           {message}
         </p>
+      )}
+      {!active && (
+        <div className="button-row">
+          <button className="button secondary" disabled={action.busy} onClick={loadApplication}>
+            读取上次写回记录
+          </button>
+          {reconcilable && (
+            <button className="button primary" disabled={action.busy} onClick={reconcile}>
+              核对并审阅剩余改动
+            </button>
+          )}
+        </div>
+      )}
+      {application?.result?.files && (
+        <ul aria-label="持久写回记录">
+          {application.result.files.map((file) => (
+            <li key={file.path}>{file.path}：{fileStatusLabels[file.status] ?? "需核对"}</li>
+          ))}
+        </ul>
       )}
       {review && (
         <div className="stack">
@@ -116,26 +175,26 @@ export function TaskChanges({
                   下载成果：{change.path}
                 </button>
               )}
-              {applyResult?.files?.find((item) => item.path === change.path) && (
+              {lastResult?.files?.find((item) => item.path === change.path) && (
                 <p className="management-status" role="status">
                   写回状态：
-                  {{
-                    applied: "已应用",
-                    not_applied: "未应用",
-                    conflict: "冲突，未覆盖",
-                    unknown: "结果未知，需人工核对",
-                  }[
-                    applyResult.files.find((item) => item.path === change.path)!.status
+                  {fileStatusLabels[
+                    lastResult.files.find((item) => item.path === change.path)!.status
                   ] ?? "需核对"}
-                  {applyResult.files.find((item) => item.path === change.path)?.reason &&
-                    `（${applyResult.files.find((item) => item.path === change.path)?.reason}）`}
+                  {lastResult.files.find((item) => item.path === change.path)?.reason &&
+                    `（${lastResult.files.find((item) => item.path === change.path)?.reason}）`}
                 </p>
               )}
             </article>
           ))}
-          {applyResult && applyResult.status !== "applied" && (
+          {lastResult && lastResult.status !== "applied" && (
             <p className="management-status" role="alert">
               写回已停止，服务不会自动重试。请逐项核对原始基线、成果和写回状态；未知项可能已产生副作用。
+            </p>
+          )}
+          {application && !application.result?.files?.length && (
+            <p className="muted small">
+              上次写回记录（{application.review_id}）没有返回逐文件状态。
             </p>
           )}
           {review.review_id && review.changes.length > 0 && (
@@ -145,7 +204,7 @@ export function TaskChanges({
               </p>
               <button
                 className="button primary"
-                disabled={action.busy || active || Boolean(message) || Boolean(applyResult) || review.changes.some((change) => change.operation === "delete" || change.diff === null)}
+                disabled={action.busy || active || applied || Boolean(applyResult) || review.changes.some((change) => change.operation === "delete" || change.diff === null)}
                 onClick={() => setConfirm(review)}
               >
                 应用这些改动
@@ -173,6 +232,7 @@ export function TaskChanges({
                 setMessage("写回已停止，请核对逐文件状态和原始基线。");
                 return;
               }
+              setApplied(true);
               setConfirm(null);
               setMessage("改动已写回项目。");
               await onApplied();

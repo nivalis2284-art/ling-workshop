@@ -16,7 +16,8 @@ from lingnexus.common.errors import PermissionDenied
 
 # Shared evidence policy is deliberately independent of either runtime.
 from lingnexus.common.verification import account as record_evidence
-from lingnexus.common.verification import successful, workspace_version
+from lingnexus.common.verification import successful
+from lingnexus.common.workspace_scan import scan as inspect_workspace
 from lingnexus.dependencies import DependencyService
 from lingnexus.tools import ExecutionLimits
 
@@ -54,7 +55,7 @@ class TaskToolScope:
     def read(self, raw: str) -> tuple[dict, str | None]:
         if self._snapshot:
             root = self.snapshots.path(self.task["id"])
-            text = tools(root).read_text(self.snapshots.file_path(self.task["id"], raw))
+            text = tools(root, max_bytes=1_048_576).read_text(self.snapshots.file_path(self.task["id"], raw))
             return {"status": "completed", "result": {"text": text}, "effect_id": self.effect}, self.effect
         result = self.app.actions.execute(
             self.agent_id, self._base + ":read", "read_file", {"path": raw}
@@ -90,7 +91,7 @@ class TaskToolScope:
 
     def read_path(self, path: Path) -> str:
         if self._snapshot:
-            return tools(self.snapshots.path(self.task["id"])).read_text(path)
+            return tools(self.snapshots.path(self.task["id"]), max_bytes=1_048_576).read_text(path)
         return self.app.permissions.read_text(self.agent_id, path)
 
     async def run(self, argv: list[str], purpose: str, *, long_running=False) -> tuple[dict, str | None]:
@@ -98,19 +99,15 @@ class TaskToolScope:
             raise PermissionDenied("Command requires an authorized snapshot.")
         authorize(self.app, self.agent_id, self.task["workspace"])
         root = self.snapshots.path(self.task["id"])
-        scan(root)
+        inspect_workspace(root)
         # The tier is chosen by the sandbox service; no engine is hard-coded.
         result = await self.app.sandbox.command(
             self.agent_id, self.task["id"], "task", list(argv), purpose, root,
             authorization_root=self.task["workspace"], image=self.task["docker_image"], long_running=long_running)
-        try:
-            scan(root)
-        except (PermissionError, OSError, ValueError):
-            # The execution result remains authoritative even when generated
-            # artifacts fail validation. Never lose exit/output/cleanup flags.
+        # The session runner hashes once after exit with the shared snapshot policy.
+        # Do not repeat content scans or retain a second complete byte snapshot here.
+        if result.get("version_unavailable"):
             result["artifact_error"] = "unsafe_or_oversized_snapshot"
-        result["workspace_version"] = workspace_version(root)
-        result["version_unavailable"] = result["workspace_version"] is None
         result["execution_purpose"] = purpose
         result["verification_passed"] = bool(purpose == "verify" and successful("run_command", result))
         return result, self.effect

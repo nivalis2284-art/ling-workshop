@@ -551,6 +551,9 @@ class ChatRuntime:
         requested_effort: str | None,
         recovery: dict | None = None,
     ) -> None:
+        from lingnexus.common.diagnostics import diagnostic
+
+        stage = "initialization"
         try:
             if self._client is None:
                 self._client = httpx.AsyncClient()
@@ -598,6 +601,7 @@ class ChatRuntime:
                     self._fail(run_id, "step_budget_exhausted")
                     return
                 if state.get("phase") == "pending_tools":
+                    stage = "tools"
                     calls = [ToolCall(**item) for item in state["pending"]]
                     results = await self._run_tools(run_id, step, calls, scope, run["conversation_id"])
                     append_tool_results(state["payload"], state["profile"],
@@ -607,6 +611,7 @@ class ChatRuntime:
                     self._save_checkpoint(run_id, state)
                     continue
                 self.store.append(run_id, "step_started", {"run_id": run_id, "step": step})
+                stage = "checkpoint"
                 state.update(step=step, phase="model_inflight")
                 self._save_checkpoint(run_id, state)
                 if self.app.context.counter.count(json.dumps(state["payload"], ensure_ascii=False)) + (
@@ -614,6 +619,7 @@ class ChatRuntime:
                 ) > (state["profile"].context_window_tokens or 32768):
                     self._fail(run_id, "context_limit")
                     return
+                stage = "model"
                 turn = await self._step_call(run_id, step, state, requested_effort)
                 if turn is None:
                     return
@@ -625,6 +631,7 @@ class ChatRuntime:
                 elif turn.calls:
                     append_tool_calls(state["payload"], state["profile"], turn.calls, turn.text)
                 if not turn.calls:
+                    stage = "completion"
                     if turn.finish_reason in COMPLETE_REASONS[state["profile"].api_family]:
                         await self._before_turn_end(run_id, turn.text)
                         await self._complete(run_id, turn.text)
@@ -635,6 +642,7 @@ class ChatRuntime:
                     "id": call.id, "name": call.name, "arguments": call.arguments,
                     "arguments_json": call.arguments_json} for call in turn.calls])
                 self._save_checkpoint(run_id, state)
+                stage = "tools"
                 results = await self._run_tools(
                     run_id, step, turn.calls, scope, run["conversation_id"]
                 )
@@ -654,8 +662,11 @@ class ChatRuntime:
             if run_id not in self._stop_requested:
                 self._fail(run_id, "interrupted", status="interrupted")
             raise
-        except Exception:  # noqa: BLE001 - background boundary must sanitize every failure
+        except Exception as exc:  # noqa: BLE001 - background boundary must sanitize every failure
             # Never serialize/log exception strings or provider continuation.
+            detail = diagnostic(stage, exc)
+            self.store.append(run_id, "notice", {"run_id": run_id, "code": "runtime_diagnostic",
+                **detail, "message": "运行故障，诊断编号：" + detail["diagnostic_id"]})
             self._fail(run_id, "runtime_error")
 
     async def _control_gate(self, run_id: str, state: dict) -> None:
@@ -790,6 +801,11 @@ class ChatRuntime:
                 elif event.type == "tool_call_delta":
                     continue
                 elif event.type == "error":
+                    from lingnexus.common.diagnostics import diagnostic
+
+                    detail = diagnostic("model", reason=event.error.reason if event.error else None)
+                    self.store.append(run_id, "notice", {"run_id": run_id, "code": "runtime_diagnostic",
+                        **detail, "message": "模型通信失败，诊断编号：" + detail["diagnostic_id"]})
                     return _Turn(text="".join(text), calls=calls, error=event)
                 elif event.type == "complete":
                     for channel, guard in guards.items():

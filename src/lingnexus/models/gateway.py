@@ -292,7 +292,7 @@ class ModelGateway:
                     if event.type in ("complete", "error"):
                         return
         except ProtocolError as exc:
-            yield _priced_event(profile, self._error(parser, exc.code))
+            yield _priced_event(profile, self._error(parser, exc.code, reason=exc.reason))
         except (TimeoutError, httpx.TimeoutException):
             yield _priced_event(profile, self._error(parser, "timeout"))
         except httpx.HTTPError:
@@ -345,13 +345,13 @@ class ModelGateway:
                     yield event
                 if parser.finished:
                     return
-            raise ProtocolError("unexpected_eof")
+            raise ProtocolError("unexpected_eof", reason="missing_terminal")
 
     @staticmethod
-    def _error(parser: Parser, code: str, status: int | None = None) -> ModelEvent:
+    def _error(parser: Parser, code: str, status: int | None = None, *, reason: str | None = None) -> ModelEvent:
         return ModelEvent(
             "error",
-            error=ModelError(code, ERROR_MESSAGES[code], status),
+            error=ModelError(code, ERROR_MESSAGES[code], status, reason),
             usage=parser.usage,
             continuation=parser.snapshot(),
         )

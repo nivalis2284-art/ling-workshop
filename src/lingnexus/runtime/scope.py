@@ -24,7 +24,7 @@ import hashlib
 from pathlib import Path
 
 from lingnexus.common.errors import PermissionDenied
-from lingnexus.common.verification import successful, workspace_version
+from lingnexus.common.verification import successful
 
 _BROWSER_ACTIONS = {
     "browser_goto": "goto",
@@ -106,8 +106,6 @@ class ChatToolScope:
         # The tier is chosen by the sandbox service; no engine is hard-coded here.
         result = await self.app.sandbox.command(
             self.agent_id, self.run_id, "chat", list(argv), purpose, workdir, long_running=long_running)
-        result["workspace_version"] = workspace_version(workdir)
-        result["version_unavailable"] = result["workspace_version"] is None
         result["execution_purpose"] = purpose
         result["verification_passed"] = bool(purpose == "verify" and successful("run_command", result))
         return result, self._effect_id

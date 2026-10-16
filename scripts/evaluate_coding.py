@@ -819,6 +819,7 @@ async def _trial_child(args) -> dict:
             "controller_source": _source_identity(REPOSITORY),
             "execution_resources": resource_report,
             "provider_traces": list(transport.trace_records),
+            "diagnostics": [event["data"] for event in events if event["type"] == "diagnostic"],
             "status": status,
             "failure_origin": _task_failure_origin(task_record),
             "case_id": task["id"],
@@ -1128,6 +1129,8 @@ def _candidate_status(task: dict, accepted: bool, slow_ok: bool, tool_rows: list
 
 
 def _task_failure_origin(task: dict) -> str | None:
+    if task.get("error_code") in {"model_timeout", "model_transport_error", "model_http_error"}:
+        return "model_transport_boundary"
     if task.get("error_code") in {"model_malformed_stream", "model_provider_error", "model_unexpected_eof", "model_content_type"}:
         return "protocol_boundary_unknown"
     return None

@@ -239,7 +239,7 @@ class ChatParser(Parser):
         if "id" in data:
             response_id = string(data["id"], nonempty=True)
             if self.response.get("id", response_id) != response_id:
-                raise ProtocolError()
+                raise ProtocolError(reason="response_id_changed")
         self.response.update({k: deepcopy(v) for k, v in data.items() if k != "choices"})
         choices = seq(data.get("choices"))
         for value in choices:
@@ -359,7 +359,7 @@ class ResponsesParser(Parser):
             response = deepcopy(obj(data.get("response")))
             response_id = string(response.get("id"), nonempty=True)
             if self.response.get("id", response_id) != response_id:
-                raise ProtocolError()
+                raise ProtocolError(reason="response_id_changed")
             self.response = response
             result += self.update_usage(response.get("usage"))
             if kind == "response.failed":

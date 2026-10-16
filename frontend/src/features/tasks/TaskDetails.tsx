@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import type { LingApi } from "../../api/client";
 import { ConfirmDialog } from "../../shared/ConfirmDialog";
+import { RecoveryReview } from "../../shared/RecoveryReview";
 import { ErrorNotice } from "../../shared/ui";
 import { tasksApi, taskLabels } from "./api";
 import { ResourceNotice } from "./ManagementUi";
@@ -150,6 +151,14 @@ export function TaskDetails({
           </section>
           {task.workspace && (
             <TaskChanges api={api} task={task} onApplied={refresh} />
+          )}
+          {!running && (
+              <RecoveryReview key={task.id}
+              api={api}
+              runId={task.id}
+              kind="task"
+              onUpdated={refresh}
+            />
           )}
           {task.workspace && ["paused","blocked"].includes(task.status) && <TaskDependencies key={JSON.stringify(task.dependency_candidate??task.id)} api={api} taskId={task.id} status={task.status} onUpdated={refresh} candidate={task.dependency_candidate}/>}
           <TaskEvents api={api} taskId={task.id} events={resource.data!.events} />

@@ -2,30 +2,22 @@
 
 import difflib
 import hashlib
-import os
 from pathlib import Path
 
 from lingnexus.common.errors import Conflict, PermissionDenied
+from lingnexus.common.workspace_scan import MAX_FILE, excluded
+from lingnexus.common.workspace_scan import scan as inspect_workspace
 from lingnexus.tools import FilePermissions, WorkspaceTools
-from lingnexus.tools._paths import directory, local_path, regular_file, reject_link
-
-EXCLUDED = {".git", "venv", ".venv", "node_modules", "__pycache__", ".tmp", ".deps", ".home"}
-MAX_FILE = 1_048_576
-MAX_TOTAL = 32 * 1_048_576
-MAX_FILES = 2000
-
-
-def excluded(path):
-    return any(p.lower() in EXCLUDED or p.lower().startswith(".env") for p in Path(path).parts)
+from lingnexus.tools._paths import directory, local_path
 
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def tools(root):
+def tools(root, *, max_bytes=MAX_FILE):
     return WorkspaceTools(
-        root, FilePermissions((root,), (root,)), max_read_bytes=MAX_FILE, max_write_bytes=MAX_FILE
+        root, FilePermissions((root,), (root,)), max_read_bytes=max_bytes, max_write_bytes=max_bytes
     )
 
 
@@ -41,35 +33,7 @@ def authorize(app, agent, root):
 
 def scan(root):
     """Excluded trees are never opened; included paths use handle-based safe reads."""
-    root = directory(root)
-    files, total, entries = {}, 0, 0
-    access = tools(root)
-    pending = [root]
-    while pending:
-        folder = directory(pending.pop())
-        with os.scandir(folder) as children:
-            for entry in children:
-                entries += 1
-                if entries > 10_000:
-                    raise ValueError("Snapshot entry limit exceeded.")
-                path = local_path(entry.path)
-                relative = path.relative_to(root)
-                if excluded(relative):
-                    continue
-                info = path.lstat()
-                reject_link(info)
-                if entry.is_dir(follow_symlinks=False):
-                    if path.is_mount():
-                        raise PermissionDenied("Nested mounts cannot be snapshotted.")
-                    pending.append(directory(path))
-                else:
-                    regular_file(info)
-                    data = access.read_bytes(path)
-                    total += len(data)
-                    if total > MAX_TOTAL or len(files) >= MAX_FILES:
-                        raise ValueError("Snapshot size limit exceeded.")
-                    files[relative.as_posix()] = data
-    return files
+    return inspect_workspace(root, include_content=True)["files"]
 
 
 def make_parents(root, relative):
@@ -216,7 +180,7 @@ class Snapshots:
             raise Conflict("Interrupted application needs owner reconciliation.")
         with self.app.database.transaction():
             source = authorize(self.app, task["agent_id"], task["workspace"])
-            baseline = self.store.load(tid)["baseline"]
+            baseline = (review.get("result") or {}).get("source_baseline", self.store.load(tid)["baseline"])
             if {p: digest(b) for p, b in scan(source).items()} != baseline:
                 raise Conflict("Original workspace changed since the task snapshot.")
             current = scan(self.path(tid))
@@ -241,6 +205,8 @@ class Snapshots:
         effect_ids = []
         outcome = {"status": "applying", "review_id": rid, "files": files,
                    "effect_ids": effect_ids}
+        if (review.get("result") or {}).get("source_baseline") is not None:
+            outcome["source_baseline"] = baseline
         self.store.review_status(rid, "applying", outcome)
         for index, relative in enumerate(texts):
             item = files[index]
@@ -297,3 +263,76 @@ class Snapshots:
         self.store.review_status(rid, "applied", outcome)
         self.store.event(tid, "applied", outcome)
         return outcome
+
+    def reconcile(self, tid, rid):
+        """Observe a stopped application and prepare a new, remaining-only review.
+
+        Never relabel an unknown effect as successful or replay the old review.
+        The action guard excludes in-process writes while taking this observation.
+        """
+        task = self.store.get(tid)
+        self._require_commands_resolved(tid)
+        if task["status"] in {"running", "queued"}:
+            raise Conflict("Pause the task before reconciling application.")
+        with self.app.actions.reconciliation_guard(), self.app.database.transaction():
+            source = authorize(self.app, task["agent_id"], task["workspace"])
+            review = self.store.get_review(tid, rid)
+            prior = review.get("result") or {}
+            if prior.get("replacement_review_id"):
+                return self._remaining_view(tid, prior["replacement_review_id"])
+            if review["status"] not in {"applying", "unknown", "conflict"}:
+                raise Conflict("Only a stopped application can be reconciled.")
+            baseline = prior.get("source_baseline", self.store.load(tid)["baseline"])
+            observed = {p: digest(b) for p, b in scan(source).items()}
+            staged = {p: digest(b) for p, b in scan(self.path(tid)).items()}
+            expected_source = dict(baseline)
+            remaining, observations = [], []
+            for change in review["manifest"]:
+                path = change["path"]
+                if staged.get(path) != change["after"]:
+                    raise Conflict("Staged artifacts changed; inspect a new task before reconciliation.")
+                # A live file effect is not resolved by a matching content hash.
+                for item in prior.get("files", []):
+                    if (item["path"] == path and item.get("effect_id")
+                            and self.app.actions.get(item["effect_id"])["status"] == "executing"):
+                        raise Conflict("A file effect is still executing.")
+                actual = observed.get(path)
+                if actual == change["after"]:
+                    if actual is None:
+                        expected_source.pop(path, None)
+                    else:
+                        expected_source[path] = actual
+                    observations.append({"path": path, "observation": "matches_result"})
+                elif actual == change["before"]:
+                    remaining.append(change)
+                    observations.append({"path": path, "observation": "matches_original"})
+                else:
+                    raise Conflict("A file matches neither original nor reviewed result; resolve the conflict manually.")
+            if observed != expected_source:
+                raise Conflict("Other project files changed; review those changes before continuing.")
+            new_id = self.store.review(tid, remaining)
+            self.store.review_status(new_id, "reviewed", {"source_baseline": observed, "parent_review_id": rid})
+            # The original uncertainty and per-file statuses stay intact.
+            self.store.review_status(rid, review["status"], {**prior,
+                "replacement_review_id": new_id, "observations": observations})
+            self.store.event(tid, "application_reconciled", {"review_id": rid,
+                "replacement_review_id": new_id, "observations": observations})
+            return self._remaining_view(tid, new_id)
+
+    def _remaining_view(self, tid, rid):
+        review = self.store.get_review(tid, rid)
+        baseline_tools = tools(directory(self.root / tid / "baseline"))
+        current_tools = tools(self.path(tid))
+        files = []
+        for change in review["manifest"]:
+            path = change["path"]
+            old = baseline_tools.read_bytes(path) if change["before"] is not None else b""
+            new = current_tools.read_bytes(path) if change["after"] is not None else b""
+            diff = None
+            try:
+                diff = "".join(difflib.unified_diff(old.decode("utf-8").splitlines(keepends=True),
+                    new.decode("utf-8").splitlines(keepends=True), fromfile="a/"+path, tofile="b/"+path))[:65_536]
+            except UnicodeError:
+                pass
+            files.append({**change, "diff": diff, "artifact": path if change["after"] else None})
+        return {"review_id": rid, "files": files}

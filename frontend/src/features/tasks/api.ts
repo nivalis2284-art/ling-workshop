@@ -116,6 +116,13 @@ export function tasksApi(api: LingApi) {
         method: "POST",
         body: JSON.stringify({ review_id }),
       }),
+    application: (id: string) => api.call<{
+      review_id: string; status: string;
+      result: ApplyResult & { files?: {path: string; status: string; reason?: string}[] };
+    } | null>(path(id) + "/application"),
+    reconcile: (id: string, review_id: string) => api.call<{
+      review_id: string; files: FileChange[];
+    }>(path(id) + "/reconcile", {method: "POST", body: JSON.stringify({review_id})}),
     artifact: (id: string, name: string) =>
       api.binary(
         path(id) +

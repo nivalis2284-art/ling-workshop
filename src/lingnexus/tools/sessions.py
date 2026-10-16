@@ -80,6 +80,10 @@ class CommandSessions:
                 self._save_record(record)
             self._records[record["session_id"]] = record
 
+    def observation_guard(self):
+        """Take lifecycle snapshots before database locks, matching worker order."""
+        return self._lock
+
     def start(self, owner_id: str, run_id: str, argv: Sequence[str], runner, *, context=None) -> dict:
         """Persist then dispatch a runner; argv is stored privately, never polled."""
         if not isinstance(owner_id, str) or not owner_id:

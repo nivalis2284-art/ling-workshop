@@ -16,7 +16,10 @@ import { ErrorNotice } from "../../shared/ui";
 import {
   continuityRequestId,
   workStatusLabel,
+  workCanCancel,
+  workCanControlRun,
   workCanFinish,
+  workCanGuide,
   workCanWake,
 } from "./api";
 import type { WorkBranchesState } from "./useContinuation";
@@ -65,6 +68,7 @@ function BranchDetails({
   const [guide, setGuide] = useState("");
   const [status, setStatus] = useState("");
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [confirmFinish, setConfirmFinish] = useState(false);
   const [localError, setLocalError] = useState("");
   const [pausing, setPausing] = useState(false);
   const [finishing, setFinishing] = useState(false);
@@ -93,7 +97,6 @@ function BranchDetails({
       if (alive.current) setPausing(false);
     }
   };
-
   const sendGuide = async () => {
     const text = guide.trim();
     if (!text) return;
@@ -108,6 +111,7 @@ function BranchDetails({
 
   const finish = async () => {
     if (finishing) return;
+    setConfirmFinish(false);
     setFinishing(true);
     setLocalError("");
     const value = await state.finish(work.id, work.revision);
@@ -173,7 +177,7 @@ function BranchDetails({
           )}
           {state.detail.episodes.length > 0 && (
             <p className="metadata">
-              共 {state.detail.episodes.length} 个唤醒阶段；当前阶段
+              最近 {state.detail.episodes.length} 个唤醒阶段；当前阶段
               {state.detail.episodes.at(-1)?.status ?? "未知"}。
             </p>
           )}
@@ -194,7 +198,7 @@ function BranchDetails({
       )}
 
       <div className="continuity-branch-actions">
-        {work.run_id && ["running", "paused", "waiting", "finishing"].includes(work.status) && (
+        {workCanControlRun(work) && (
           <>
             <button className="button secondary small-button" disabled={pausing} onClick={() => void applyPaused(false)}>
               <Pause size={14} />请求暂停
@@ -204,7 +208,7 @@ function BranchDetails({
             </button>
           </>
         )}
-        {!["archived", "completed", "cancelled", "failed"].includes(work.status) && (
+        {workCanCancel(work) && (
           <button
             className="button secondary small-button"
             disabled={state.busyId === work.id}
@@ -217,7 +221,7 @@ function BranchDetails({
           <button
             className="button primary small-button"
             disabled={finishing || state.busyId === work.id}
-            onClick={() => void finish()}
+            onClick={() => setConfirmFinish(true)}
           >
             <Archive size={14} />
             {finishing ? "正在核对…" : "完成并归档"}
@@ -255,7 +259,7 @@ function BranchDetails({
           placeholder="例如：先核对现有测试，再修登录失败；不要改动生产数据。"
           onChange={(event) => setGuide(event.target.value)}
         />
-        <button className="button secondary small-button" disabled={!guide.trim() || !!state.busyId || ["archived", "completed", "failed", "cancelled", "unknown", "pending_review", "awaiting_approval", "finishing", "interrupted"].includes(work.status)}>
+        <button className="button secondary small-button" disabled={!guide.trim() || !!state.busyId || !workCanGuide(work)}>
           <Send size={14} />发送指导
         </button>
       </form>
@@ -273,6 +277,19 @@ function BranchDetails({
           <p>
             已确认的操作不会被回滚。若命令、工具或文件交付尚不确定，灵会保留恢复与核对入口；
             原分支记录和归档都会保留。
+          </p>
+        </ConfirmDialog>
+      )}
+      {confirmFinish && (
+        <ConfirmDialog
+          title="完成并归档这支工作？"
+          confirmLabel="核对并归档"
+          busy={finishing || state.busyId === work.id}
+          onCancel={() => setConfirmFinish(false)}
+          onConfirm={() => void finish()}
+        >
+          <p>
+            灵会重新读取服务端运行状态与交付围栏，再决定能否归档。存在活动工具、未知副作用或待核交付时，服务会拒绝并保留原记录。
           </p>
         </ConfirmDialog>
       )}

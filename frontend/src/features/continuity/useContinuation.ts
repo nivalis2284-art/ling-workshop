@@ -177,7 +177,11 @@ export function useWorkBranches(api: LingApi, agentId: string) {
   }, []);
 
   const act = useCallback(
-    async (id: string, operation: () => Promise<WorkBranch>) => {
+    async (
+      id: string,
+      operation: () => Promise<WorkBranch>,
+      inspectRun = false,
+    ) => {
       if (mutating.current) return null;
       mutating.current = true;
       const started = generation.current;
@@ -185,6 +189,15 @@ export function useWorkBranches(api: LingApi, agentId: string) {
       setBusyId(id);
       setActionError("");
       try {
+        if (inspectRun) {
+          const work = items.find((item) => item.id === id);
+          if (!work?.run_id) return null;
+          const run = await api.chatRun(work.run_id);
+          if (run.status === "running")
+            throw new Error(
+              "运行仍在活动；请等当前步骤结束，或先请求暂停。",
+            );
+        }
         const value = await operation();
         if (mounted.current && started === generation.current) replace(value);
         return mounted.current && started === generation.current ? value : null;
@@ -196,7 +209,7 @@ export function useWorkBranches(api: LingApi, agentId: string) {
         if (mounted.current && started === generation.current) setBusyId("");
       }
     },
-    [busyId, replace],
+    [api, items, replace],
   );
 
   const history = useCallback(async (branchId: string) => {
@@ -250,7 +263,7 @@ export function useWorkBranches(api: LingApi, agentId: string) {
     cancel: (id: string, expectedRevision: number) =>
       act(id, () => client.cancel(id, expectedRevision)),
     finish: (id: string, expectedRevision: number) =>
-      act(id, () => client.finish(id, expectedRevision)),
+      act(id, () => client.finish(id, expectedRevision), true),
     wake: (id: string, expectedRevision: number) =>
       act(id, () => client.wake(id, expectedRevision)),
   };

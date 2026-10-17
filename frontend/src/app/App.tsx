@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { LingApi } from "../api/client";
 import { forgetOwnerSession } from "../api/session";
 import type { Agent } from "../api/types";
@@ -94,6 +94,7 @@ function ConnectedApp({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [page, setPage] = useState<PageId>("overview");
   const chats = useMemo(() => new ChatSessions(api), [api]);
+  useEffect(() => () => chats.dispose(), [chats]);
   if (resource.status === "loading")
     return (
       <main className="welcome">

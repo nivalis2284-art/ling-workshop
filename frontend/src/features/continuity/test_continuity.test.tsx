@@ -43,6 +43,9 @@ function chatBackend(options: {
   main?: MainConversation;
   work?: WorkBranch[];
   models?: boolean;
+  runStatus?: "running" | "completed";
+  runLookupFails?: boolean;
+  workStatus?: "running" | "paused";
 } = {}) {
   const requests: Request[] = [];
   let main: MainConversation = options.main ?? {
@@ -75,13 +78,27 @@ function chatBackend(options: {
           main_conversation_id: "main-1",
           origin_message_id: null,
           objective: body.objective,
-          status: "running",
+          status: options.workStatus ?? "running",
           revision: 1,
           created_at: "2026-10-17T04:00:00Z",
           started_at: "2026-10-17T04:00:01Z",
         };
         work.unshift(value);
         return json(value, 201);
+      }
+      const run = url.pathname.match(/^\/api\/chat\/runs\/([^/]+)$/);
+      if (run && method === "GET") {
+        if (options.runLookupFails) return json({ detail: "暂时无法读取" }, 503);
+        return json({
+          id: run[1],
+          agent_id: "ling",
+          request_id: "work-request",
+          profile_id: "profile-1",
+          status: options.runStatus ?? "running",
+          conversation_id: "branch-1",
+          created_at: "2026-10-17T04:00:00Z",
+          finished_at: null,
+        });
       }
       const match = url.pathname.match(/^\/api\/work-branches\/([^/]+)\/(guide|cancel|finish)$/);
       if (match && method === "POST") {
@@ -171,6 +188,7 @@ test("first use requires an explicit trunk and keeps old conversations unmerged"
 test("work drawer starts an isolated task, guides it, finishes it, and keeps the composer present", async () => {
   const { server, user } = await renderChat({
     main: { conversation: mainConversation, revision: 2, choices: [mainConversation, otherConversation] },
+    workStatus: "running",
   });
   await user.click(await screen.findByRole("button", { name: "工作与经历" }));
   const drawer = await screen.findByRole("complementary", { name: "工作与经历抽屉" });
@@ -185,10 +203,69 @@ test("work drawer starts an isolated task, guides it, finishes it, and keeps the
   await waitFor(() =>
     expect(server.requests.some((request) => request.path.endsWith("/guide"))).toBe(true),
   );
-  await user.click(within(detail).getByRole("button", { name: "完成并归档" }));
-  await waitFor(() => expect(server.requests.some((request) => request.path.endsWith("/finish"))).toBe(true));
+  // A running row does not claim the round is complete. The post finishes in
+  // the dedicated lifecycle test after the server reports a dormant run.
+  expect(within(detail).queryByRole("button", { name: "完成并归档" })).not.toBeInTheDocument();
   expect(screen.getByRole("textbox", { name: "消息" })).toBeVisible();
   expect(server.requests.some((request) => request.path === "/api/chat/stream")).toBe(false);
+});
+
+test("finish rechecks the server run and submits once the run is dormant", async () => {
+  const work: WorkBranch = {
+    id: "work-1",
+    agent_id: "ling",
+    conversation_id: "branch-1",
+    main_conversation_id: "main-1",
+    origin_message_id: null,
+    objective: "检查设置页",
+    status: "paused",
+    revision: 4,
+    run_id: "run-1",
+    created_at: "2026-10-17T04:00:00Z",
+  };
+  const { server, user } = await renderChat({
+    main: { conversation: mainConversation, revision: 2, choices: [mainConversation, otherConversation] },
+    work: [work],
+    runStatus: "completed",
+  });
+  await user.click(await screen.findByRole("button", { name: "工作与经历" }));
+  const drawer = await screen.findByRole("complementary", { name: "工作与经历抽屉" });
+  await user.click(within(drawer).getByRole("button", { name: /检查设置页/ }));
+  const detail = await within(drawer).findByRole("region", { name: "工作分支详情" });
+  await user.click(within(detail).getByRole("button", { name: "完成并归档" }));
+  await user.click(screen.getByRole("button", { name: "核对并归档" }));
+  await waitFor(() =>
+    expect(server.requests.some((request) => request.path.endsWith("/finish"))).toBe(true),
+  );
+  expect(server.requests.some((request) => request.path === "/api/chat/runs/run-1")).toBe(true);
+});
+
+test("finish stays on the server fence while the run is active", async () => {
+  const work: WorkBranch = {
+    id: "work-1",
+    agent_id: "ling",
+    conversation_id: "branch-1",
+    main_conversation_id: "main-1",
+    origin_message_id: null,
+    objective: "仍在执行",
+    status: "paused",
+    revision: 4,
+    run_id: "run-1",
+    created_at: "2026-10-17T04:00:00Z",
+  };
+  const { server, user } = await renderChat({
+    main: { conversation: mainConversation, revision: 2, choices: [mainConversation, otherConversation] },
+    work: [work],
+    runStatus: "running",
+  });
+  await user.click(await screen.findByRole("button", { name: "工作与经历" }));
+  const drawer = await screen.findByRole("complementary", { name: "工作与经历抽屉" });
+  await user.click(within(drawer).getByRole("button", { name: /仍在执行/ }));
+  const detail = await within(drawer).findByRole("region", { name: "工作分支详情" });
+  await user.click(within(detail).getByRole("button", { name: "完成并归档" }));
+  await user.click(screen.getByRole("button", { name: "核对并归档" }));
+  expect(await within(detail).findByText(/运行仍在活动/)).toBeVisible();
+  expect(server.requests.some((request) => request.path.endsWith("/finish"))).toBe(false);
 });
 
 test("archived experience reads records by server cursor without any model or chat request", async () => {

@@ -69,6 +69,34 @@ export interface ChatSnapshot {
   actionError?: string;
 }
 const storagePrefix = "lingnexus.chat.v1.";
+// A stream can emit many small deltas per second. Persist one coalesced copy
+// after the burst so a reload still sees the latest pending turn, without
+// serializing the growing transcript on every token.
+const streamStorageDelay = 400;
+// One page-level listener covers every attached conversation. Detached stores
+// stay available for switching back, but neither their timer nor this listener
+// holds them alive.
+const attachedSessions = new Set<ChatSession>();
+const testSessions = new Set<ChatSession>();
+let pagehideInstalled = false;
+function persistAttachedSessions() {
+  for (const session of attachedSessions)
+    session.flushPersistenceForLifecycle();
+}
+function installPagehideListener() {
+  if (pagehideInstalled || typeof window === "undefined") return;
+  pagehideInstalled = true;
+  window.addEventListener("pagehide", persistAttachedSessions);
+}
+export function resetChatSessionLifecycleForTests() {
+  if (import.meta.env.MODE !== "test") return;
+  attachedSessions.clear();
+  for (const session of testSessions) session.dispose();
+  testSessions.clear();
+  if (pagehideInstalled && typeof window !== "undefined")
+    window.removeEventListener("pagehide", persistAttachedSessions);
+  pagehideInstalled = false;
+}
 export const isPending = (turn?: ChatTurn) =>
   !!turn && ["connecting", "streaming", "disconnected"].includes(turn.status);
 const shouldPersist = (turn: ChatTurn) =>
@@ -194,6 +222,9 @@ export class ChatSession {
   private confirmationsController: AbortController | null = null;
   private recoveryRequest: string | null = null;
   private conversations = new Map<string, ChatSession>();
+  private storageTimer: ReturnType<typeof setTimeout> | null = null;
+  private streamStorageDirty = false;
+  private disposed = false;
 
   constructor(
     private api: LingApi,
@@ -201,6 +232,7 @@ export class ChatSession {
     private storageConversationId?: string,
   ) {
     this.state = restore(agentId, storageConversationId);
+    if (import.meta.env.MODE === "test") testSessions.add(this);
   }
   forConversation = (conversationId: string): ChatSession => {
     if (this.state.conversationId === conversationId) return this;
@@ -218,8 +250,29 @@ export class ChatSession {
       this.listeners.delete(listener);
     };
   };
-  private update(patch: Partial<ChatSnapshot>) {
+  private update(patch: Partial<ChatSnapshot>, deferPersistence = false) {
+    if (this.disposed) return;
     this.state = { ...this.state, ...patch };
+    if (deferPersistence) this.schedulePersistence();
+    else this.persistNow();
+    this.listeners.forEach((listener) => listener());
+  }
+  private schedulePersistence() {
+    this.streamStorageDirty = true;
+    if (this.storageTimer !== null) return;
+    this.storageTimer = setTimeout(() => {
+      this.storageTimer = null;
+      if (!this.streamStorageDirty) return;
+      this.streamStorageDirty = false;
+      this.persistNow();
+    }, streamStorageDelay);
+  }
+  private persistNow = () => {
+    if (this.storageTimer !== null) {
+      clearTimeout(this.storageTimer);
+      this.storageTimer = null;
+    }
+    this.streamStorageDirty = false;
     try {
       // Explicit allowlist: no owner token, provider configuration or model key.
       sessionStorage.setItem(
@@ -241,14 +294,18 @@ export class ChatSession {
     } catch {
       /* In-memory chat remains usable when storage is unavailable. */
     }
-    this.listeners.forEach((listener) => listener());
-  }
-  private change(id: string, patch: Partial<ChatTurn>) {
+  };
+  flushPersistenceForLifecycle = () => this.persistNow();
+  private change(
+    id: string,
+    patch: Partial<ChatTurn>,
+    deferPersistence = false,
+  ) {
     this.update({
       turns: this.state.turns.map((turn) =>
         turn.request.request_id === id ? { ...turn, ...patch } : turn,
       ),
-    });
+    }, deferPersistence);
   }
   setDraft = (draft: string) => this.update({ draft });
   setProfile = (profileId: string) => this.update({ profileId, effort: "" });
@@ -415,6 +472,9 @@ export class ChatSession {
     }
   }
   attach = () => {
+    this.disposed = false;
+    installPagehideListener();
+    attachedSessions.add(this);
     this.attached = true;
     void this.resume();
     return this.detach;
@@ -482,6 +542,7 @@ export class ChatSession {
     }
   }
   detach = () => {
+    attachedSessions.delete(this);
     this.attached = false;
     this.controller?.abort();
     this.controller = null;
@@ -491,9 +552,31 @@ export class ChatSession {
     this.runController = null;
     this.confirmationsController?.abort();
     this.confirmationsController = null;
+    if (this.storageTimer !== null) {
+      clearTimeout(this.storageTimer);
+      this.storageTimer = null;
+    }
+    this.persistNow();
     const turn = this.state.turns.at(-1);
     if (isPending(turn))
       this.change(turn!.request.request_id, { status: "disconnected" });
+  };
+  /** Release resources without changing the stable conversation store maps. */
+  suspend = () => {
+    if (this.disposed) return;
+    this.detach();
+    for (const session of this.conversations.values()) session.suspend();
+  };
+  dispose = () => {
+    if (this.disposed) return;
+    this.suspend();
+    this.disposed = true;
+    for (const session of this.conversations.values()) session.dispose();
+    testSessions.delete(this);
+    // Keep child identities: React StrictMode replays effect cleanup without
+    // rebuilding ChatPage's captured session. The whole owner is GC-eligible
+    // once the app re-renders with a new ChatSessions.
+    this.persistNow();
   };
   send = (message: string, profileId: string, effort?: string) => {
     this.submit(
@@ -504,6 +587,12 @@ export class ChatSession {
       this.state.attachmentIds,
     );
   };
+  get lifecycle() {
+    return {
+      attached: this.attached,
+      pendingStorageWrite: this.storageTimer !== null,
+    };
+  }
   regenerate = (assistantId: string, profileId: string, effort?: string) => {
     const assistant = this.state.messages.find(
       (message) => message.id === assistantId && message.role === "assistant",
@@ -798,7 +887,13 @@ export class ChatSession {
         patch.confirmations = [];
         break;
     }
-    this.change(id, patch);
+    // Keep rendering and replay cursors synchronous, but coalesce the growing
+    // stream snapshot. started and terminal events remain immediate below.
+    this.change(
+      id,
+      patch,
+      !["started", "complete", "error"].includes(event.event),
+    );
     if (event.event === "complete" || event.event === "error") {
       void this.refreshHistory();
       void this.syncRunState(event.data.run_id);
@@ -1130,4 +1225,10 @@ export class ChatSessions {
     }
     return conversationId ? session.forConversation(conversationId) : session;
   }
+  dispose = () => {
+    this.suspend();
+  };
+  suspend = () => {
+    for (const session of this.sessions.values()) session.suspend();
+  };
 }

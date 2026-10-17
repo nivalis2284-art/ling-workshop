@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, test, vi } from "vitest";
+import { StrictMode } from "react";
 import { ChatHarness } from "./testHarness";
 import { ChatSessions } from "./session";
 import { LingApi } from "../../api/client";
@@ -294,6 +295,28 @@ test("backend transcripts survive fresh browser storage and sessions stay per co
   expect(
     server.requests.filter((r) => r.path.endsWith("/c1/messages")).length,
   ).toBeGreaterThanOrEqual(2);
+});
+
+test("StrictMode replays chat cleanup without duplicating the session or its requests", async () => {
+  const server = backend();
+  const api = new LingApi("owner-fixture", () => {});
+  const sessions = new ChatSessions(api);
+  const view = render(
+    <StrictMode>
+      <ChatHarness api={api} />
+    </StrictMode>,
+  );
+  expect(await screen.findByText("原回复")).toBeVisible();
+  await waitFor(() =>
+    expect(
+      server.requests.filter((request) => request.path.endsWith("/c1/messages")),
+    ).toHaveLength(1),
+  );
+  expect(sessions.forAgent("ling", "c1")).toBe(
+    sessions.forAgent("ling", "c1"),
+  );
+  view.unmount();
+  sessions.dispose();
 });
 
 test("editing a user forks the transcript and assistants cannot be edited", async () => {

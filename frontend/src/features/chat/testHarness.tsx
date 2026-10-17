@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import type { LingApi } from "../../api/client";
 import { ChatPage } from "./ChatPage";
 import { ChatSessions } from "./session";
@@ -19,6 +19,7 @@ export function ChatHarness({
   name?: string;
 }) {
   const sessions = useMemo(() => new ChatSessions(api), [api]);
+  useEffect(() => () => sessions.dispose(), [sessions]);
   const session = sessions.forAgent(agentId);
   const conversations = useConversations(
     api,

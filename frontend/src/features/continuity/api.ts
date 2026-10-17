@@ -247,12 +247,47 @@ export function workCanOpen(work: WorkBranch) {
   return !["archived", "completed", "cancelled", "failed"].includes(work.status);
 }
 
+export function workIsClosed(work: WorkBranch) {
+  return ["archived", "completed", "cancelled", "failed"].includes(work.status);
+}
+
+export function workCanCancel(work: WorkBranch) {
+  return !workIsClosed(work);
+}
+
+export function workCanControlRun(work: WorkBranch) {
+  return !!work.run_id && ["running", "finishing"].includes(work.status);
+}
+
+/** The server refuses guidance before these statuses become actionable again. */
+export function workCanGuide(work: WorkBranch) {
+  return (
+    !workIsClosed(work) &&
+    ![
+      "unknown",
+      "pending_review",
+      "awaiting_approval",
+      "finishing",
+      "interrupted",
+    ].includes(work.status)
+  );
+}
+
+// Temporary UI guards until the lifecycle API exposes allowed_actions. The
+// finish request re-reads the server run immediately before submitting.
 export function workCanFinish(work: WorkBranch) {
-  return ["running", "paused", "interrupted", "pending_review"].includes(work.status);
+  return (
+    workCanCancel(work) &&
+    !!work.run_id &&
+    !work.finish_requested &&
+    ["paused", "interrupted", "pending_review"].includes(work.status)
+  );
 }
 
 export function workCanWake(work: WorkBranch) {
-  return ["archived", "paused"].includes(work.status);
+  if (!["archived", "dormant", "paused", "interrupted"].includes(work.status))
+    return false;
+  return true;
 }
 
 export function experienceKindLabel(kind: string) {

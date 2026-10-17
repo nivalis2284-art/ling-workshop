@@ -1,8 +1,8 @@
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { waitFor } from "@testing-library/react";
 import { ApiError, type LingApi } from "../../api/client";
 import type { ChatRun, PendingConfirmation } from "../../api/types";
-import { ChatSession } from "./session";
+import { ChatSession, ChatSessions } from "./session";
 
 function frame(id: number, event: string, data: unknown) {
   return `id: ${id}\nevent: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -547,4 +547,122 @@ test("停止是终态：确认卡与暂停标记一并清空", async () => {
   expect(turn?.paused).toBeFalsy();
   expect(turn?.pausePending).toBeFalsy();
   session.detach();
+});
+
+test("高频流式增量合并写盘，终止事件与页面关闭仍保留最新快照", async () => {
+  const calls: string[] = [];
+  const { response, send } = openStream();
+  const writes = vi.spyOn(Storage.prototype, "setItem");
+  const session = new ChatSession(apiFor(response, calls), "ling-1");
+  session.attach();
+  session.setProfile("p");
+  session.send("继续写", "p");
+  send(frame(1, "started", {
+    run_id: "run-1",
+    conversation_id: "conversation-1",
+  }));
+  await waitFor(() =>
+    expect(session.getSnapshot().turns.at(-1)?.runId).toBe("run-1"),
+  );
+  writes.mockClear();
+  for (let index = 2; index <= 61; index++)
+    send(frame(index, "text", { run_id: "run-1", text: "字" }));
+  // Every event reaches subscribers immediately, while the storage burst is
+  // coalesced instead of serializing the growing text once per token.
+  await waitFor(() =>
+    expect(session.getSnapshot().turns.at(-1)?.text).toHaveLength(60),
+  );
+  const persistedStreamWrites = writes.mock.calls.filter(([key]) =>
+    String(key).startsWith("lingnexus."),
+  ).length;
+  expect(persistedStreamWrites).toBeLessThanOrEqual(1);
+  window.dispatchEvent(new Event("pagehide"));
+  const snapshotAtHide = JSON.parse(sessionStorage.getItem("lingnexus.chat.v1.ling-1")!);
+  expect(snapshotAtHide.turns.at(-1).text).toHaveLength(60);
+  expect(snapshotAtHide.turns.at(-1).lastSeq).toBe("61");
+  send(frame(62, "complete", {
+    run_id: "run-1",
+    status: "completed",
+    assistant_message_id: "assistant-1",
+  }));
+  await waitFor(() =>
+    expect(session.getSnapshot().turns.at(-1)?.status).toBe("complete"),
+  );
+  expect(session.getSnapshot().turns.at(-1)?.text).toHaveLength(60);
+  writes.mockClear();
+  // Releasing the session also keeps its latest unsent draft.
+  session.setDraft("尚未发出的草稿");
+  writes.mockClear();
+  session.setDraft("再次执行的草稿");
+  session.dispose();
+  expect(Object.values(sessionStorage).join(" ")).toContain("再次执行的草稿");
+  // Draft changes are immediate and dispose flushes once more. Only storage
+  // keys belonging to this chat session are counted; jsdom may also write its
+  // own bookkeeping under unrelated keys.
+  const stored = writes.mock.calls
+    .filter(([key]) => String(key).startsWith("lingnexus."))
+    .map(([, value]) => value);
+  expect(stored.at(-1)).toContain("再次执行的草稿");
+  expect(
+    writes.mock.calls.some(([key]) =>
+      String(key).startsWith("lingnexus.chat.v1."),
+    ),
+  ).toBe(true);
+});
+
+test("StrictMode 重挂载恢复页面监听，切换会话或释放不会遗留计时器", async () => {
+  vi.useFakeTimers();
+  try {
+    const add = vi.spyOn(window, "addEventListener");
+    const remove = vi.spyOn(window, "removeEventListener");
+    const sessions = new ChatSessions(apiFor(openStream().response, []));
+    const agent = sessions.forAgent("ling-1");
+    const detach = agent.attach();
+    expect(agent.lifecycle).toEqual({ attached: true, pendingStorageWrite: false });
+    expect(
+      add.mock.calls.filter(([name]) => name === "pagehide"),
+    ).toHaveLength(1);
+
+    // StrictMode mounts, cleans up, then mounts the same store again. The
+    // second cleanup must still be able to detach an active subscription.
+    detach();
+    expect(agent.lifecycle).toEqual({ attached: false, pendingStorageWrite: false });
+    agent.attach();
+    expect(agent.lifecycle.attached).toBe(true);
+    expect(
+      add.mock.calls.filter(([name]) => name === "pagehide"),
+    ).toHaveLength(1);
+
+    const first = sessions.forAgent("ling-1", "c1");
+    first.attach();
+    first.setDraft("稍后写入");
+    const second = sessions.forAgent("ling-1", "c2");
+    second.attach();
+    expect(first.lifecycle.attached).toBe(true);
+    first.detach();
+    expect(first.lifecycle).toEqual({ attached: false, pendingStorageWrite: false });
+    expect(second.lifecycle.attached).toBe(true);
+
+    sessions.dispose();
+    expect(second.lifecycle).toEqual({ attached: false, pendingStorageWrite: false });
+    expect(first.lifecycle).toEqual({ attached: false, pendingStorageWrite: false });
+    // Effect replay must find the same stores instead of creating a duplicate
+    // store and firing a second run/history request.
+    expect(sessions.forAgent("ling-1")).toBe(agent);
+    expect(sessions.forAgent("ling-1", "c1")).toBe(first);
+    agent.attach();
+    expect(agent.lifecycle.attached).toBe(true);
+    expect(
+      remove.mock.calls.filter(([name]) => name === "pagehide"),
+    ).toHaveLength(0);
+    // One shared page listener remains available as stores attach again after
+    // StrictMode's simulated cleanup; it is removed only by test teardown.
+    sessions.forAgent("other").attach();
+    expect(
+      add.mock.calls.filter(([name]) => name === "pagehide"),
+    ).toHaveLength(1);
+    sessions.dispose();
+  } finally {
+    vi.useRealTimers();
+  }
 });

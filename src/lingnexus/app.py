@@ -27,6 +27,7 @@ from lingnexus.maintenance.service import MaintenanceService
 from lingnexus.mcp import McpService
 from lingnexus.permissions.hooks import AppAuthorization, permission_hook
 from lingnexus.permissions.service import Permissions
+from lingnexus.reflection import ReflectionRunner
 from lingnexus.runtime.access import ConversationAccess
 from lingnexus.runtime.confirmations import ConfirmationService, confirmation_hook
 from lingnexus.runtime.hooks import HookEvent, HookRegistry
@@ -104,6 +105,7 @@ class Application:
         self.automatic_backups: AutomaticBackups | None = None
         self.work_events = WorkEvents(self)
         self.continuity = Continuity(self)
+        self.reflections: ReflectionRunner | None = None
         self.branch_coordinator = None
 
     def create_agent(self, name: str) -> str:

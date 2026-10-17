@@ -424,3 +424,28 @@ def test_reflection_service_is_mounted_in_the_real_lifespan(client, headers):
 
 def test_blank_agent_name_is_rejected(client, headers):
     assert client.post("/agents", headers=headers, json={"name": "   "}).status_code == 422
+
+
+def test_compaction_settings_are_available_through_the_real_api(client, headers):
+    created = client.post("/agents", headers=headers, json={"name": "压缩起点"})
+    assert created.status_code == 201
+    agent_id = created.json()["id"]
+    current = client.get(f"/agents/{agent_id}/compaction-settings", headers=headers)
+    assert current.status_code == 200, current.text
+    assert current.json()["enabled"] is False
+    changed = client.put(
+        f"/agents/{agent_id}/compaction-settings",
+        headers=headers,
+        json={
+            "expected_revision": 0,
+            "enabled": True,
+            "profile_modes": {},
+            "trigger_ratio": 0.8,
+            "target_ratio": 0.5,
+            "max_summary_bytes": 16384,
+            "max_epochs": 16,
+        },
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["enabled"] is True
+    assert changed.json()["revision"] == 1

@@ -1,4 +1,6 @@
 """Owner-authenticated continuity endpoints, also mounted under /api."""
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import Field
 
@@ -27,6 +29,16 @@ class GuideInput(Input):
 
 class RevisionInput(Input):
     expected_revision:int=Field(ge=1)
+
+
+class CompactionInput(Input):
+    expected_revision:int=Field(ge=0)
+    enabled:bool=False
+    profile_modes:dict[str,Literal['disabled','safe_epoch_restart','native_compaction']]=Field(default_factory=dict)
+    trigger_ratio:float=Field(default=.8,gt=.1,lt=1)
+    target_ratio:float=Field(default=.5,gt=.05,lt=1)
+    max_summary_bytes:int=Field(default=16384,ge=1024,le=65536)
+    max_epochs:int=Field(default=16,ge=1,le=32)
 
 
 def service(request):
@@ -100,3 +112,15 @@ def revoke(experience_id:str,value:RevisionInput,request:Request):
     c=service(request)
     item=c.experience(experience_id)
     return c.revoke_experience(experience_id,agent_id=item['agent_id'],**value.model_dump())
+
+
+@router.get('/agents/{agent_id}/compaction-settings')
+def compaction_settings(agent_id:str,request:Request):
+    runtime = request.app.state.chat_runtime
+    return runtime.compaction.settings(agent_id)
+
+
+@router.put('/agents/{agent_id}/compaction-settings')
+def configure_compaction(agent_id:str,value:CompactionInput,request:Request):
+    runtime = request.app.state.chat_runtime
+    return runtime.compaction.configure(agent_id,**value.model_dump())

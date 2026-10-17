@@ -413,5 +413,14 @@ def test_agent_registration_is_minimal(client, headers):
     assert [item["name"] for item in listing] == ["灵"]
 
 
+def test_reflection_service_is_mounted_in_the_real_lifespan(client, headers):
+    created = client.post("/agents", headers=headers, json={"name": "反思起点"})
+    assert created.status_code == 201
+    agent_id = created.json()["id"]
+    response = client.get(f"/agents/{agent_id}/reflection-settings", headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["enabled"] is False
+
+
 def test_blank_agent_name_is_rejected(client, headers):
     assert client.post("/agents", headers=headers, json={"name": "   "}).status_code == 422

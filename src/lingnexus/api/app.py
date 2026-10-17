@@ -25,6 +25,7 @@ from lingnexus.api import (
     mcp,
     models,
     permissions,
+    reflection,
     sandbox,
     skillpacks,
     system,
@@ -40,6 +41,7 @@ from lingnexus.common.errors import Conflict, DomainError, NotFound, PermissionD
 from lingnexus.continuity.coordinator import BranchCoordinator
 from lingnexus.dependencies import DependencyService
 from lingnexus.maintenance.automatic import AutomaticBackups
+from lingnexus.reflection import ReflectionRunner
 from lingnexus.runtime import ChatRuntime
 from lingnexus.tasks import TaskRuntime
 from lingnexus.work_events.summaries import EventSummaryRunner
@@ -124,6 +126,13 @@ def create_app(
         server.state.background = Supervisor(
             server.state.services, foreground_busy=foreground_busy
         )
+        # Reflection owns its own durable calendar/queue and is driven by the
+        # single background coordinator. Construct it before start so API
+        # settings remain usable even while the global switch is paused.
+        server.state.services.reflections = ReflectionRunner(
+            server.state.services, foreground_busy=foreground_busy
+        )
+        server.state.background.reflections = server.state.services.reflections
         server.state.services.event_summaries = EventSummaryRunner(
             server.state.services, foreground_busy=foreground_busy
         )
@@ -135,6 +144,7 @@ def create_app(
         finally:
             await server.state.services.branch_coordinator.aclose()
             await server.state.background.aclose()
+            await server.state.services.reflections.aclose()
             await server.state.services.event_summaries.aclose()
             await server.state.chat_runtime.aclose()
             await server.state.dependencies.aclose()
@@ -212,6 +222,7 @@ def create_app(
     server.include_router(execution.router)
     server.include_router(work_events.router)
     server.include_router(continuity.router)
+    server.include_router(reflection.router)
     for router in (
         agents.router,
         maintenance.router,
@@ -232,6 +243,7 @@ def create_app(
         execution.router,
         work_events.router,
         continuity.router,
+        reflection.router,
     ):
         server.include_router(router, prefix="/api")
     bundled = getattr(sys, "_MEIPASS", None)

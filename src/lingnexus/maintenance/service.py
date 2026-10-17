@@ -2,6 +2,8 @@
 
 Format versions: 1 (pre task assets), 2 (task assets), 3 (M2 work events),
 4 (continuing main, work branches, experiences and reflection).
+Version 4 also carries the public source-version ledgers from migration 034;
+without them a restored branch's frozen epoch no longer describes its sources.
 Version 3 also fixes binary fidelity: a BLOB column is exported as
 ``{"$b64": "<base64>"}`` and decoded back to bytes on import, so the 64 KiB
 record chunks round-trip exactly instead of being silently reinterpreted as
@@ -128,6 +130,8 @@ EXPORT_VERSION = 4
 # These are public dependency/derivation ledgers. Private snapshots, checkpoints,
 # native epochs and live execution leases stay in full backups only.
 CONTINUITY_TABLES = (
+    "continuity_source_versions",
+    "continuity_message_assets",
     "continuity_main_conversations",
     "continuity_work_branches",
     "continuity_work_guidance",
@@ -142,6 +146,7 @@ CONTINUITY_TABLES = (
     "continuity_work_episodes",
     "continuity_episode_archives",
 )
+SOURCE_VERSION_TABLE_NAMES = ("continuity_source_versions", "continuity_message_assets")
 REFLECTION_TABLES = (
     "reflection_policies",
     "reflection_slots",
@@ -198,6 +203,44 @@ def _decode_row(row: dict, types: dict[str, str]) -> dict:
         else:
             decoded[name] = value
     return decoded
+
+
+def _insert_rows(db, table: str, rows: list[dict]) -> None:
+    """Insert exact, fully declared rows through one checked code path."""
+    types = _column_types(db, table)
+    columns = list(types)
+    names = ",".join(f'"{col}"' for col in columns)
+    placeholders = ",".join("?" for _ in columns)
+    sql = f'INSERT INTO "{table}" ({names}) VALUES ({placeholders})'
+    for row in rows:
+        if set(row) != set(columns):
+            raise ValueError("数据字段不匹配")
+        decoded = _decode_row(row, types)
+        db.execute(sql, [decoded[col] for col in columns])
+
+
+def _restore_source_ledgers(db, contents: dict[str, list[dict]]) -> None:
+    """Replace trigger seeds with the two exported version ledgers, once.
+
+    Conversation/message creation seeds a zero row through migration 034.
+    These rows are derived state: an empty or incomplete ledger must not make a
+    revoked attachment look current merely because the reader defaults to zero.
+    """
+    for table, parent, ledger_key, parent_key in (
+        ("continuity_source_versions", "conversations", "conversation_id", "id"),
+        ("continuity_message_assets", "conversation_messages", "message_id", "id"),
+    ):
+        rows = contents.get(table)
+        if rows is None:
+            continue
+        db.execute(f'DELETE FROM "{table}"')
+        _insert_rows(db, table, rows)
+        expected = {row[0] for row in db.execute(f'SELECT "{parent_key}" FROM "{parent}"')}
+        actual = {row[0] for row in db.execute(f'SELECT "{ledger_key}" FROM "{table}"')}
+        # Deleted source ids intentionally leave version tombstones. Preserve
+        # those too; every extant parent still needs its own exact version row.
+        if not expected.issubset(actual):
+            raise ValueError("来源版本账与会话或消息不匹配")
 
 
 M2_MIGRATION_TABLES = {
@@ -411,6 +454,10 @@ class MaintenanceService:
             ):
                 raise ValueError("无效的表资料")
             contents[table] = rows
+        if (version == 4 and contents.get("continuity_work_branches")
+                and not set(SOURCE_VERSION_TABLE_NAMES).issubset(contents)):
+            # Old exports without either ledger cannot establish source validity.
+            raise ValueError("导出资料缺少工作来源版本账")
         for row in contents["attachments"]:
             read_verified(source / "attachments", row["blob_name"], row["sha256"])
         tasks = verify_task_assets(
@@ -428,17 +475,11 @@ class MaintenanceService:
                 with database.transaction() as db:
                     db.execute("PRAGMA defer_foreign_keys=ON")
                     for table in expected:
-                        rows = contents[table]
-                        types = _column_types(db, table)
-                        columns = list(types)
-                        names = ",".join(f'"{col}"' for col in columns)
-                        placeholders = ",".join("?" for _ in columns)
-                        sql = f'INSERT INTO "{table}" ({names}) VALUES ({placeholders})'
-                        for row in rows:
-                            if set(row) != set(columns):
-                                raise ValueError("数据字段不匹配")
-                            decoded = _decode_row(row, types)
-                            db.execute(sql, [decoded[col] for col in columns])
+                        if version == 4 and table in SOURCE_VERSION_TABLE_NAMES:
+                            continue
+                        _insert_rows(db, table, contents[table])
+                    if version == 4:
+                        _restore_source_ledgers(db, contents)
                     if db.execute("PRAGMA foreign_key_check").fetchone():
                         raise ValueError("导出资料存在断开的来源引用")
                     # Chunk reassembly, digest and run ownership are not visible to

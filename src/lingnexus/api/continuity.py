@@ -76,23 +76,27 @@ def task_state(branch_id:str,request:Request):
 
 
 @router.get('/work-branches/{branch_id}/task-states')
-def task_states(branch_id:str,request:Request):
-    return service(request).task_states(branch_id)
+def task_states(branch_id:str,request:Request,before:str|None=Query(None,max_length=4096),
+                limit:int=Query(100,ge=1,le=100)):
+    return service(request).task_states(branch_id,before=before,limit=limit)
 
 
 @router.get('/work-branches/{branch_id}/episodes')
-def episodes(branch_id:str,request:Request):
-    return service(request).episodes(branch_id)
+def episodes(branch_id:str,request:Request,before:str|None=Query(None,max_length=4096),
+             limit:int=Query(100,ge=1,le=100)):
+    return service(request).episodes(branch_id,before=before,limit=limit)
 
 
 @router.get('/work-branches/{branch_id}/archives')
-def archives(branch_id:str,request:Request):
-    return service(request).archives(branch_id)
+def archives(branch_id:str,request:Request,before:str|None=Query(None,max_length=4096),
+             limit:int=Query(100,ge=1,le=100)):
+    return service(request).archives(branch_id,before=before,limit=limit)
 
 
 @router.get('/work-branches/{branch_id}/guidance')
-def guidance(branch_id:str,request:Request):
-    return service(request).guidance(branch_id)
+def guidance(branch_id:str,request:Request,before:str|None=Query(None,max_length=4096),
+             limit:int=Query(100,ge=1,le=100)):
+    return service(request).guidance(branch_id,before=before,limit=limit)
 
 
 @router.post('/work-branches/{branch_id}/guide')

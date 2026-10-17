@@ -26,11 +26,12 @@ def fork_messages(continuity, agent_id, conversation_id, messages):
     if state:
         packet_parts.extend([f"【同一子 Agent 的任务状态 v{state['revision']}】", '目标：'+state['objective']])
         for label, key in (('关键决策', 'decisions'), ('未完成', 'unfinished'),
-                           ('已验证', 'verified'), ('未知', 'unknowns')):
+                           ('已验证', 'verified'), ('未知', 'unknowns'),
+                           ('进度', 'progress'), ('产物', 'artifacts'), ('来源引用', 'sources')):
             if state.get(key):
                 packet_parts.append(label+'：')
                 packet_parts.extend('- '+str(item) for item in state[key][-12:])
-    packet = '\n'.join(packet_parts)[:8192]
+    packet = '\n'.join(packet_parts).encode('utf-8')[:8192].decode('utf-8',errors='ignore')
     if packet:
         wrapper += packet + '\n\n'
         remaining = MAX_BACKGROUND_BYTES - len((wrapper + suffix).encode())
@@ -44,7 +45,7 @@ def fork_messages(continuity, agent_id, conversation_id, messages):
         remaining -= len((line + '\n').encode())
         lines.append(line)
         selected.append(source)
-    if not lines:
+    if not lines and not packet:
         return messages, []
     pid = 'continuity-fork:' + branch['id']
     projected = {'id': pid, 'role': 'assistant', 'text': wrapper + '\n'.join(reversed(lines)) + suffix}

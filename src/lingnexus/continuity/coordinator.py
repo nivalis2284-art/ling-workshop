@@ -105,22 +105,30 @@ class BranchCoordinator:
                 elif row['status']=='starting' and run is None:
                     # Crash after durable claim but before submit. Deterministic
                     # request id below attaches a committed run instead of replay.
-                    self.continuity.work_domain.settle_episode(row,'queued','claim_without_run')
+                    # The claim did not end the episode. Closing it here makes
+                    # every later submit fail its active-episode guard.
+                    self._claim_status(row,'queued','claim_without_run')
             with self.app.database.transaction() as db:
                 queued=[dict(r) for r in db.execute("SELECT * FROM continuity_work_branches WHERE status='queued' ORDER BY created_at LIMIT 128")]
             for row in queued:
-                with self.app.database.transaction() as db:
-                    marks=','.join('?' for _ in ACTIVE)
-                    if db.execute('SELECT 1 FROM continuity_work_branches WHERE agent_id=? AND status IN ('+marks+') AND id!=?',
-                                  (row['agent_id'],*ACTIVE,row['id'])).fetchone():
-                        continue
-                    self.continuity.assert_fork(row)
-                    db.execute("UPDATE continuity_work_branches SET status='starting' WHERE id=? AND status='queued'",(row['id'],))
-                    guidance=[dict(r) for r in db.execute("SELECT * FROM continuity_work_guidance WHERE branch_id=? "
-                                                          "AND consumed_at IS NULL AND delivery='queued' ORDER BY created_at,id",(row['id'],))]
-                message=self._wake_message(row,guidance)
+                try:
+                    with self.app.database.transaction() as db:
+                        marks=','.join('?' for _ in ACTIVE)
+                        if db.execute('SELECT 1 FROM continuity_work_branches WHERE agent_id=? AND status IN ('+marks+') AND id!=?',
+                                      (row['agent_id'],*ACTIVE,row['id'])).fetchone():
+                            continue
+                        self.continuity.assert_fork(row)
+                        db.execute("UPDATE continuity_work_branches SET status='starting' WHERE id=? AND status='queued'",(row['id'],))
+                        guidance=[dict(r) for r in db.execute("SELECT * FROM continuity_work_guidance WHERE branch_id=? "
+                                                              "AND consumed_at IS NULL AND delivery='queued' ORDER BY created_at,id LIMIT 64",(row['id'],))]
+                    message=self._wake_message(row,guidance)
+                except DomainError:
+                    # One revoked fork must not starve unrelated agents or the
+                    # durable return outbox on every background tick.
+                    self._claim_status(row,'pending_review','source_unavailable')
+                    continue
                 if not message:
-                    self._status(row['id'],'paused',None)
+                    self._claim_status(row,'paused',None)
                     continue
                 # One request id per awake episode. A wake always opens a new
                 # episode, so an old completed run can never satisfy this submit.
@@ -133,16 +141,12 @@ class BranchCoordinator:
                         work_episode_id=row['current_episode_id'],
                         work_guidance_ids=[g['id'] for g in guidance]))
                 except Conflict:
-                    self._status(row['id'],'queued','runtime_busy')
+                    self._claim_status(row,'queued','runtime_busy')
                     continue
                 except DomainError:
-                    self._status(row['id'],'pending_review','admission_rejected')
+                    self._claim_status(row,'pending_review','admission_rejected')
                     continue
                 with self.app.database.transaction() as db:
-                    db.execute("UPDATE continuity_work_episodes SET run_id=?,status='active' WHERE id=? AND branch_id=? AND run_id IS NULL",
-                               (run['id'],row['current_episode_id'],row['id']))
-                    db.execute("UPDATE continuity_work_branches SET run_id=?,status='running',started_at=COALESCE(started_at,?),finished_at=NULL,archive_id=NULL,archive_version=NULL,result_revision=result_revision,return_state='none',return_report=NULL,error_code=NULL,updated_at=? WHERE id=?",
-                               (run['id'],utc_now(),utc_now(),row['id']))
                     for guide in guidance:
                         db.execute("UPDATE continuity_work_guidance SET delivery='delivered',delivered_at=COALESCE(delivered_at,?) WHERE id=?",(utc_now(),guide['id']))
             await asyncio.to_thread(self.continuity.returns.publish)
@@ -190,7 +194,9 @@ class BranchCoordinator:
     def _queue_guidance(self,row):
         """Hand queued text to the live loop; consumed_at is set by the runtime."""
         with self.app.database.transaction() as db:
-            guides=[dict(r) for r in db.execute("SELECT * FROM continuity_work_guidance WHERE branch_id=? AND delivery='queued' ORDER BY created_at,id",(row['id'],))]
+            guides=[dict(r) for r in db.execute("SELECT * FROM continuity_work_guidance WHERE branch_id=? AND episode_id=? "
+                                               "AND consumed_at IS NULL AND delivery='queued' ORDER BY created_at,id LIMIT 64",
+                                               (row['id'],row['current_episode_id']))]
         for guide in guides:
             self.runtime.guide(row['run_id'],guide['text'])
             with self.app.database.transaction() as db:
@@ -200,3 +206,10 @@ class BranchCoordinator:
     def _status(self,bid,status,error):
         with self.app.database.transaction() as db:
             db.execute('UPDATE continuity_work_branches SET status=?,error_code=?,updated_at=? WHERE id=?',(status,error,utc_now(),bid))
+
+    def _claim_status(self,row,status,error):
+        """Release only this still-unsubmitted claim, never a newer owner run."""
+        with self.app.database.transaction() as db:
+            db.execute("UPDATE continuity_work_branches SET status=?,error_code=?,updated_at=?,revision=revision+1 "
+                       "WHERE id=? AND current_episode_id IS ? AND run_id IS NULL AND status IN ('queued','starting')",
+                       (status,error,utc_now(),row['id'],row['current_episode_id']))

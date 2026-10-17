@@ -68,17 +68,17 @@ class Continuity:
     def task_state(self,branch_id):
         return self.work_domain.task_state(branch_id)
 
-    def task_states(self,branch_id):
-        return self.work_domain.task_states(branch_id)
+    def task_states(self,branch_id,**kwargs):
+        return self.work_domain.task_states(branch_id,**kwargs)
 
-    def episodes(self,branch_id):
-        return self.work_domain.episodes(branch_id)
+    def episodes(self,branch_id,**kwargs):
+        return self.work_domain.episodes(branch_id,**kwargs)
 
-    def archives(self,branch_id):
-        return self.work_domain.archives(branch_id)
+    def archives(self,branch_id,**kwargs):
+        return self.work_domain.archives(branch_id,**kwargs)
 
-    def guidance(self,branch_id):
-        return self.work_domain.guidance(branch_id)
+    def guidance(self,branch_id,**kwargs):
+        return self.work_domain.guidance(branch_id,**kwargs)
 
     def assert_fork(self,branch):
         return self.work_domain.assert_fork(branch)

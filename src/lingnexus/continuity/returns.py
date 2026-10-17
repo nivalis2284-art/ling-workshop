@@ -54,7 +54,6 @@ class Returns:
         if len(snapshots)>MAX_SOURCES:
             raise Conflict('工作来源过多。')
         now=utc_now()
-        runs[-1] if runs else None
         outcome='cancelled' if row['outcome']=='cancel_requested' else ('failed' if any(r['status']!='completed' for r in runs) else 'completed_unverified')
         final=''
         if nodes:
@@ -140,7 +139,7 @@ class Returns:
                         continue
                     main=self.app.conversations.read(item['target_conversation_id'])
                     # All ancestry/permission mutations are fenced by assert_fork.
-                    message=self.app.conversations._append(main['id'],item['report'],'assistant',
+                    message=self.app.conversations.append_assistant(main['id'],item['report'],
                              request_id='continuity-return:'+item['id'],expected_head=main['head_id'])
                     eid=db.execute('SELECT e.id AS id,e.revision AS revision '
                                    'FROM continuity_episode_archives a JOIN continuity_experiences e '
@@ -150,10 +149,14 @@ class Returns:
                                ('return:'+item['id'],message['id'],eid['id'],eid['revision'],utc_now()))
                     db.execute("UPDATE continuity_branch_returns SET status='published',published_message_id=?,published_at=? WHERE id=?",
                                (message['id'],utc_now(),item['id']))
-                    db.execute("UPDATE continuity_work_branches SET return_state='published' WHERE id=?",(row['id'],))
+                    db.execute("UPDATE continuity_work_branches SET return_state='published' "
+                               "WHERE id=? AND archive_id=? AND result_revision=?",
+                               (row['id'],item['archive_id'],item['result_revision']))
                     published.append(message['id'])
             except DomainError:
                 with self.database.transaction() as db:
                     db.execute("UPDATE continuity_branch_returns SET status='blocked',reason='source_or_binding_invalid' WHERE id=?",(candidate['id'],))
-                    db.execute("UPDATE continuity_work_branches SET return_state='blocked' WHERE id=?",(candidate['branch_id'],))
+                    db.execute("UPDATE continuity_work_branches SET return_state='blocked' "
+                               "WHERE id=? AND archive_id=? AND result_revision=?",
+                               (candidate['branch_id'],candidate['archive_id'],candidate['result_revision']))
         return published

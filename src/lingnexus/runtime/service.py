@@ -313,14 +313,35 @@ class ChatRuntime:
                 else self._default_conversation(value.agent_id)
             )
             self._admit_conversation(value.agent_id, conversation["id"])
-            if value.work_episode_id is not None:
+            work_episode_id = value.work_episode_id
+            branch_row = db.execute(
+                "SELECT * FROM continuity_work_branches WHERE conversation_id=?",
+                (conversation["id"],),
+            ).fetchone()
+            if branch_row is not None:
+                work = self.app.continuity.work_domain
+                branch_row = dict(branch_row)
+                work.assert_fork(branch_row)
+                if work_episode_id is None and branch_row["status"] == "paused":
+                    # Owner chat uses the same safe successor path as explicit wake.
+                    work.wake(branch_row["id"], branch_row["revision"])
+                    branch_row = work.row(branch_row["id"])
+                if (branch_row["status"] not in {"queued", "starting"}
+                        or branch_row["finish_requested"]
+                        or branch_row["outcome"] == "cancel_requested"):
+                    raise Conflict("工作仍活动、待核对或已休眠；请先处理当前状态或显式唤醒。")
+                work.safe(branch_row)
+                work_episode_id = work_episode_id or branch_row["current_episode_id"]
+                if work_episode_id != branch_row["current_episode_id"]:
+                    raise Conflict("工作阶段已变化，请刷新。")
+            if work_episode_id is not None:
                 branch_row = db.execute(
                     "SELECT * FROM continuity_work_branches WHERE conversation_id=?",
                     (conversation["id"],),
                 ).fetchone()
                 episode = db.execute(
                     "SELECT * FROM continuity_work_episodes WHERE id=?",
-                    (value.work_episode_id,),
+                    (work_episode_id,),
                 ).fetchone()
                 if (
                     episode is None
@@ -331,6 +352,16 @@ class ChatRuntime:
                     or episode["task_state_revision"] != (branch_row["task_state_revision"] or 0)
                 ):
                     raise Conflict("工作阶段已关闭或已有运行。")
+            if value.work_guidance_ids:
+                if branch_row is None or work_episode_id is None:
+                    raise Conflict("指导必须属于本次工作阶段。")
+                guides = db.execute(
+                    "SELECT id,text FROM continuity_work_guidance WHERE branch_id=? AND episode_id=? "
+                    "AND consumed_at IS NULL AND id IN (" + ','.join('?' for _ in value.work_guidance_ids) + ")",
+                    (branch_row["id"], work_episode_id, *value.work_guidance_ids),
+                ).fetchall()
+                if len(guides) != len(value.work_guidance_ids) or any(g["text"] not in value.message for g in guides):
+                    raise Conflict("指导编号与本次实际输入不匹配。")
             selected = self.failover.select(value.profile_id, conversation["id"])
             profile_id, profile = selected.profile_id, selected.profile
             # Manual/primary inputs retain preflight validation. A backup uses
@@ -380,13 +411,22 @@ class ChatRuntime:
                     utc_now(),
                 ),
             )
-            if value.work_episode_id is not None:
+            if work_episode_id is not None:
                 claimed = db.execute(
                     "UPDATE continuity_work_episodes SET run_id=? WHERE id=? AND status='active' AND run_id IS NULL",
-                    (run_id, value.work_episode_id),
+                    (run_id, work_episode_id),
                 ).rowcount
                 if claimed != 1:
                     raise Conflict("工作阶段已被另一个运行占用。")
+                # Episode and branch claim commit together with the run. A crash
+                # before the coordinator resumes cannot orphan an admitted run.
+                db.execute(
+                    "UPDATE continuity_work_branches SET run_id=?,status='running',"
+                    "started_at=COALESCE(started_at,?),finished_at=NULL,archive_id=NULL,archive_version=NULL,"
+                    "return_state='none',return_report=NULL,error_code=NULL,updated_at=? WHERE id=?",
+                    (run_id, utc_now(), utc_now(), branch_row["id"]),
+                )
+                self.app.continuity.work_domain.bump(db, branch_row["id"])
             self.store.append(
                 run_id, "started", {"run_id": run_id, "conversation_id": conversation["id"]}
             )
@@ -418,7 +458,7 @@ class ChatRuntime:
                          "source_grants": scope_snapshot(self.app, value.agent_id),
                          "event_projection": manifest.get("work_events", []),
                          "work_guidance_ids": value.work_guidance_ids,
-                         "wake_episode_id": value.work_episode_id}
+                         "wake_episode_id": work_episode_id}
         self._control[run_id] = _RunControl()
         self._evidence[run_id] = initial(coding=True)
         task = loop.create_task(
@@ -609,12 +649,18 @@ class ChatRuntime:
         from lingnexus.common.verification import workspace_version
 
         run = self.store.get(run_id)
-        saved = {key: value for key, value in state.items() if key not in {"credentials", "profile"}}
+        saved = {key: value for key, value in state.items()
+                 if key not in {"credentials", "profile", "pending_guidance_texts"}}
         saved["profile"] = state["profile"].model_dump(mode="json")
         saved["evidence"] = self._evidence.get(run_id, initial(coding=True))
         saved["workspace_version"] = workspace_version(ChatToolScope(self.app, run["agent_id"], run_id).workdir)
         saved["grants"] = state.get("source_grants", {}).get("permissions", self.app.permissions.current(run["agent_id"]))
-        self.checkpoints.save(run_id, saved, secret=state["credentials"].api_key)
+        with self.app.database.transaction():
+            self.checkpoints.save(run_id, saved, secret=state["credentials"].api_key)
+            self._consume_guidance_ids(run_id, state.get("work_guidance_ids"))
+            for text in state.get("pending_guidance_texts", []):
+                self._mark_guidance_consumed(run_id, text)
+        state.pop("pending_guidance_texts", None)
 
     def _default_conversation(self, agent_id):
         main = getattr(getattr(self.app, "continuity", None), "main", None)
@@ -744,12 +790,8 @@ class ChatRuntime:
         try:
             continuity.work_domain.record_task_state(
                 branch["id"], run_id,
-                progress=[*(previous.get("progress") or []),
+                progress=[*(previous.get("progress") or [])[-63:],
                           f"唤醒阶段 {episode['ordinal']} 已启动；读取到版本 {previous.get('revision', 0)} 的任务状态。"],
-                unfinished=previous.get("unfinished"),
-                decisions=previous.get("decisions"),
-                verified=previous.get("verified"),
-                unknowns=previous.get("unknowns"),
             )
         except DomainError:
             return
@@ -763,7 +805,7 @@ class ChatRuntime:
         was actually appended.
         """
         continuity = getattr(self.app, "continuity", None)
-        if continuity is None:
+        if continuity is None or (not ids and text is None):
             return
         run = self.store.get(run_id)
         branch = continuity.branch_for_conversation(run["conversation_id"])
@@ -874,7 +916,6 @@ class ChatRuntime:
                 state.update(admission)
             self._states[run_id] = state
             if admission:
-                self._consume_guidance_ids(run_id, admission.get("work_guidance_ids"))
                 self._record_wake_state(run_id, admission.get("wake_episode_id"))
             # Discovery can block on first use (spawning servers, handshakes);
             # keep it off the event loop like the remote calls themselves.
@@ -1000,14 +1041,19 @@ class ChatRuntime:
                 control.resume_event.clear()
                 await control.resume_event.wait()
             self.store.append(run_id, "resumed", {"run_id": run_id})
-        while control.guides:
+        injected = False
+        while control.guides and state.get("phase") == "ready":
             guidance = control.guides.pop(0)
             self._assert_input_current(run_id)
             self.app.work_events.record(run_id, "guidance_applied", guidance,
                 step=state["step"], call_id=new_id(), metadata={"scope_grants": state["source_grants"]})
-            self._mark_guidance_consumed(run_id, guidance)
             append_user_message(state["payload"], state["profile"], guidance)
             state.setdefault("applied_guidance", []).append(guidance)
+            state.setdefault("pending_guidance_texts", []).append(guidance)
+            injected = True
+        if injected:
+            # The receipt and the exact replay payload have one durable boundary.
+            self._save_checkpoint(run_id, state)
 
     async def _step_call(
         self, run_id: str, step: int, state: dict, requested_effort: str | None
@@ -1458,18 +1504,15 @@ class ChatRuntime:
         previous = continuity.task_state(branch["id"]) or {}
         progress = list(previous.get("progress", []))
         unfinished = list(previous.get("unfinished", []))
-        verified = list(previous.get("verified", []))
-        unknowns = list(previous.get("unknowns", []))
-        decisions = list(previous.get("decisions", []))
         if final_text:
-            progress = [*progress, {"kind": "round_finished", "detail": final_text[:512]}]
+            # JSON metadata also counts toward the per-entry UTF-8 byte cap.
+            progress = [*progress[-63:], {"kind": "round_finished", "detail": final_text[:400]}]
         if not unfinished:
             unfinished = ["需要所有者确认任务是否真正完成并归档。"]
         try:
             continuity.work_domain.record_task_state(
-                branch["id"], run_id, decisions=list_to_strings(decisions),
+                branch["id"], run_id,
                 progress=list_to_strings(progress), unfinished=list_to_strings(unfinished),
-                verified=list_to_strings(verified), unknowns=list_to_strings(unknowns),
             )
             continuity.work_domain.settle_episode(branch, "paused", "round_completed")
         except DomainError:

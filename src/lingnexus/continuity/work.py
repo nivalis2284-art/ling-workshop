@@ -10,6 +10,8 @@ from .store import digest, encode
 ACTIVE = ('starting','running','awaiting_approval','paused','finishing','unknown','pending_review','interrupted')
 TERMINAL = {'archived','cancelled','failed'}
 DORMANT = {'dormant','archived'}
+HISTORY_LIMIT=100
+HISTORY_KINDS={'task_state','episode','archive','guidance'}
 
 
 class WorkDomain:
@@ -44,9 +46,16 @@ class WorkDomain:
     def list(self,agent_id):
         self.app.permissions.current(agent_id)
         with self.database.transaction() as db:
-            rows=db.execute('SELECT * FROM continuity_work_branches WHERE agent_id=? ORDER BY created_at,id',
-                            (agent_id,)).fetchall()
-        return [self.public_branch(row) for row in rows]
+            rows=db.execute(
+                'SELECT b.*,a.archive_id AS latest_archive_id,a.episode_id AS latest_archive_episode_id, '
+                'a.experience_id AS latest_archive_experience_id,a.outcome AS latest_archive_outcome, '
+                'a.archive_version AS latest_archive_version,a.created_at AS latest_archive_created_at '
+                'FROM continuity_work_branches b LEFT JOIN continuity_episode_archives a ON a.archive_id=('
+                ' SELECT candidate.archive_id FROM continuity_episode_archives candidate '
+                ' WHERE candidate.branch_id=b.id '
+                ' ORDER BY candidate.created_at DESC,candidate.archive_id DESC LIMIT 1) '
+                'WHERE b.agent_id=? ORDER BY b.created_at,b.id',(agent_id,)).fetchall()
+        return [public_list_branch(row) for row in rows]
 
     def create(self,agent_id,*,objective,request_id,profile_id=None,origin_message_id=None,main_conversation_id=None):
         if not objective.strip() or not request_id.strip() or len(objective)>8000 or len(request_id)>256:
@@ -148,6 +157,11 @@ class WorkDomain:
             if row['status']=='interrupted':
                 raise Conflict('原运行仍需恢复或人工核对，请先处理中断状态。')
             if row['status']=='paused':
+                # Starting a successor is the same lifecycle decision as wake:
+                # it must not walk past an unresolved checkpoint or unknown
+                # effect. Live guidance on a running loop remains append-only.
+                self.safe(row)
+                self.assert_fork(row)
                 episode_id=self._open_successor(db,row)
                 row=dict(row) | {'current_episode_id':episode_id,'run_id':None}
                 db.execute("UPDATE continuity_work_branches SET status='queued',run_id=NULL,current_episode_id=?,"
@@ -223,35 +237,79 @@ class WorkDomain:
                            (branch_id,)).fetchone()
         return public_task_state(row) if row else None
 
-    def guidance(self, branch_id):
+    def guidance(self, branch_id, *, limit=None, before=None):
         """Owner-visible guidance delivery state for this branch."""
         with self.database.transaction() as db:
             self.row(branch_id)
-            rows=db.execute('SELECT id,episode_id,request_id,text,delivery,created_at,delivered_at,consumed_at '
-                            'FROM continuity_work_guidance WHERE branch_id=? ORDER BY created_at,id',
-                            (branch_id,)).fetchall()
+            version=parse_history_cursor(before,'guidance')
+            if before is None:
+                rows=db.execute('SELECT id,episode_id,request_id,text,delivery,created_at,delivered_at,consumed_at '
+                                'FROM continuity_work_guidance WHERE branch_id=? ORDER BY created_at,id',
+                                (branch_id,)).fetchall() if limit is None else db.execute(
+                    'SELECT * FROM (SELECT id,episode_id,request_id,text,delivery,created_at,delivered_at,consumed_at '
+                    'FROM continuity_work_guidance WHERE branch_id=? ORDER BY created_at DESC,id DESC LIMIT ?) '
+                    'ORDER BY created_at,id',(branch_id,_page_size(limit))).fetchall()
+            else:
+                assert version is not None
+                rows=db.execute('SELECT * FROM (SELECT id,episode_id,request_id,text,delivery,created_at,delivered_at,consumed_at '
+                                'FROM continuity_work_guidance WHERE branch_id=? AND '
+                                '(created_at<? OR (created_at=? AND id<?)) ORDER BY created_at DESC,id DESC LIMIT ?) '
+                                'ORDER BY created_at,id',(branch_id,version[0],version[0],version[1],_page_size(limit))).fetchall()
         return [dict(row) for row in rows]
 
-    def task_states(self, branch_id):
+    def task_states(self, branch_id, *, limit=None, before=None):
         with self.database.transaction() as db:
             self.row(branch_id)
-            rows=db.execute('SELECT * FROM continuity_work_task_states WHERE branch_id=? ORDER BY revision',
-                            (branch_id,)).fetchall()
+            version=parse_history_cursor(before,'task_state')
+            if before is None:
+                rows=db.execute('SELECT * FROM continuity_work_task_states WHERE branch_id=? ORDER BY revision',
+                                (branch_id,)).fetchall() if limit is None else db.execute(
+                    'SELECT * FROM (SELECT * FROM continuity_work_task_states WHERE branch_id=? '
+                    'ORDER BY revision DESC LIMIT ?) ORDER BY revision',
+                    (branch_id,_page_size(limit))).fetchall()
+            else:
+                assert version is not None
+                rows=db.execute('SELECT * FROM (SELECT * FROM continuity_work_task_states WHERE branch_id=? '
+                                'AND revision<? ORDER BY revision DESC LIMIT ?) ORDER BY revision',
+                                (branch_id,version,_page_size(limit))).fetchall()
         return [public_task_state(row) for row in rows]
 
-    def episodes(self, branch_id):
+    def episodes(self, branch_id, *, limit=None, before=None):
         with self.database.transaction() as db:
             self.row(branch_id)
-            rows=db.execute('SELECT * FROM continuity_work_episodes WHERE branch_id=? ORDER BY ordinal',
-                            (branch_id,)).fetchall()
+            version=parse_history_cursor(before,'episode')
+            if before is None:
+                rows=db.execute('SELECT * FROM continuity_work_episodes WHERE branch_id=? ORDER BY ordinal',
+                                (branch_id,)).fetchall() if limit is None else db.execute(
+                    'SELECT * FROM (SELECT * FROM continuity_work_episodes WHERE branch_id=? '
+                    'ORDER BY ordinal DESC LIMIT ?) ORDER BY ordinal',
+                    (branch_id,_page_size(limit))).fetchall()
+            else:
+                assert version is not None
+                rows=db.execute('SELECT * FROM (SELECT * FROM continuity_work_episodes WHERE branch_id=? '
+                                'AND ordinal<? ORDER BY ordinal DESC LIMIT ?) ORDER BY ordinal',
+                                (branch_id,version,_page_size(limit))).fetchall()
         return [dict(row) for row in rows]
 
-    def archives(self, branch_id):
+    def archives(self, branch_id, *, limit=None, before=None):
         with self.database.transaction() as db:
             self.row(branch_id)
-            rows=db.execute('SELECT archive_id,branch_id,episode_id,experience_id,outcome,archive_version,'
-                            'head_id,members_digest,report,created_at FROM continuity_episode_archives '
-                            'WHERE branch_id=? ORDER BY created_at,archive_id',(branch_id,)).fetchall()
+            version=parse_history_cursor(before,'archive')
+            if before is None:
+                rows=db.execute('SELECT archive_id,branch_id,episode_id,experience_id,outcome,archive_version,'
+                                'head_id,members_digest,report,created_at FROM continuity_episode_archives '
+                                'WHERE branch_id=? ORDER BY created_at,archive_id',(branch_id,)).fetchall() if limit is None else db.execute(
+                    'SELECT * FROM (SELECT archive_id,branch_id,episode_id,experience_id,outcome,archive_version,'
+                    'head_id,members_digest,report,created_at FROM continuity_episode_archives '
+                    'WHERE branch_id=? ORDER BY created_at DESC,archive_id DESC LIMIT ?) '
+                    'ORDER BY created_at,archive_id',(branch_id,_page_size(limit))).fetchall()
+            else:
+                assert version is not None
+                rows=db.execute('SELECT * FROM (SELECT archive_id,branch_id,episode_id,experience_id,outcome,archive_version,'
+                                'head_id,members_digest,report,created_at FROM continuity_episode_archives '
+                                'WHERE branch_id=? AND (created_at<? OR (created_at=? AND archive_id<?)) '
+                                'ORDER BY created_at DESC,archive_id DESC LIMIT ?) ORDER BY created_at,archive_id',
+                                (branch_id,version[0],version[0],version[1],_page_size(limit))).fetchall()
         return [dict(row) for row in rows]
 
     def record_task_state(self, branch_id, run_id, *, decisions=None, progress=None,
@@ -326,7 +384,7 @@ class WorkDomain:
             if (reason=='round_completed' and not current['finish_requested'] and pending is not None):
                 db.execute("UPDATE continuity_work_guidance SET delivery='queued',delivered_at=NULL "
                            "WHERE branch_id=? AND consumed_at IS NULL AND delivery='delivered'",(row['id'],))
-                episode_id=self._open_successor(db,row)
+                episode_id=self._open_successor(db,dict(current))
                 db.execute("UPDATE continuity_work_branches SET status='queued',run_id=NULL,current_episode_id=?,"
                            "error_code=NULL,updated_at=? WHERE id=?",(episode_id,now,row['id']))
             else:
@@ -365,6 +423,13 @@ class WorkDomain:
                        (episode_id,row['id'],(latest['ordinal']+1) if latest else 1,
                         latest['id'] if latest else None,utc_now(),state_revision,
                         _source_epoch(db,row['conversation_id'])))
+        # Guidance is addressed to an episode because the runtime can consume
+        # only rows bound to the run's current episode. Once an episode is no
+        # longer awake, carry exactly its undelivered history into the successor.
+        # Consumed rows and unknown deliveries stay attached to their evidence.
+        db.execute("UPDATE continuity_work_guidance SET episode_id=?,delivery='queued',delivered_at=NULL "
+                   "WHERE branch_id=? AND consumed_at IS NULL AND delivery IN ('queued','delivered')",
+                   (episode_id,row['id']))
         return episode_id
 
     @staticmethod
@@ -393,6 +458,56 @@ def public_task_state(row):
     for field in ('decisions','progress','unfinished','verified','unknowns','artifacts','sources','grants'):
         value[field]=json.loads(value[field]) if value.get(field) else ({} if field=='grants' else [])
     return value
+
+
+def public_list_branch(row):
+    """Build a public branch from the joined list query without an N+1 read."""
+    archive = None
+    if row['latest_archive_id'] is not None:
+        archive = {
+            'archive_id': row['latest_archive_id'],
+            'episode_id': row['latest_archive_episode_id'],
+            'experience_id': row['latest_archive_experience_id'],
+            'outcome': row['latest_archive_outcome'],
+            'archive_version': row['latest_archive_version'],
+            'created_at': row['latest_archive_created_at'],
+        }
+    value=public({key:item for key,item in dict(row).items() if not key.startswith('latest_archive_')})
+    value['latest_archive']=archive
+    return value
+
+
+def _page_size(limit):
+    if limit is None:
+        return HISTORY_LIMIT
+    if type(limit) is not int or limit<1 or limit>HISTORY_LIMIT:
+        raise ValueError('历史读取条数无效。')
+    return limit
+
+
+def parse_history_cursor(value,kind):
+    """Decode an opaque keyset position; malformed cursors never fall back."""
+    if value is None:
+        return None
+    if kind not in HISTORY_KINDS:
+        raise ValueError('历史游标类型无效。')
+    try:
+        encoded=json.loads(value)
+        if not isinstance(encoded,dict) or encoded.get('kind')!=kind:
+            raise ValueError
+        if kind in {'task_state','episode'}:
+            revision=encoded['revision']
+            if type(revision) is not int or revision<1:
+                raise ValueError
+            return revision
+        created_at=encoded['created_at']
+        identity=encoded['id']
+        if (not isinstance(created_at,str) or not created_at or len(created_at)>64
+                or not isinstance(identity,str) or not identity or len(identity)>200):
+            raise ValueError
+        return created_at,identity
+    except (KeyError,TypeError,ValueError,json.JSONDecodeError):
+        raise ValueError('历史游标无效。') from None
 
 
 def _source_epoch(db,conversation_id):

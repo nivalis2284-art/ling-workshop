@@ -1,6 +1,6 @@
 """A single background coordinator; work never belongs to a browser request.
 
-The first part's background drives automatic backups only. The long-term part's
+The first part drives backups and optional bounded work-event summaries. The long-term part's
 consolidation worker and proactive attention are not assembled and must not be
 referenced here.
 """
@@ -28,6 +28,7 @@ class Supervisor:
         self._work_task: asyncio.Task | None = None
         self._last_result: dict | None = None
         self.automatic_backups: AutomaticBackups | None = None
+        self.event_summaries = None
 
     def status(self) -> dict:
         enabled = read_json(self.app.database, "background_enabled", True)
@@ -54,10 +55,13 @@ class Supervisor:
         if self._lock.locked():
             return {"status": "busy"}
         async with self._lock:
-            if self.automatic_backups is None:
+            if self.automatic_backups is None and self.event_summaries is None:
                 return {"status": "unavailable"}
-            result = await asyncio.to_thread(self.automatic_backups.tick)
+            summary = await self.event_summaries.tick() if self.event_summaries else None
+            result = await asyncio.to_thread(self.automatic_backups.tick) if self.automatic_backups else {}
             self._last_result = {"status": "ok", "backup_created": bool(result.get("created"))}
+            if summary is not None:
+                self._last_result["event_summary"] = summary
             return self._last_result
 
     def start(self) -> None:

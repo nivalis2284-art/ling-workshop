@@ -29,6 +29,7 @@ from lingnexus.api import (
     system,
     tasks,
     usage,
+    work_events,
 )
 from lingnexus.api.upload_boundary import UploadBoundary
 from lingnexus.app import Application
@@ -39,6 +40,7 @@ from lingnexus.dependencies import DependencyService
 from lingnexus.maintenance.automatic import AutomaticBackups
 from lingnexus.runtime import ChatRuntime
 from lingnexus.tasks import TaskRuntime
+from lingnexus.work_events.summaries import EventSummaryRunner
 
 
 def _package_version() -> str:
@@ -117,12 +119,17 @@ def create_app(
         server.state.background = Supervisor(
             server.state.services, foreground_busy=foreground_busy
         )
+        server.state.services.event_summaries = EventSummaryRunner(
+            server.state.services, foreground_busy=foreground_busy
+        )
+        server.state.background.event_summaries = server.state.services.event_summaries
         server.state.background.start()
         server.state.background.automatic_backups = server.state.services.automatic_backups
         try:
             yield
         finally:
             await server.state.background.aclose()
+            await server.state.services.event_summaries.aclose()
             await server.state.chat_runtime.aclose()
             await server.state.dependencies.aclose()
             await server.state.tasks.aclose()
@@ -197,6 +204,7 @@ def create_app(
     server.include_router(mcp.router)
     server.include_router(skillpacks.router)
     server.include_router(execution.router)
+    server.include_router(work_events.router)
     for router in (
         agents.router,
         maintenance.router,
@@ -215,6 +223,7 @@ def create_app(
         mcp.router,
         skillpacks.router,
         execution.router,
+        work_events.router,
     ):
         server.include_router(router, prefix="/api")
     bundled = getattr(sys, "_MEIPASS", None)

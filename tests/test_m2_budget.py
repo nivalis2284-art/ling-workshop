@@ -224,3 +224,22 @@ def test_oversized_checkpoint_is_rejected_without_overwriting_state_or_effects(a
     # The writer still works after the refusal.
     checkpoints.save(run_id, original)
     assert checkpoints.load(run_id) == original
+
+
+def test_runtime_window_guard_counts_gateway_added_fields_before_http(app, agent_id):
+    from lingnexus.actions.catalog import registry
+    from lingnexus.runtime.payload import declare_tools
+
+    item = ModelProfile(api_family=APIFamily.OPENAI_CHAT_COMPLETIONS,
+        model="long-model-" + "x" * 12000, base_url="https://fixture.test",
+        context_window_tokens=16000, max_output_tokens=1000)
+    saved = app.profiles.save("large native wrapper", item, api_key="runtime-secret-only")
+    app.profiles.select(saved["id"], None)
+    candidate, _ = build_payload(app, agent_id, item, [{"id": "synthetic", "role": "user", "text": "检查真实请求预算"}])
+    declare_tools(candidate, item, registry.schema())
+    assert len(json.dumps(candidate, ensure_ascii=False).encode()) + 1000 < 16000
+    requests = []
+    result, events = run_chat(app, [], {"agent_id": agent_id, "message": "检查真实请求预算", "request_id": "native-wrapper-limit"}, requests)
+    assert requests == []
+    assert result["status"] == "failed" and result["recoverable"] is False
+    assert next(e for e in events if e["event"] == "error")["data"]["code"] == "context_limit"

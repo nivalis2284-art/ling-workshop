@@ -410,6 +410,10 @@ class WorkEvents:
             task = db.execute("SELECT * FROM tasks WHERE id=? AND agent_id=?", (task_id, row["agent_id"])).fetchone()
             if task is None:
                 raise NotFound("任务不在当前个体范围。")
+            checkpoint = db.execute("SELECT state FROM task_checkpoints WHERE task_id=?", (task_id,)).fetchone()
+            captured = json.loads(checkpoint[0]).get("source_grants") if checkpoint else None
+            if captured != json.loads(row["grants"]):
+                raise Conflict("任务缺少相同的来源授权快照，不能将旧任务资料重新授予当前聊天。")
             if row["status"] != "open" or not event["valid"]:
                 raise Conflict("只能向当前未关闭工作关联任务。")
             path = self.app.conversations.messages(row["conversation_id"])

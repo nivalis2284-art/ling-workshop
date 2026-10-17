@@ -153,5 +153,6 @@ def _receipts(app, agent_id, conversation_id, messages, removed):
         manifests.append({
             "run_id": row["id"], "revision": revision, "projection_id": projection_id,
             "strategy": "read_receipt" if valid else "unavailable", "event_ids": event_ids,
+            "sources": [{"event_id": eid, "revision": rev} for eid, rev in sorted({(r["event_id"], r["event_revision"]) for r in sources})],
         })
     return result, manifests

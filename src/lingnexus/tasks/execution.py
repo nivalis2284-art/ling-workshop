@@ -12,7 +12,7 @@ from typing import Any
 
 from lingnexus.actions.catalog import registry as TOOL_REGISTRY
 from lingnexus.actions.dispatch import ToolDispatcher
-from lingnexus.common.errors import PermissionDenied
+from lingnexus.common.errors import DomainError, PermissionDenied
 
 # Shared evidence policy is deliberately independent of either runtime.
 from lingnexus.common.verification import account as record_evidence
@@ -174,6 +174,15 @@ class ToolExecutor:
         scope = TaskToolScope(self.app, self.store, self.snapshots, task, step, self.limits, self.browser)
         outcome = await self.dispatcher.execute(name, args, scope)
         result: dict[str, Any] = outcome.data
+        # A tool can read a file containing the currently selected model key.
+        # Never copy that echo into public task events or event-recall sources;
+        # preserve an unknown fence rather than claiming the effect succeeded.
+        try:
+            credentials = self.app.profiles.resolve(task["profile_id"])[1]
+        except DomainError:
+            credentials = None
+        if credentials and credentials.api_key in encode(result):
+            result = {"status": "unknown", "error_code": "credential_in_response"}
         if outcome.effect_id and outcome.effect_id != step["id"]:
             with self.app.database.transaction():
                 self.store.effect(step["id"], outcome.effect_id)

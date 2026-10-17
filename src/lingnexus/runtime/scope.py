@@ -37,6 +37,12 @@ _BROWSER_ACTIONS = {
 class ChatToolScope:
     """Adapts one chat run to the environment the shared dispatcher needs."""
 
+    # Serves the work-event recall tools: this scope can name a real run and
+    # therefore the conversation that run belongs to, which is the whole basis
+    # of their (read-only) authorization. A scope without this binding is
+    # refused by the dispatcher.
+    conversation_bound = True
+
     def __init__(self, app, agent_id: str, run_id: str):
         self.app = app
         self.agent_id = agent_id
@@ -146,6 +152,20 @@ class ChatToolScope:
         if name in {"command_status", "command_cancel"}:
             return self.app.sandbox.observe(args["session_id"], self.agent_id, self.run_id, "chat",
                                             args.get("after", 0), cancel=name == "command_cancel"), self._effect_id
+        if name in {"event_records", "event_read"}:
+            # Read-only recall of one's own conversation's retained work events.
+            # The run binding is the authorization, and this tool grants no
+            # write capability of any kind.
+            events = getattr(self.app, "work_events", None)
+            if events is None:
+                return {"status": "failed", "error_code": "event_tools_unavailable"}, None
+            # Imported here so a runtime that never recalls an event never pays
+            # for the module; the object itself holds no state.
+            from lingnexus.work_events.recall import EventRecall
+
+            recall = EventRecall(self.app, self.agent_id, self.run_id)
+            result = recall.directory(args) if name == "event_records" else recall.read(args)
+            return result, None
         if name == "read_skill":
             # Knowledge only: reading a skill never changes what the tools may do.
             library = getattr(self.app, "skillpacks", None)

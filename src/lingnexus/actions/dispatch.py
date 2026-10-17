@@ -46,6 +46,12 @@ _STATUS = {
     "cancelling": "completed",
 }
 
+# Event recall is bound to the conversation of the *calling run*, so only a scope
+# that can prove such a binding may serve it. A task scope has no chat run and
+# no conversation of its own: it is refused here rather than allowed to name an
+# arbitrary conversation through tool arguments.
+_BOUND_SCOPE_TOOLS = frozenset({"event_records", "event_read"})
+
 
 @runtime_checkable
 class ToolScope(Protocol):
@@ -118,6 +124,10 @@ class ToolDispatcher:
             if spec.kind == "browser":
                 return self._wrap(*(await scope.browser(name, args)))
             if spec.kind == "meta":
+                if name in _BOUND_SCOPE_TOOLS and not getattr(
+                    scope, "conversation_bound", False
+                ):
+                    return self._fail("permission_denied")
                 return self._wrap(*scope.meta(name, args))
             if spec.kind == "mcp":
                 # A remote call blocks on its own transport (a child pipe or an

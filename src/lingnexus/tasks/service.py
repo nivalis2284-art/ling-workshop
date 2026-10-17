@@ -166,6 +166,11 @@ class TaskRuntime:
                 "command_verified": False,
                 "phase": "ready",
             }
+            # A later explicit return into chat must prove the authorization
+            # under which this independent task gathered its sources.
+            from lingnexus.work_events.service import scope_snapshot
+
+            state["source_grants"] = scope_snapshot(self.app, spec["agent_id"])
             inserted = self.store.insert(
                 tid,
                 spec,

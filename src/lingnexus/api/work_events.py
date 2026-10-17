@@ -6,6 +6,8 @@ from pydantic import Field
 from lingnexus.api.schemas import Input
 from lingnexus.api.security import require_owner
 from lingnexus.common.errors import Conflict
+from lingnexus.models import ModelProfile
+from lingnexus.runtime.payload import build_payload, declare_tools
 
 router = APIRouter(dependencies=[Depends(require_owner)])
 
@@ -55,6 +57,36 @@ def _runner(request: Request):
     return runner
 
 
+@router.get("/conversations/{conversation_id}/context-preview")
+def context_preview(conversation_id: str, request: Request, profile_id: str | None = Query(None, max_length=200)):
+    """Only local assembly and estimates; no gateway, credentials or run writes."""
+    import json
+
+    from lingnexus.actions.catalog import registry
+
+    app = request.app.state.services
+    conversation = app.conversations.read(conversation_id)
+    profile_id = profile_id or app.profiles.selection().get("primary")
+    if not profile_id:
+        return {"available": False, "reason": "no_model_profile"}
+    profile = ModelProfile.model_validate(app.profiles.get(profile_id)["profile"])
+    messages = app.conversations.messages(conversation_id)
+    _, manifest = build_payload(app, conversation["agent_id"], profile, messages)
+    declarations = {}
+    declare_tools(declarations, profile, registry.schema())
+    tool_estimate = app.context.counter.count(json.dumps(declarations, ensure_ascii=False))
+    output = profile.max_output_tokens or 4096
+    return {
+        "available": True, "profile_id": profile_id,
+        "context_limit": profile.context_window_tokens or 32768,
+        "output_reserve": output, "tool_schema_estimate": tool_estimate,
+        "estimated_total_with_output": manifest["estimated_input_tokens"] + tool_estimate + output,
+        "stored_message_bytes": sum(len(m["text"].encode("utf-8")) for m in messages),
+        "manifest": manifest,
+        "note": "基于已保存分支的保守估算，未含待发送文本和动态远端工具；不是供应商 Token 用量。",
+    }
+
+
 @router.get("/conversations/{conversation_id}/work-events")
 def list_events(conversation_id: str, request: Request):
     return _events(request).list(conversation_id)
@@ -75,11 +107,9 @@ def get_event(event_id: str, request: Request):
 
 @router.post("/work-events/{event_id}/close")
 def close(event_id: str, value: RevisionInput, request: Request):
-    event = _events(request).close(event_id, expected_revision=value.expected_revision)
-    runner = getattr(request.app.state.services, "event_summaries", None)
-    if runner is not None and runner.settings(event["agent_id"]).get("enabled"):
-        runner.enqueue(event_id)
-    return event
+    # Closing always commits the deterministic summary immediately. A model
+    # job needs the explicit summarize action, even when a profile is enabled.
+    return _events(request).close(event_id, expected_revision=value.expected_revision)
 
 
 @router.post("/work-events/{event_id}/fold")
@@ -142,3 +172,14 @@ def enqueue_summary(event_id: str, value: RevisionInput, request: Request):
 def summary_jobs(event_id: str, request: Request):
     _events(request).get(event_id)
     return _runner(request).jobs(event_id)
+
+
+@router.post("/work-events/{event_id}/summary-jobs/{job_id}/cancel")
+async def cancel_summary(event_id: str, job_id: str, request: Request):
+    _events(request).get(event_id)
+    runner = _runner(request)
+    if not any(job["id"] == job_id for job in runner.jobs(event_id)):
+        from lingnexus.common.errors import NotFound
+
+        raise NotFound("整理作业不在当前工作事件。")
+    return await runner.cancel(job_id)

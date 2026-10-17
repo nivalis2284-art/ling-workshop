@@ -24,6 +24,8 @@ from lingnexus.models import (
     RuntimeCredentials,
     ToolCall,
 )
+from lingnexus.models._sse import ProtocolError
+from lingnexus.models.gateway import _request_body
 
 from . import attachments, input_guard
 from .checkpoints import CheckpointLimit, RunCheckpoints
@@ -517,14 +519,26 @@ class ChatRuntime:
         for projection in state.get("event_projection", []):
             if not projection.get("sent"):
                 continue
-            event_id = projection.get("event_id")
-            if event_id:
+            dependencies = ([projection] if projection.get("event_id") else projection.get("sources", []))
+            for dependency in dependencies:
                 try:
-                    event = self.app.work_events.get(event_id)
+                    event = self.app.work_events.get(dependency["event_id"])
                 except DomainError as error:
                     raise FailoverBlocked("context_invalidated") from error
-                if event["revision"] != projection["revision"] or (not event["valid"] and projection["strategy"] != "unavailable"):
+                if projection["strategy"] != "unavailable" and (event["revision"] != dependency["revision"] or not event["valid"]):
                     raise FailoverBlocked("context_invalidated")
+        # A current run may have read an event whose overview did not fit its
+        # initial window. Those freshly returned sources need the same fence.
+        with self.app.database.transaction() as db:
+            exists = db.execute("SELECT 1 FROM sqlite_master WHERE name='work_event_reads' AND type='table'").fetchone()
+            reads = db.execute("SELECT DISTINCT event_id,event_revision FROM work_event_reads WHERE run_id=?", (run_id,)).fetchall() if exists else []
+        for reference in reads:
+            try:
+                event = self.app.work_events.get(reference["event_id"])
+            except DomainError as error:
+                raise FailoverBlocked("context_invalidated") from error
+            if not event["valid"] or event["revision"] != reference["event_revision"]:
+                raise FailoverBlocked("context_invalidated")
 
     def guide(self, run_id: str, text: str) -> dict:
         """Queue a mid-run instruction, injected as a user turn at the next boundary."""
@@ -665,7 +679,13 @@ class ChatRuntime:
                 stage = "checkpoint"
                 state.update(step=step, phase="model_inflight")
                 self._save_checkpoint(run_id, state)
-                if self.app.context.counter.count(json.dumps(state["payload"], ensure_ascii=False)) + (
+                try:
+                    final_body = _request_body(state["profile"], state["payload"], state["effort"])
+                except ProtocolError:
+                    # Preserve gateway's own typed rejection for an invalid
+                    # capability/configuration; this branch only estimates size.
+                    final_body = state["payload"]
+                if self.app.context.counter.count(json.dumps(final_body, ensure_ascii=False)) + (
                     state["profile"].max_output_tokens or 4096
                 ) > (state["profile"].context_window_tokens or 32768):
                     self._fail(run_id, "context_limit")

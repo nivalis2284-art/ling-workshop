@@ -27,7 +27,7 @@ from lingnexus.maintenance.assets import (
     verify_task_baselines,
 )
 from lingnexus.maintenance.blobs import read_verified
-from lingnexus.maintenance.service import TABLES
+from lingnexus.maintenance.service import required_tables, verify_work_events
 
 QUEUE_FILE = "pending-restore.json"
 JOURNAL_FILE = "restore-journal.json"
@@ -135,12 +135,22 @@ def verify_database(
             tables = {
                 row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
             }
-            required = set(TABLES) - TASK_TABLES if allow_legacy else set(TABLES)
-            if not required.issubset(tables) or "schema_migrations" not in tables:
+            # Requirements follow this database's own migration ledger, so a
+            # snapshot taken before a later release stays valid: its ledger does
+            # not claim the newer tables. A ledger that claims a migration whose
+            # tables are missing is still rejected, never repaired silently.
+            if "schema_migrations" not in tables:
+                raise ValueError("数据库不是完整的 LingNexus 资料库")
+            required = required_tables(db)
+            if allow_legacy:
+                required -= TASK_TABLES
+            if not required.issubset(tables):
                 raise ValueError("数据库不是完整的 LingNexus 资料库")
             rows = [dict(row) for row in db.execute("SELECT * FROM attachments")]
             for row in rows:
                 read_verified(attachments, row["blob_name"], row["sha256"])
+            # Safe event bodies are the one thing only reassembled bytes can prove.
+            verify_work_events(db)
             tasks = task_rows(db)
             root = task_data if task_data is not None else path.parent / "task-data"
             assets = inventory(root, tasks, scratch=True)

@@ -36,21 +36,22 @@ async def chat(app, runtime, aid, cid, message, request_id, **kwargs):
     run = runtime.submit(ChatRequest(agent_id=aid, conversation_id=cid, message=message,
                                      request_id=request_id, **kwargs))
     events = [e async for e in runtime.events(run["id"])]
-    assert not [e for e in events if e["event"] == "error"], events
+    assert not [e for e in events if e["event"] == "error"], json.dumps([e for e in events if e["event"] in {"notice", "error"}], ensure_ascii=True)
     assert runtime.get_run(run["id"])["status"] == "completed"
     return runtime.get_run(run["id"])
 
 
-def closed_event(app, aid, *, body="允许保留的原始答复"):
+def closed_event(app, aid, *, body="允许保留的原始答复", request_id=None):
     configure(app)
     cid = app.conversations.create(aid, "工作")['id']
-    event = app.work_events.begin(cid, "分析资料", "begin")
+    request_id = request_id or cid
+    event = app.work_events.begin(cid, "分析资料", request_id)
 
     async def scenario():
         async with httpx.AsyncClient(transport=httpx.MockTransport(lambda r: httpx.Response(
             200, headers={"content-type": "text/event-stream"}, text=_chat_reply(body)))) as client:
             runtime = ChatRuntime(app, client=client)
-            run = await chat(app, runtime, aid, cid, "用户工作要求", "work")
+            run = await chat(app, runtime, aid, cid, "用户工作要求", "work:" + request_id)
             await runtime.aclose()
             return run
 
@@ -123,7 +124,7 @@ def test_fold_is_whole_native_exchange_before_attachment_and_budget(app, agent_i
 
 
 def test_event_idempotence_revision_branch_and_immutable_sources(app, agent_id):
-    cid, event, run = closed_event(app, agent_id)
+    cid, event, run = closed_event(app, agent_id, request_id="begin")
     assert app.work_events.begin(cid, "分析资料", "begin")["id"] == event["id"]
     assert app.work_events.close(event["id"], expected_revision=1)["revision"] == event["revision"]
     scope = {"agent_id": agent_id, "conversation_id": cid}
@@ -291,7 +292,8 @@ def test_explicit_task_link_pending_delivery_and_root_anchor(app, agent_id):
         profile_id = db.execute("SELECT id FROM model_profiles LIMIT 1").fetchone()[0]
     store = TaskStore(app.database)
     tid = new_id()
-    store.insert(tid, {"agent_id": agent_id, "objective": "独立任务的真实目标", "request_id": "task"}, "fingerprint", profile_id, None, 8, {})
+    from lingnexus.work_events.service import scope_snapshot
+    store.insert(tid, {"agent_id": agent_id, "objective": "独立任务的真实目标", "request_id": "task"}, "fingerprint", profile_id, None, 8, {"source_grants": scope_snapshot(app, agent_id)})
     with app.database.transaction() as db:
         db.execute("UPDATE tasks SET status='completed',verified=0,final='任务可读最终答复' WHERE id=?", (tid,))
     cid = app.conversations.create(agent_id, "显式任务返回")['id']

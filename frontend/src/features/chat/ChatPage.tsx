@@ -17,7 +17,13 @@ import { ChatSession, isPending } from "./session";
 import type { ConversationList } from "./useConversations";
 import { useChatAttachments } from "./useChatAttachments";
 import { TasksPage } from "../tasks/TasksPage";
+import { WorkEventsPanel } from "../workevents/WorkEventsPanel";
+import {
+  collapsedMessageIds,
+  useWorkEvents,
+} from "../workevents/useWorkEvents";
 import "./chat.css";
+import "../workevents/workevents.css";
 
 export function ChatPage({
   api,
@@ -40,6 +46,8 @@ export function ChatPage({
   const [confirming, setConfirming] = useState<string[]>([]);
   const [deciding, setDeciding] = useState<string[]>([]);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  // 界面展开某段已折叠工作：只影响聊天记录的显示，不改变模型输入。
+  const [revealedWork, setRevealedWork] = useState<Record<string, true>>({});
   // 完全访问（按对话）：读取失败按安全默认「逐条确认」显示，不打扰对话。
   const [access, setAccess] = useState<"confirm" | "full">("confirm");
   const [accessBusy, setAccessBusy] = useState(false);
@@ -68,6 +76,18 @@ export function ChatPage({
     [api],
   );
   const models = useResource(load);
+  // 工作事件同时给面板和聊天记录使用：收起原文与折叠模型输入是两件独立的事。
+  const work = useWorkEvents(
+    api,
+    conversationId,
+    `${state.messages.length}:${state.messages.at(-1)?.id ?? ""}`,
+  );
+  const revealed = new Set(Object.keys(revealedWork));
+  const collapsed = collapsedMessageIds(work.events, revealed);
+  useEffect(() => {
+    // 换对话时清掉界面展开状态，避免把上一段工作的展开带到另一段。
+    setRevealedWork({});
+  }, [conversationId]);
   useEffect(session.attach, [session]);
   useEffect(() => {
     let current = true;
@@ -292,6 +312,18 @@ export function ChatPage({
               {last.notice}
             </p>
           )}
+          {conversationId && (
+            <WorkEventsPanel
+              key={"work-" + conversationId}
+              api={api}
+              agentId={agent.id}
+              conversationId={conversationId}
+              messages={state.messages}
+              disabled={disabled}
+              work={work}
+              profileId={profileId || undefined}
+            />
+          )}
           <ChatTranscript
             state={state}
             name={agent.name}
@@ -304,6 +336,17 @@ export function ChatPage({
             selected={picked}
             onToggleSelect={togglePick}
             attachments={attachments.items}
+            hiddenMessages={collapsed.hidden}
+            workOwners={collapsed.owner}
+            revealedWork={revealed}
+            onToggleWork={(id) =>
+              setRevealedWork((current) => {
+                const next = { ...current };
+                if (next[id]) delete next[id];
+                else next[id] = true;
+                return next;
+              })
+            }
             regenerateProblem={(user) =>
               attachmentProblem(
                 user.attachment_ids ?? [],
@@ -369,7 +412,13 @@ export function ChatPage({
             )}
           {(last?.status === "error" || last?.status === "stopped") &&
             last.runId && (
-              <RecoveryReview key={last.runId} api={api} runId={last.runId} kind="chat" onUpdated={session.refreshRecovery} />
+              <RecoveryReview
+                key={last.runId}
+                api={api}
+                runId={last.runId}
+                kind="chat"
+                onUpdated={session.refreshRecovery}
+              />
             )}
           {selecting && (
             <div className="chat-select-bar">

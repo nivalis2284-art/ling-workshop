@@ -14,6 +14,7 @@ import { SystemSettings } from "./SystemSettings";
 import { BackgroundControls } from "./BackgroundControls";
 import { McpSettings } from "./McpSettings";
 import { SkillsSettings } from "./SkillsSettings";
+import { WorkEventSummarySettings } from "../workevents/WorkEventSettings";
 
 type Operation = "export" | "backup";
 const operations = {
@@ -104,6 +105,11 @@ export function SettingsPage({
       <SystemSettings api={api} />
       <BackgroundControls
         key={"background-" + agent.id}
+        api={api}
+        agent={agent}
+      />
+      <WorkEventSummarySettings
+        key={"work-events-" + agent.id}
         api={api}
         agent={agent}
       />

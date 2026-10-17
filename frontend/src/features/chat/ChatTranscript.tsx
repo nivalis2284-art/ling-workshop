@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Check, Copy, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import type { ChatSnapshot, ChatTurn } from "./session";
 import type {
@@ -8,6 +8,81 @@ import type {
 } from "../../api/types";
 import { AttachmentNames } from "./ChatAttachments";
 import { EmptyState } from "../../shared/ui";
+import type { WorkEvent } from "../workevents/api";
+import {
+  coverageLabel,
+  lifecycleLabel,
+  outcomeLabel,
+  outcomeTone,
+} from "../workevents/api";
+
+/**
+ * 界面收起的原始聊天区间：只由已关闭且已折叠的工作事件决定，展开只影响显示，
+ * 不改变模型输入，也不调用任何模型接口。
+ */
+export interface CollapsedWork {
+  owner: Map<string, WorkEvent>;
+  revealed: Set<string>;
+  onToggle: (eventId: string) => void;
+}
+
+/**
+ * 工作区间在聊天记录里的占位卡：默认收起详细过程，展开后原消息按原顺序回到
+ * 记录里。这里不发任何请求，也不改变折叠（模型输入）状态。
+ */
+function WorkRangeCard({
+  event,
+  revealed,
+  onToggle,
+}: {
+  event: WorkEvent;
+  revealed: boolean;
+  onToggle: () => void;
+}) {
+  const tone = outcomeTone(event.outcome);
+  return (
+    <article
+      className="chat-message chat-work-fold"
+      aria-label="已收起的工作过程"
+    >
+      <div className="chat-row">
+        <div className="chat-stack">
+          <div className="chat-work-head">
+            <span className="chat-work-title">
+              {event.title || "未命名工作"}
+            </span>
+            <span
+              className={
+                "pill" +
+                (tone === "warn" ? " warm" : tone === "ok" ? " ok" : "")
+              }
+            >
+              {lifecycleLabel(event)} · {outcomeLabel(event.outcome)}
+            </span>
+            <span className="pill">{coverageLabel(event.coverage)}</span>
+          </div>
+          {event.summary && (
+            <p className="preserve-text chat-work-summary">{event.summary}</p>
+          )}
+          <p className="metadata">
+            这段工作的原始消息在模型请求里被换成上面的短概况；下面的按钮只影响你在
+            界面里看到的聊天记录，不会改变发给模型的内容。
+          </p>
+          <button
+            type="button"
+            className="text-button"
+            aria-expanded={revealed}
+            onClick={onToggle}
+          >
+            {revealed
+              ? "收起这段工作的原始消息"
+              : "在界面展开这段工作的原始消息"}
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
 
 // The tool name is kept alongside the plain-language label so the owner can
 // always see exactly which primitive ran, never just a friendly paraphrase.
@@ -526,6 +601,10 @@ export function ChatTranscript({
   regenerateProblem,
   onRefreshExecution,
   onStopExecution,
+  hiddenMessages = new Set<string>(),
+  workOwners = new Map<string, WorkEvent>(),
+  revealedWork = new Set<string>(),
+  onToggleWork,
 }: {
   state: ChatSnapshot;
   name: string;
@@ -541,6 +620,11 @@ export function ChatTranscript({
   regenerateProblem?: (user: ConversationMessage) => string | undefined;
   onRefreshExecution?: (callId: string) => void;
   onStopExecution?: (callId: string) => void;
+  /** 界面上被已折叠工作收起的消息 ID；展开只影响显示。 */
+  hiddenMessages?: Set<string>;
+  workOwners?: Map<string, WorkEvent>;
+  revealedWork?: Set<string>;
+  onToggleWork?: (eventId: string) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
@@ -553,6 +637,7 @@ export function ChatTranscript({
   const emptyReply = last?.status === "complete" && !last.assistantMessageId;
   const live =
     last &&
+    !hiddenMessages.has(last.userMessageId ?? "") &&
     !committed &&
     (emptyReply ||
       last.status !== "complete" ||
@@ -564,6 +649,13 @@ export function ChatTranscript({
     live &&
     (live.request.regenerate_message_id ||
       state.messages.some((message) => message.id === live.userMessageId));
+  // 每段收起工作在第一处仍存在的成员上出现一次；成员顺序以当前分支为准。
+  const firstHidden = new Map<string, string>();
+  for (const message of state.messages) {
+    const owner = workOwners.get(message.id);
+    if (owner && !firstHidden.has(owner.id))
+      firstHidden.set(owner.id, message.id);
+  }
   useEffect(() => {
     if (follow.current && scroller.current)
       scroller.current.scrollTop = scroller.current.scrollHeight;
@@ -591,32 +683,59 @@ export function ChatTranscript({
         const parentUser = state.messages.find(
           (item) => item.id === message.parent_id && item.role === "user",
         );
+        const owner = workOwners.get(message.id);
+        if (owner) {
+          if (hiddenMessages.has(message.id)) {
+            // 每段工作只在它第一条仍然存在的被收起消息处放一张卡片，其余收起
+            // 的消息整段略过；消息顺序以当前分支显示顺序为准。
+            if (firstHidden.get(owner.id) !== message.id) return null;
+            return (
+              <WorkRangeCard
+                key={"work-" + owner.id}
+                event={owner}
+                revealed={revealedWork.has(owner.id)}
+                onToggle={() => onToggleWork?.(owner.id)}
+              />
+            );
+          }
+        }
         return (
-          <SavedMessage
-            key={message.id}
-            message={message}
-            name={name}
-            disabled={disabled}
-            turn={state.turns.find(
-              (turn) => turn.assistantMessageId === message.id,
+          <Fragment key={message.id}>
+            {owner && firstHidden.get(owner.id) === message.id && (
+              <WorkRangeCard
+                event={owner}
+                revealed={true}
+                onToggle={() => onToggleWork?.(owner.id)}
+              />
             )}
-            canRegenerate={canRegenerate && !!parentUser}
-            onEdit={onEdit}
-            onRegenerate={onRegenerate}
-            onDeleteTurn={onDeleteTurn}
-            selecting={selecting}
-            selected={selected.has(message.id)}
-            onToggleSelect={onToggleSelect}
-            attachments={attachments}
-            deleteAnchor={message.role === "user" ? message.id : parentUser?.id}
-            regenerateIssue={
-              message.role === "assistant" && parentUser
-                ? regenerateProblem?.(parentUser)
-                : undefined
-            }
-            onRefreshExecution={onRefreshExecution}
-            onStopExecution={onStopExecution}
-          />
+            <SavedMessage
+              key={message.id}
+              message={message}
+              name={name}
+              disabled={disabled}
+              turn={state.turns.find(
+                (turn) => turn.assistantMessageId === message.id,
+              )}
+              canRegenerate={canRegenerate && !!parentUser}
+              onEdit={onEdit}
+              onRegenerate={onRegenerate}
+              onDeleteTurn={onDeleteTurn}
+              selecting={selecting}
+              selected={selected.has(message.id)}
+              onToggleSelect={onToggleSelect}
+              attachments={attachments}
+              deleteAnchor={
+                message.role === "user" ? message.id : parentUser?.id
+              }
+              regenerateIssue={
+                message.role === "assistant" && parentUser
+                  ? regenerateProblem?.(parentUser)
+                  : undefined
+              }
+              onRefreshExecution={onRefreshExecution}
+              onStopExecution={onStopExecution}
+            />
+          </Fragment>
         );
       })}
       {live && (

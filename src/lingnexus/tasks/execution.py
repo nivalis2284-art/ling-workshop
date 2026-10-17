@@ -13,6 +13,7 @@ from typing import Any
 from lingnexus.actions.catalog import registry as TOOL_REGISTRY
 from lingnexus.actions.dispatch import ToolDispatcher
 from lingnexus.common.errors import DomainError, PermissionDenied
+from lingnexus.common.execution_leases import ExecutionLeases, result_fence
 
 # Shared evidence policy is deliberately independent of either runtime.
 from lingnexus.common.verification import account as record_evidence
@@ -143,6 +144,7 @@ class ToolExecutor:
         self.limits = limits or ExecutionLimits()
         self.browser = BrowserTools(app, store)
         self.dispatcher = ToolDispatcher(TOOL_REGISTRY)
+        self.execution_leases = ExecutionLeases(app)
 
     async def execute(self, task, call):
         tid, name, args = task["id"], call["name"], call["arguments"]
@@ -172,7 +174,16 @@ class ToolExecutor:
             },
         )
         scope = TaskToolScope(self.app, self.store, self.snapshots, task, step, self.limits, self.browser)
-        outcome = await self.dispatcher.execute(name, args, scope)
+        # Legacy live file actions already use the SQL action lease triggers;
+        # staged snapshot writes/commands use exactly the same durable lane.
+        if name == "run_command" or (task["workspace"] and name in {"create_file", "write_file", "edit_file"}):
+            async with self.execution_leases.guard(f"task:{task['agent_id']}:{tid}") as fence:
+                outcome = await self.dispatcher.execute(name, args, scope)
+                fence.update(result_fence(outcome.data))
+        else:
+            if actions_path and name in {"create_file", "write_file", "edit_file"}:
+                await self.execution_leases.wait_available()
+            outcome = await self.dispatcher.execute(name, args, scope)
         result: dict[str, Any] = outcome.data
         # A tool can read a file containing the currently selected model key.
         # Never copy that echo into public task events or event-recall sources;

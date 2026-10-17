@@ -61,6 +61,9 @@ function backend(
     requests.push({ path, method, init, body });
     if (path === "/api/agents")
       return json([agent, { id: "ling-2", name: "另一个灵" }]);
+    if (path.endsWith("/reflection-settings")) return json({ enabled: false, revision: 1, local_time: "04:00", timezone: "Asia/Tokyo", min_age_days: 3, threshold_bytes: 32768, profile_id: null, max_calls: 8, max_source_bytes: 131072, max_events: 6, daily_call_limit: 24 });
+    if (path.endsWith("/reflection-runs")) return json([]);
+    if (path.endsWith("/compaction-settings")) return json({ enabled: false, revision: 0, profile_modes: {}, trigger_ratio: .8, target_ratio: .5, max_summary_bytes: 16384, max_epochs: 16, validation: "offline_only", native_compaction_available: false });
     if (path === "/api/models") return json([]);
     if (path === "/api/models/selection")
       return json({ primary: null, fallback: null });

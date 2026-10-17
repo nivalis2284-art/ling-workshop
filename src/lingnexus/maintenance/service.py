@@ -1,6 +1,7 @@
 """Versioned portable exports. Only known tables are imported, never foreign SQL.
 
-Format versions: 1 (pre task assets), 2 (task assets), 3 (M2 work events).
+Format versions: 1 (pre task assets), 2 (task assets), 3 (M2 work events),
+4 (continuing main, work branches, experiences and reflection).
 Version 3 also fixes binary fidelity: a BLOB column is exported as
 ``{"$b64": "<base64>"}`` and decoded back to bytes on import, so the 64 KiB
 record chunks round-trip exactly instead of being silently reinterpreted as
@@ -121,8 +122,35 @@ M2_TABLES = (
 
 BLOB_ENCODING = "base64"
 BLOB_MARKER = "$b64"
-EXPORT_VERSION = 3
-"""Current portable format: task assets plus M2 work events with base64 BLOBs."""
+EXPORT_VERSION = 4
+"""Current portable format: task assets, work events, continuity and reflection."""
+
+# These are public dependency/derivation ledgers. Private snapshots, checkpoints,
+# native epochs and live execution leases stay in full backups only.
+CONTINUITY_TABLES = (
+    "continuity_main_conversations",
+    "continuity_work_branches",
+    "continuity_work_guidance",
+    "continuity_branch_returns",
+    "continuity_experiences",
+    "continuity_experience_sources",
+    "continuity_run_sources",
+    "continuity_answer_dependencies",
+    "continuity_experience_reads",
+    "continuity_reflection_drafts",
+)
+REFLECTION_TABLES = (
+    "reflection_policies",
+    "reflection_slots",
+    "reflection_jobs",
+    "reflection_snapshots",
+    "reflection_drafts",
+    "reflection_calls",
+    "reflection_budget",
+    "reflection_audit",
+    "reflection_qualifications",
+)
+V4_TABLES = (*CONTINUITY_TABLES, *REFLECTION_TABLES, "chat_compaction_policies")
 
 
 def _column_types(db, table: str) -> dict[str, str]:
@@ -195,7 +223,15 @@ def tables_for_version(version: int) -> tuple[str, ...]:
         return tuple(name for name in TABLES if name not in M2_TABLES)
     if version == 3:
         return TABLES
+    if version == 4:
+        return (*TABLES, *V4_TABLES)
     raise ValueError("不支持的导出格式或版本")
+
+
+def _tables_present(db, names: tuple[str, ...]) -> tuple[str, ...]:
+    """Optional M2-v2 tables are exported only where migrations have landed."""
+    available = _table_names(db)
+    return tuple(name for name in names if name in available)
 
 
 def required_tables(db) -> set[str]:
@@ -307,7 +343,7 @@ class MaintenanceService:
             # half-written export directory behind.
             verify_work_events(db)
             destination.mkdir(parents=True, exist_ok=False)
-            for table in TABLES:
+            for table in (*TABLES, *_tables_present(db, V4_TABLES)):
                 types = _column_types(db, table)
                 rows = [
                     _encode_row(dict(row), types)
@@ -339,18 +375,24 @@ class MaintenanceService:
         if (
             manifest.get("format") != "lingnexus"
             or type(manifest.get("schema_version")) is not int
-            or manifest["schema_version"] not in {1, 2, EXPORT_VERSION}
+            or manifest["schema_version"] not in {1, 2, 3, EXPORT_VERSION}
         ):
             raise ValueError("不支持的导出格式或版本")
         version = manifest["schema_version"]
-        if version == EXPORT_VERSION:
+        if version in {3, EXPORT_VERSION}:
             if manifest.get("blob_encoding") != BLOB_ENCODING:
                 raise ValueError("不支持的二进制正文编码")
         elif "blob_encoding" in manifest:
             raise ValueError("不支持的二进制正文编码")
         tables = set(manifest.get("tables", {}))
         expected = tables_for_version(version)
-        if tables != set(expected):
+        if version == 4:
+            # Optional additions are present iff their bundled SQL tables exist;
+            # a v4 manifest can never smuggle in another table.
+            if not set(TABLES).issubset(tables) or not tables.issubset(set(expected)):
+                raise ValueError("导出清单缺少资料或包含未知表")
+            expected = tuple(name for name in expected if name in tables)
+        elif version == 3 and tables != set(expected) or version < 3 and tables != set(expected):
             raise ValueError("导出清单缺少资料或包含未知表")
         contents: dict[str, list[dict]] = {}
         for table in expected:

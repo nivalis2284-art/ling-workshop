@@ -1,5 +1,6 @@
 """Private native checkpoints and durable fences around tool side effects."""
 
+import hashlib
 import json
 
 from lingnexus.common.errors import Conflict
@@ -53,6 +54,53 @@ class RunCheckpoints:
             return db.execute("SELECT 1 FROM chat_tool_effects WHERE run_id=? AND status='executing' LIMIT 1",
                               (run_id,)).fetchone() is not None
 
+    def unresolved(self, run_id: str) -> bool:
+        with self.database.transaction() as db:
+            return db.execute("SELECT 1 FROM chat_tool_effects WHERE run_id=? AND (status!='completed' OR json_extract(result,'$[1]')='unknown') LIMIT 1",
+                              (run_id,)).fetchone() is not None
+
+    def activate_epoch(self, run_id, state, *, expected_state, sealed_state=None, secret=None):
+        """Seal the committed old snapshot and atomically CAS the active state.
+
+        No candidate or over-limit snapshot is written before every cap and
+        comparison passes. Crashes observe either the whole old or whole new era.
+        """
+        from .compaction import MAX_ARCHIVE_BYTES, MAX_CHECKPOINT_BYTES, MAX_EPOCHS
+
+        encoded = json.dumps(state, ensure_ascii=False)
+        if len(encoded.encode()) > MAX_CHECKPOINT_BYTES:
+            raise CheckpointLimit("运行检查点超过大小上限。")
+        if secret and secret in encoded:
+            raise Conflict("运行检查点包含凭据，已拒绝保存。")
+        sealed = json.dumps(sealed_state, ensure_ascii=False) if sealed_state is not None else expected_state
+        if sealed is None or len(sealed.encode()) > MAX_CHECKPOINT_BYTES:
+            raise CheckpointLimit("运行检查点超过大小上限。")
+        if secret and secret in sealed:
+            raise Conflict("运行检查点包含凭据，已拒绝保存。")
+        with self.database.transaction() as db:
+            row = db.execute("SELECT state FROM chat_run_checkpoints WHERE run_id=?", (run_id,)).fetchone()
+            old = row[0] if row else None
+            if old != expected_state:
+                raise Conflict("上下文代际已被其他执行者改变。")
+            if old is None:
+                raise Conflict("缺少封存起点。")
+            prior = json.loads(old)
+            epoch = prior.get("context_epoch", 0)
+            if state.get("context_epoch") != epoch + 1 or state["step"] < prior["step"]:
+                raise Conflict("上下文代际或全局步骤无效。")
+            count, total = db.execute("SELECT count(*),coalesce(sum(length(CAST(state AS BLOB))),0) FROM chat_context_epochs WHERE run_id=?", (run_id,)).fetchone()
+            if count >= MAX_EPOCHS or total + len(sealed.encode()) > MAX_ARCHIVE_BYTES:
+                raise CheckpointLimit("封存运行检查点超过大小上限。")
+            if self.unresolved(run_id):
+                raise Conflict("副作用未闭合，不能激活代际。")
+            db.execute("INSERT INTO chat_context_epochs VALUES(?,?,?,?,?)", (run_id, epoch, sealed, hashlib.sha256(sealed.encode()).hexdigest(), utc_now()))
+            self.save(run_id, state, secret=secret)
+
+    def encoded(self, run_id):
+        with self.database.transaction() as db:
+            row = db.execute("SELECT state FROM chat_run_checkpoints WHERE run_id=?", (run_id,)).fetchone()
+            return row[0] if row else None
+
     def completed_items(self, message_id: str, profile: dict, *, source_guards: dict | None = None) -> list | None:
         with self.database.transaction() as db:
             rows = db.execute("SELECT c.state,r.user_message_id FROM chat_run_checkpoints c JOIN chat_runs r ON r.id=c.run_id "
@@ -68,5 +116,5 @@ class RunCheckpoints:
                 if value.get("assistant_message_id") == message_id and value.get("profile") == profile:
                     payload = value["payload"]
                     key = "input" if "input" in payload else "messages"
-                    return payload[key][value["initial_length"]:]
+                    return [*value.get("replay_prefix", []), *payload[key][value["initial_length"]:]]
         return None

@@ -50,7 +50,8 @@ _STATUS = {
 # that can prove such a binding may serve it. A task scope has no chat run and
 # no conversation of its own: it is refused here rather than allowed to name an
 # arbitrary conversation through tool arguments.
-_BOUND_SCOPE_TOOLS = frozenset({"event_records", "event_read"})
+_BOUND_SCOPE_TOOLS = frozenset({"event_records", "event_read", 'experience_records', 'experience_read',
+                              'work_branch_start','work_branch_status','work_branch_guide','work_branch_finish'})
 
 
 @runtime_checkable

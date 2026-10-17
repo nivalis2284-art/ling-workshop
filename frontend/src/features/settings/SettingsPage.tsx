@@ -15,6 +15,8 @@ import { BackgroundControls } from "./BackgroundControls";
 import { McpSettings } from "./McpSettings";
 import { SkillsSettings } from "./SkillsSettings";
 import { WorkEventSummarySettings } from "../workevents/WorkEventSettings";
+import { ReflectionSettings } from "../continuity/ReflectionSettings";
+import { CompactionSettings } from "../continuity/CompactionSettings";
 
 type Operation = "export" | "backup";
 const operations = {
@@ -113,6 +115,8 @@ export function SettingsPage({
         api={api}
         agent={agent}
       />
+      <ReflectionSettings key={"reflection-" + agent.id} api={api} agent={agent} />
+      <CompactionSettings key={"compaction-" + agent.id} api={api} agent={agent} />
       <McpSettings api={api} />
       <SkillsSettings api={api} />
       <section className="panel section-panel">

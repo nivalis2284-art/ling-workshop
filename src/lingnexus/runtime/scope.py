@@ -149,6 +149,15 @@ class ChatToolScope:
         return result, record.get("id")
 
     def meta(self, name: str, args: dict) -> tuple[dict, str | None]:
+        if name.startswith('work_branch_'):
+            from lingnexus.continuity.tools import call
+
+            return call(self,name,args)
+        if name in {'experience_records','experience_read'}:
+            from lingnexus.continuity.recall import ExperienceRecall
+
+            recall=ExperienceRecall(self.app,self.agent_id,self.run_id)
+            return (recall.directory(args) if name=='experience_records' else recall.read(args)),None
         if name in {"command_status", "command_cancel"}:
             return self.app.sandbox.observe(args["session_id"], self.agent_id, self.run_id, "chat",
                                             args.get("after", 0), cancel=name == "command_cancel"), self._effect_id

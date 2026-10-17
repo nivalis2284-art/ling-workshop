@@ -29,6 +29,7 @@ class Supervisor:
         self._last_result: dict | None = None
         self.automatic_backups: AutomaticBackups | None = None
         self.event_summaries = None
+        self.reflections = None
 
     def status(self) -> dict:
         enabled = read_json(self.app.database, "background_enabled", True)
@@ -55,13 +56,16 @@ class Supervisor:
         if self._lock.locked():
             return {"status": "busy"}
         async with self._lock:
-            if self.automatic_backups is None and self.event_summaries is None:
+            if self.automatic_backups is None and self.event_summaries is None and self.reflections is None:
                 return {"status": "unavailable"}
+            reflection = await self.reflections.tick() if self.reflections else None
             summary = await self.event_summaries.tick() if self.event_summaries else None
             result = await asyncio.to_thread(self.automatic_backups.tick) if self.automatic_backups else {}
             self._last_result = {"status": "ok", "backup_created": bool(result.get("created"))}
             if summary is not None:
                 self._last_result["event_summary"] = summary
+            if reflection is not None:
+                self._last_result["reflection"] = reflection
             return self._last_result
 
     def start(self) -> None:

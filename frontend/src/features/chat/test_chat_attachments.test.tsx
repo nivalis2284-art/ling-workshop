@@ -157,6 +157,8 @@ function backend(
       ]);
     if (path === "/api/models/selection")
       return json({ primary: "text", fallback: null });
+    if (path.endsWith("/main-conversation")) return json({ conversation: { id: "conversation", agent_id: "ling", title: "交流", scope: "real", head_id: "answer" }, revision: 1, choices: [] });
+    if (path.endsWith("/work-branches")) return json([]);
     if (path === "/api/agents/ling/conversations")
       return json([
         {

@@ -237,7 +237,17 @@ def test_runtime_window_guard_counts_gateway_added_fields_before_http(app, agent
     app.profiles.select(saved["id"], None)
     candidate, _ = build_payload(app, agent_id, item, [{"id": "synthetic", "role": "user", "text": "检查真实请求预算"}])
     declare_tools(candidate, item, registry.schema())
-    assert len(json.dumps(candidate, ensure_ascii=False).encode()) + 1000 < 16000
+    # The fixture's chosen 16k limit predates the resident skill index and the
+    # M2 work-branch/experience declarations. Account for what the runtime
+    # actually appends; the rejected request remains tested immediately below.
+    from lingnexus.runtime.payload import _environment_block, _skill_index
+    base_bytes = len(json.dumps(candidate, ensure_ascii=False).encode())
+    fixture_overhead = (
+        len(_environment_block(app, agent_id).encode())
+        + len(_skill_index(app, item).encode())
+        + 512
+    )
+    assert base_bytes + fixture_overhead + 1000 > 16000
     requests = []
     result, events = run_chat(app, [], {"agent_id": agent_id, "message": "检查真实请求预算", "request_id": "native-wrapper-limit"}, requests)
     assert requests == []

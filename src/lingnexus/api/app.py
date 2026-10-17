@@ -17,6 +17,7 @@ from lingnexus.api import (
     browser,
     chat,
     content,
+    continuity,
     conversations,
     dependencies,
     execution,
@@ -36,6 +37,7 @@ from lingnexus.app import Application
 from lingnexus.background import Supervisor
 from lingnexus.browser import BrowserService
 from lingnexus.common.errors import Conflict, DomainError, NotFound, PermissionDenied
+from lingnexus.continuity.coordinator import BranchCoordinator
 from lingnexus.dependencies import DependencyService
 from lingnexus.maintenance.automatic import AutomaticBackups
 from lingnexus.runtime import ChatRuntime
@@ -106,6 +108,9 @@ def create_app(
         server.state.sandbox = server.state.services.sandbox
         server.state.services.automatic_backups = AutomaticBackups(server.state.services)
         server.state.chat_runtime = ChatRuntime(server.state.services)
+        server.state.services.branch_coordinator = BranchCoordinator(
+            server.state.services, server.state.chat_runtime
+        ).start()
 
         def foreground_busy():
             with server.state.services.database.transaction() as db:
@@ -128,6 +133,7 @@ def create_app(
         try:
             yield
         finally:
+            await server.state.services.branch_coordinator.aclose()
             await server.state.background.aclose()
             await server.state.services.event_summaries.aclose()
             await server.state.chat_runtime.aclose()
@@ -205,6 +211,7 @@ def create_app(
     server.include_router(skillpacks.router)
     server.include_router(execution.router)
     server.include_router(work_events.router)
+    server.include_router(continuity.router)
     for router in (
         agents.router,
         maintenance.router,
@@ -224,6 +231,7 @@ def create_app(
         skillpacks.router,
         execution.router,
         work_events.router,
+        continuity.router,
     ):
         server.include_router(router, prefix="/api")
     bundled = getattr(sys, "_MEIPASS", None)

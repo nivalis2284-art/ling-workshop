@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Folder, Monitor, ShieldAlert } from "lucide-react";
 import { errorMessage } from "../../api/client";
 import type { LingApi } from "../../api/client";
@@ -18,12 +18,17 @@ import type { ConversationList } from "./useConversations";
 import { useChatAttachments } from "./useChatAttachments";
 import { TasksPage } from "../tasks/TasksPage";
 import { WorkEventsPanel } from "../workevents/WorkEventsPanel";
+import { MainConversationSetup, MainConversationMenu } from "../continuity/MainConversationSetup";
+import { WorkDrawer } from "../continuity/WorkDrawer";
+import { ExperienceViewer } from "../continuity/ExperienceViewer";
+import { useMainConversation, useWorkBranches } from "../continuity/useContinuation";
 import {
   collapsedMessageIds,
   useWorkEvents,
 } from "../workevents/useWorkEvents";
 import "./chat.css";
 import "../workevents/workevents.css";
+import "../continuity/continuity.css";
 
 export function ChatPage({
   api,
@@ -54,13 +59,26 @@ export function ChatPage({
   const [accessPrompt, setAccessPrompt] = useState(false);
   const [accessError, setAccessError] = useState("");
   const [workdirName, setWorkdirName] = useState("");
+  const main = useMainConversation(api, agent.id);
+  const workBranches = useWorkBranches(api, agent.id);
+  // Only an explicit branch choice can bypass the main trunk. Resolving a first
+  // send is not a choice and must not be mistaken for one.
+  const [viewBranch, setViewBranch] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [workOpen, setWorkOpen] = useState(false);
+  const [experienceOpen, setExperienceOpen] = useState<
+    { id?: string; kind?: string } | null
+  >(null);
+  const adoptedConversation = useRef("");
   const list = conversations.list;
   const unresolved =
     isPending(agentSession.getSnapshot().turns.at(-1)) &&
     !agentSession.getSnapshot().conversationId;
-  const conversationId = unresolved
-    ? undefined
-    : (conversations.selectedId ?? list[0]?.id);
+  const mainId = main.value?.conversation?.id ?? null;
+  const currentBranch = workBranches.items.find(
+    (item) => item.conversation_id === viewBranch,
+  );
+  const conversationId = unresolved ? undefined : viewBranch ?? mainId;
   const session = conversationId
     ? agentSession.forConversation(conversationId)
     : agentSession;
@@ -79,7 +97,7 @@ export function ChatPage({
   // 工作事件同时给面板和聊天记录使用：收起原文与折叠模型输入是两件独立的事。
   const work = useWorkEvents(
     api,
-    conversationId,
+    conversationId ?? undefined,
     `${state.messages.length}:${state.messages.at(-1)?.id ?? ""}`,
   );
   const revealed = new Set(Object.keys(revealedWork));
@@ -89,6 +107,18 @@ export function ChatPage({
     setRevealedWork({});
   }, [conversationId]);
   useEffect(session.attach, [session]);
+  useEffect(() => {
+    if (!currentBranch?.run_id) return;
+    const controller = new AbortController();
+    void session.followRun(currentBranch.run_id, controller.signal);
+    return () => controller.abort();
+  }, [session, currentBranch?.run_id]);
+  useEffect(() => {
+    setSelecting(false);
+    setPicked(new Set());
+    setConfirming([]);
+    setAccessPrompt(false);
+  }, [conversationId]);
   useEffect(() => {
     let current = true;
     api
@@ -150,6 +180,18 @@ export function ChatPage({
     conversations.refresh,
     list,
   ]);
+  useEffect(() => {
+    // A first send may create the main conversation. Try to adopt it once; an
+    // unavailable continuity endpoint must leave the existing chat usable.
+    if (
+      !state.conversationId ||
+      main.value?.conversation ||
+      adoptedConversation.current === state.conversationId
+    )
+      return;
+    adoptedConversation.current = state.conversationId;
+    void main.refresh();
+  }, [main.value?.conversation, main.refresh, state.conversationId]);
   const last = state.turns.at(-1);
   const pending = isPending(last);
   const profiles = models.status === "ready" ? models.data.profiles : [];
@@ -178,8 +220,10 @@ export function ChatPage({
     !!state.conversationId && state.historyStatus !== "ready";
   const locked =
     pending || state.busy || conversations.creating || attachments.uploading;
-  const disabled = locked || historyUnavailable || conversations.loading;
-  const send = () => session.send(state.draft, profileId, effort);
+  const disabled = locked || historyUnavailable || conversations.loading ||
+    main.status !== "ready" || !mainId ||
+    !!currentBranch && ["archived", "completed", "cancelled", "failed"].includes(currentBranch.status);
+  const send = () => { if (!disabled) session.send(state.draft, profileId, effort); };
   const togglePick = (id: string) =>
     setPicked((current) => {
       const next = new Set(current);
@@ -227,9 +271,38 @@ export function ChatPage({
   const userTurns = state.messages.filter(
     (message) => message.role === "user",
   ).length;
+  const chooseConversation = (id: string | null) => {
+    setViewBranch(id && id !== mainId ? id : null);
+  };
   return (
     <div className="page chat-page">
+      <div className="chat-workspace">
       <section className="panel chat-panel" aria-label="聊天">
+        {(!main.value?.conversation || main.status !== "ready") && (
+          <MainConversationSetup state={main} />
+        )}
+        {main.value?.conversation && (
+          <div className="continuity-main-strip">
+            <span className="continuity-main-name">
+              <span className="status-dot" />
+              {viewBranch
+                ? currentBranch?.objective || "历史 · " + (selected?.title || "旧会话")
+                : "主干 · " + main.value.conversation.title}
+            </span>
+            <div className="button-row">
+              {viewBranch && (
+                <button className="text-button" onClick={() => chooseConversation(null)}>
+                  回到主干
+                </button>
+              )}
+              <MainConversationMenu
+                state={main}
+                openHistory={() => setHistoryOpen(true)}
+                openWork={() => setWorkOpen(true)}
+              />
+            </div>
+          </div>
+        )}
         <ChatHeader
           title={selected?.title ?? "新对话"}
           selecting={selecting}
@@ -647,6 +720,74 @@ export function ChatPage({
               agent={agent}
               openBrowser={openBrowser}
               embedded
+            />
+          </section>
+        </div>
+      )}
+      {workOpen && (
+        <WorkDrawer
+          api={api}
+          agent={agent}
+          state={workBranches}
+          mainConversationId={mainId}
+          onOpenConversation={chooseConversation}
+          onOpenExperience={(id) => {
+            setWorkOpen(false);
+            setExperienceOpen({ id });
+          }}
+          onClose={() => setWorkOpen(false)}
+        />
+      )}
+      </div>
+      {historyOpen && (
+        <div className="continuity-overlay" role="dialog" aria-modal="true" aria-label="历史与旧会话">
+          <section className="continuity-history panel">
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">不会自动合并</p>
+                <h2>历史与旧会话</h2>
+              </div>
+              <button className="text-button" onClick={() => setHistoryOpen(false)}>关闭</button>
+            </div>
+            <p className="muted">选择旧会话只会切换查看位置；主干绑定不变。旧消息、分支和附件完整保留。</p>
+            <ul className="continuity-history-list">
+              {list.map((item) => (
+                <li key={item.id}>
+                  <button
+                    className={"continuity-history-row" + (item.id === conversationId ? " current" : "")}
+                    onClick={() => {
+                      setViewBranch(item.id === mainId ? null : item.id);
+                      setHistoryOpen(false);
+                    }}
+                  >
+                    <span><strong>{item.title || "未命名会话"}</strong><small className="metadata">{item.id}</small></span>
+                    {item.id === mainId && <span className="pill">主干</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="continuity-history-foot">
+              <button className="text-button" onClick={() => { setHistoryOpen(false); setExperienceOpen({}); }}>
+                打开可回查的经历目录
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+      {experienceOpen && (
+        <div className="continuity-overlay" role="dialog" aria-modal="true" aria-label="经历回查">
+          <section className="continuity-experience-sheet panel">
+            <div className="section-heading">
+              <h2>经历</h2>
+              <button className="text-button" onClick={() => setExperienceOpen(null)}>关闭</button>
+            </div>
+            <p className="metadata">只读取本地归档与来源，不发聊天请求，不调用模型。</p>
+            <ExperienceViewer
+              api={api}
+              agentId={agent.id}
+              embedded
+              initialId={experienceOpen.id}
+              initialKind={experienceOpen.kind}
             />
           </section>
         </div>

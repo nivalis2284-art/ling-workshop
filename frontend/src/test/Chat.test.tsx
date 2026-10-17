@@ -99,6 +99,8 @@ function backend(
         { id: "ling-1", name: "小灵" },
         { id: "ling-2", name: "另一个灵" },
       ]);
+    if (path.endsWith("/main-conversation")) return json({ conversation: conversation(), revision: 1, choices: [conversation()] });
+    if (path.endsWith("/work-branches")) return json([]);
     if (path.endsWith("/conversations"))
       return json(conversationCreated ? [conversation()] : []);
     if (path.endsWith("/attachments")) return json([]);
@@ -297,6 +299,7 @@ test("chat starts empty, selects the primary profile, and displays actual stream
     agent_id: "ling-1",
     profile_id: "primary-profile",
     message: "你好",
+    conversation_id: "conversation-1",
     request_id: expect.any(String),
   });
   await server.emit("started", { run_id: "run-1" }, 1);

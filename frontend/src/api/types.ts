@@ -159,6 +159,199 @@ export interface Conversation {
   background?: string;
 }
 
+/** The server-owned continuity boundary for one individual. */
+export interface MainConversation {
+  conversation: Conversation | null;
+  revision: number;
+  choices: Conversation[];
+}
+
+export type WorkStatus =
+  | "queued"
+  | "starting"
+  | "running"
+  | "paused"
+  | "waiting"
+  | "finishing"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "unknown"
+  | string;
+
+/** A task works in its own conversation while the main conversation keeps chatting. */
+export interface WorkBranch {
+  id: string;
+  agent_id: string;
+  conversation_id: string;
+  main_conversation_id: string;
+  origin_message_id: string | null;
+  objective: string;
+  status: WorkStatus;
+  revision: number;
+  run_id?: string | null;
+  outcome?: string | null;
+  delivery_state?: string | null;
+  archive_id?: string | null;
+  return_state?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  error_code?: string | null;
+  paused?: boolean;
+  finish_requested?: boolean;
+  queued_reason?: string | null;
+}
+
+export type ExperienceKind = "work_branch" | "main_event" | "work_event";
+
+/** A first-class item in the shared, read-only experience directory. */
+export interface Experience {
+  id: string;
+  agent_id: string;
+  kind: ExperienceKind | string;
+  title: string;
+  summary: string;
+  revision: number;
+  occurred_start?: string | null;
+  occurred_end?: string | null;
+  coverage: string;
+  valid: boolean;
+  reason?: string | null;
+  conversation_id?: string | null;
+  branch_id?: string | null;
+  source_count: number;
+}
+
+export interface ExperiencePage {
+  items: Experience[];
+  next_cursor?: string | null;
+}
+
+export interface ExperienceRecord {
+  id: string;
+  source_id: string;
+  kind: string;
+  location: string;
+  coverage: string;
+  byte_count?: number | null;
+  sha256?: string;
+}
+
+export interface ExperienceRecordPage {
+  items: ExperienceRecord[];
+  next_cursor?: string | null;
+  revision: number;
+}
+
+export interface ExperienceRecordText {
+  text: string;
+  next_cursor?: string | null;
+  sha256: string;
+  page_bytes: number;
+  revision: number;
+  coverage: string;
+}
+
+export interface ReflectionPolicy {
+  enabled: boolean;
+  revision: number;
+  local_time: string;
+  timezone: string;
+  min_age_days: number;
+  threshold_bytes: number;
+  profile_id: string | null;
+  max_calls: number;
+  max_source_bytes: number;
+  max_events: number;
+  daily_call_limit: number;
+  daily_calls_used?: number;
+  quality_status?: string;
+  last_tick_at?: string | null;
+  next_run_at?: string | null;
+}
+
+export interface ReflectionPreview {
+  gate_passed: boolean;
+  source_units: number;
+  eligible_units: number;
+  candidate_bytes: number;
+  cutoff: string | null;
+  threshold_bytes: number;
+  reason?: string | null;
+  model_calls: number;
+  deferred?: { reason?: string; [key: string]: unknown }[];
+  coverage?: string | null;
+}
+
+export interface ReflectionRun {
+  id: string;
+  agent_id?: string;
+  status: string;
+  outcome?: string | null;
+  error_code?: string | null;
+  request_id: string;
+  revision?: number;
+  created_at: string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  calls_used?: number;
+  calls_limit?: number;
+  calls?: number;
+  max_calls?: number;
+  usage?: Record<string, unknown> | null;
+  input_bytes?: number | null;
+  output_bytes?: number | null;
+  event_count?: number;
+  cancel_requested?: boolean;
+  detail?: string | null;
+  quality_status?: string | null;
+  candidate_events?: ReflectionCandidate[];
+}
+
+export interface ReflectionCandidate {
+  title: string;
+  summary: string;
+  source_ids: string[];
+  occurred_start?: string | null;
+  occurred_end?: string | null;
+}
+
+export interface ReflectionQualification {
+  profile_id: string;
+  revision: number;
+  qualified: boolean;
+  sample_count: number;
+  acceptable_count: number;
+  critical_errors: number;
+  evidence: string;
+  valid?: boolean;
+  status?: string;
+}
+
+export type CompactionMode =
+  | "disabled"
+  | "safe_epoch_restart"
+  | "native_compaction";
+
+export interface CompactionSettings {
+  enabled: boolean;
+  revision: number;
+  profile_modes: Record<string, CompactionMode>;
+  trigger_ratio: number;
+  target_ratio: number;
+  max_summary_bytes?: number;
+  max_epochs?: number;
+  validation?: string;
+  native_compaction_available?: boolean;
+  hard_checkpoint_bytes?: number;
+  /** Reported by the server; the UI keeps offline and live verification apart. */
+  profile_verification?: Record<
+    string,
+    { offline_verified?: boolean; live_verified?: boolean; note?: string }
+  >;
+}
+
 // Per-conversation access mode: "full" releases gated calls (commands, remote
 // tools) without waiting for a per-call owner confirmation; every other control
 // (sandbox, audit, grants) is unchanged. Absent setting reads back "confirm".

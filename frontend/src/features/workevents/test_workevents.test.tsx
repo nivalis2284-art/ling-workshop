@@ -126,6 +126,8 @@ function backend(
     const method = init.method ?? "GET";
     const body = init.body ? JSON.parse(String(init.body)) : null;
     requests.push({ path, method, body });
+    if (path.endsWith("/main-conversation")) return json({ conversation: conversations[0], revision: 1, choices: conversations });
+    if (path.endsWith("/work-branches")) return json([]);
     if (path === "/api/agents/ling/conversations") return json(conversations);
     if (path === "/api/conversations/c1/messages") return json(paths.a2);
     if (path === "/api/conversations/c2/messages") return json(paths.b1);
@@ -732,8 +734,10 @@ test("切到另一段对话不会带回上一段的事件、草稿或展开状�
   expect(within(first).getByLabelText("概况文本")).toBeVisible();
   mounted.unmount();
   // 事件从会话选择切到 c2。
-  sessionStorage.setItem("lingnexus.chat.v1.choice.ling", "c2");
   open();
+  await user.click(await screen.findByRole("button", { name: "历史与旧会话" }));
+  const history = screen.getByRole("dialog", { name: "历史与旧会话" });
+  await user.click(within(history).getByRole("button", { name: /c2/ }));
   await screen.findByText("另一段对话的问题");
   const second = await panel(user);
   expect(within(second).queryByText("修复登录故障")).not.toBeInTheDocument();

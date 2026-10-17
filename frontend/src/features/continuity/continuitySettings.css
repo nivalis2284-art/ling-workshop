@@ -1,0 +1,168 @@
+.continuity-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.continuity-settings .section-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.continuity-settings .notice {
+  margin: 0;
+}
+.continuity-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0;
+  padding: 11px;
+  border: 0.5px solid var(--line);
+  border-radius: 11px;
+  color: var(--ink);
+  background: var(--soft);
+}
+.continuity-switch > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.continuity-policy-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 11px;
+}
+.continuity-policy-fields > .continuity-switch,
+.continuity-policy-fields > label:has(.field-help) {
+  grid-column: span 2;
+}
+.continuity-policy-fields label {
+  margin: 0;
+}
+.continuity-policy-fields .continuity-switch {
+  color: var(--ink);
+}
+.continuity-preview {
+  padding: 12px;
+  border: 0.5px solid var(--line);
+  border-radius: 12px;
+  background: var(--soft);
+}
+.continuity-preview-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.continuity-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 11px 0 0;
+}
+.continuity-metrics > div {
+  padding: 8px 9px;
+  border-radius: 9px;
+  background: var(--card);
+}
+.continuity-metrics dt {
+  font-size: 11px;
+  color: var(--faint);
+}
+.continuity-metrics dd {
+  margin: 3px 0 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.continuity-runs {
+  border-top: 0.5px solid var(--line-soft);
+  padding-top: 11px;
+}
+.continuity-runs ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.continuity-runs li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--soft);
+}
+.continuity-runs li > div {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.continuity-ratio-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+}
+.continuity-ratio-grid label {
+  margin: 0;
+}
+.continuity-profile-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.continuity-profile-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 0.5px solid var(--line);
+  border-radius: 10px;
+}
+.continuity-profile-row > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.continuity-profile-row select {
+  width: min(260px, 48%);
+}
+@media (max-width: 800px) {
+  .continuity-policy-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .continuity-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 620px) {
+  .continuity-policy-fields,
+  .continuity-ratio-grid {
+    grid-template-columns: 1fr;
+  }
+  .continuity-policy-fields > .continuity-switch,
+  .continuity-policy-fields > label:has(.field-help),
+  .continuity-profile-row {
+    grid-column: auto;
+  }
+  .continuity-profile-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .continuity-profile-row select {
+    width: 100%;
+  }
+}
+
+.continuity-review, .continuity-quality { width: 100%; display: grid; gap: 12px; padding: 14px; border: .5px solid var(--line); border-radius: 12px; background: var(--card); }
+.continuity-candidate, .continuity-quality-form { border: .5px solid var(--line); border-radius: 10px; padding: 12px; min-width: 0; }
+.continuity-candidate legend { color: var(--muted); font-size: 12px; }
+.continuity-candidate-sources { max-height: 280px; overflow-y: auto; font-size: 12px; padding: 8px; background: var(--soft); border-radius: 8px; }
+.continuity-quality-form { display: grid; gap: 9px; }
+.continuity-candidate textarea { min-height: 90px; }

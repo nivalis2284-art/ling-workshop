@@ -60,6 +60,8 @@ function backend() {
       body: init.body ? JSON.parse(String(init.body)) : null,
     });
     if (path === "/api/agents") return json([{ id: "ling-1", name: "灵" }]);
+    if (path.endsWith("/main-conversation")) return json({ conversation, revision: 1, choices: [conversation] });
+    if (path.endsWith("/work-branches")) return json([]);
     if (method === "GET" && path.endsWith("/conversations"))
       return json([conversation]);
     if (path === "/api/conversations/conversation-1/messages")

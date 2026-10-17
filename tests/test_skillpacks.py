@@ -372,7 +372,9 @@ def test_the_bundled_set_is_small_and_generic():
     library = _Library((("bundled", bundled),))
 
     names = {item.name for item in library.index()}
-    assert names == {"safe-bulk-edit", "csv-to-markdown-table"}
+    # The M2 work-branch skill is part of the resident built-in set. Keep the
+    # set deliberately small while accepting it as a product capability.
+    assert names == {"safe-bulk-edit", "csv-to-markdown-table", "work-branches"}
     for item in library.index():
         assert item.description, f"{item.name} has no description for the index"
         # Third level must not be pre-read: resources are listed, not inlined.

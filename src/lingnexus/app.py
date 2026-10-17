@@ -19,6 +19,7 @@ from lingnexus.configuration.instructions import OwnerInstructions
 from lingnexus.configuration.profiles import Profiles
 from lingnexus.content.service import Attachments
 from lingnexus.context.builder import ContextBuilder
+from lingnexus.continuity import Continuity
 from lingnexus.conversations.service import Conversations
 from lingnexus.dependencies import DependencyService
 from lingnexus.maintenance.automatic import AutomaticBackups
@@ -102,6 +103,8 @@ class Application:
         self.dependencies: DependencyService | None = None
         self.automatic_backups: AutomaticBackups | None = None
         self.work_events = WorkEvents(self)
+        self.continuity = Continuity(self)
+        self.branch_coordinator = None
 
     def create_agent(self, name: str) -> str:
         """Register an individual by name only; the first part needs just id + name."""

@@ -47,11 +47,15 @@ def build_payload(
     conversation_id = next((m.get("conversation_id") for m in messages if m.get("conversation_id")), None)
     source_guards = None
     event_manifest = []
+    continuity_manifest = []
     if conversation_id:
         source_guards = prefix_guards(app, agent_id, conversation_id, messages)
         from lingnexus.work_events.projection import project_history
 
         messages, event_manifest = project_history(app, agent_id, conversation_id, messages)
+        projector = getattr(getattr(app, "continuity", None), "project_messages", None)
+        if projector is not None:
+            messages, continuity_manifest = projector(agent_id, conversation_id, messages)
     plans_by_message = {}
     entries = []
     original_turns = {}
@@ -88,7 +92,12 @@ def build_payload(
     context = app.context.build(
         agent_id,
         messages=entries,
-        budget=BudgetPolicy(context_limit=limit, output_reserve=output, tool_reserve=tool_tokens + 512),
+        # Keep a small safety margin, but let the builder select the transcript
+        # tail before the tool declaration overhead is enforced below. Treating
+        # the declarations as a hard reserve here can retain only the newest
+        # user turn when a small historical work span is still well within the
+        # model's actual window.
+        budget=BudgetPolicy(context_limit=limit, output_reserve=output, tool_reserve=512),
         extra_header=_skill_index(app, profile),
         environment=_environment_block(app, agent_id),
     )
@@ -106,6 +115,18 @@ def build_payload(
         dropped += 1
     if not selected and entries:
         selected = [entries[-1]]
+    def native_estimate(items: list[dict]) -> int:
+        count = len(context.instructions.encode("utf-8")) + tool_tokens + output
+        for item in items:
+            if item["id"] in original_turns:
+                count += len(json.dumps(original_turns[item["id"]], ensure_ascii=False).encode())
+            else:
+                count += len(item["text"].encode("utf-8")) + int(item.get("extra_tokens", 0))
+        return count
+
+    while len(selected) > 1 and native_estimate(selected) > limit:
+        selected.pop(0)
+        dropped += 1
     native, attachment_manifest, attachment_tokens = [], [], 0
     for message in selected:
         plans = plans_by_message[message["id"]]
@@ -132,6 +153,8 @@ def build_payload(
         "token_count_exact": context.manifest["token_count_exact"] and not attachment_tokens,
         "strategy_version": 3,
         "work_events": [dict(item, sent=any(m["id"] == item["projection_id"] for m in selected)) for item in event_manifest],
+        "continuity": [dict(item, sent=any(m["id"] == item["projection_id"] for m in selected)) for item in continuity_manifest],
+        "selected_message_ids": [m["id"] for m in selected],
     }
     instructions = context.instructions
     if profile.api_family == APIFamily.ANTHROPIC_MESSAGES:

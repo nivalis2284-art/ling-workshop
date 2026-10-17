@@ -92,6 +92,14 @@ class ContextBuilder:
         used = self.counter.count(instructions)
         limit = budget.input_limit
 
+        # The owner's rules and identity are fixed. The environment and skill
+        # index are useful context, so shed the oldest optional instructions
+        # before letting them force out an otherwise valid transcript tail.
+        while used > limit and len(blocks) > 1 and blocks[-1]:
+            blocks.pop()
+            instructions = "\n\n".join(block for block in blocks if block)
+            used = self.counter.count(instructions)
+
         def size(message: dict) -> int:
             return self.counter.count(message["text"]) + int(message.get("extra_tokens", 0))
 

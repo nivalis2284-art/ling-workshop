@@ -255,6 +255,41 @@ export class ChatSession {
   setEffort = (effort: string) => this.update({ effort });
   setAttachments = (attachmentIds: string[]) =>
     this.update({ attachmentIds: [...new Set(attachmentIds)] });
+  /** Join a server-started work run without POSTing a second user request. */
+  followRun = async (runId: string, signal: AbortSignal): Promise<void> => {
+    if (this.state.turns.some((turn) => turn.runId === runId)) return;
+    try {
+      const run = await this.api.chatRun(runId, signal);
+      if (signal.aborted || !this.attached) return;
+      this.checkRun(run, runId);
+      if (isPending(this.state.turns.at(-1))) return;
+      if (this.state.turns.some((turn) => turn.runId === runId)) return;
+      const user = this.state.messages.find((message) => message.id === run.user_message_id);
+      const turn: ChatTurn = {
+        request: {
+          agent_id: this.agentId,
+          conversation_id: run.conversation_id ?? this.state.conversationId,
+          request_id: run.request_id,
+          profile_id: run.profile_id,
+          message: user?.text ?? "",
+        },
+        runId,
+        userMessageId: run.user_message_id ?? undefined,
+        text: "",
+        thinking: "",
+        lastSeq: "0",
+        status: run.status === "running" ? "disconnected" : "complete",
+        ...(run.status === "running" ? {} : this.runResult(run)),
+      };
+      this.update({ turns: [...this.state.turns, turn] });
+      if (run.status === "running") {
+        void this.syncConfirmations(runId);
+        void this.reconnect();
+      }
+    } catch (error) {
+      if (!signal.aborted) this.update({ actionError: errorMessage(error) });
+    }
+  };
   refreshHistory = async (): Promise<boolean> => {
     const cid = this.state.conversationId;
     if (!cid) return true;

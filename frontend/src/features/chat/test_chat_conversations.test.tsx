@@ -115,6 +115,8 @@ function backend(
       ]);
     if (path === "/api/models/selection")
       return json({ primary: "primary", fallback: "backup" });
+    if (path.endsWith("/main-conversation")) return json({ conversation: conversations[0] ?? null, revision: 1, choices: conversations });
+    if (path.endsWith("/work-branches")) return json([]);
     if (path === "/api/agents/ling/conversations") return json(conversations);
     if (path === "/api/agents/ling/attachments") return json([]);
     if (path === "/api/conversations") {
@@ -436,9 +438,11 @@ test("late messages from another conversation cannot appear in the current one",
   // The first conversation's messages are held back on purpose.
   const first = open();
   first.unmount();
-  // The remembered conversation is how a second one is reached without the list.
-  sessionStorage.setItem("lingnexus.chat.v1.choice.ling", "c2");
+  // The product trunk is server-owned; old sessions are opened explicitly.
   open();
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: "历史与旧会话" }));
+  await user.click(screen.getByRole("button", { name: /海岛故事/ }));
   expect(await screen.findByText("岛上的问题")).toBeVisible();
   await act(async () => {
     server.releaseMessages!();

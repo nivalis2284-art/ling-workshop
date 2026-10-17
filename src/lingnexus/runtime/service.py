@@ -13,6 +13,7 @@ import httpx
 
 from lingnexus.actions.dispatch import ToolDispatcher
 from lingnexus.common.errors import Conflict, DomainError
+from lingnexus.common.execution_leases import ExecutionLeases, result_fence
 from lingnexus.common.types import new_id, utc_now
 from lingnexus.common.verification import account, ensure_current, initial, public
 from lingnexus.configuration.settings import read_int
@@ -29,6 +30,7 @@ from lingnexus.models.gateway import _request_body
 
 from . import attachments, input_guard
 from .checkpoints import CheckpointLimit, RunCheckpoints
+from .compaction import CompactionBlocked, CompactionService
 from .failover import ChatFailover, FailoverBlocked
 from .hooks import HookEvent
 from .payload import (
@@ -74,6 +76,10 @@ ERROR_MESSAGES = {
     "command_session_active": "命令在模型准备结束时仍处于活动状态；已请求停止，请核对命令结果后新建请求。",
     "command_session_unknown": "命令清理状态未知；请人工核对命令与工作目录后再继续。",
     "command_cleanup_unknown": "取消后命令清理未能确认；请人工核对命令与工作目录。",
+    "compaction_unsafe": "上下文压缩被未闭合工具或未知副作用阻止，已保留恢复状态。",
+    "compaction_budget": "本工作已达到上下文代际上限，请核对后继续。",
+    "compaction_summary_limit": "必要的工作交接超出安全预算，已停止而未丢弃恢复点。",
+    "compaction_no_gain": "必要的交接无法减少上下文，已安全停止。",
 }
 
 COMPLETE_REASONS = {
@@ -215,6 +221,9 @@ class ChatRuntime:
         self._control: dict[str, _RunControl] = {}
         self._evidence: dict[str, dict] = {}
         self.checkpoints = RunCheckpoints(application.database)
+        self.compaction = CompactionService(application)
+        self.execution_leases = ExecutionLeases(application)
+        self.execution_leases.recover_orphans()
         self._states: dict[str, dict] = {}
         self._closed = False
         with self.app.database.transaction() as db:
@@ -276,17 +285,13 @@ class ChatRuntime:
                 if old["fingerprint"] != fingerprint:
                     raise Conflict("The request_id already belongs to different chat input.")
                 return self.get_run(old["id"])
-            if db.execute(
-                "SELECT 1 FROM chat_runs WHERE agent_id=? AND status='running'",
-                (value.agent_id,),
-            ).fetchone():
-                raise Conflict("This agent already has a running chat turn.")
             run_id = new_id()
             conversation = (
                 self.app.conversations.for_chat(value.agent_id, value.conversation_id)
                 if value.conversation_id is not None
-                else self.app.conversations.default_real(value.agent_id)
+                else self._default_conversation(value.agent_id)
             )
+            self._admit_conversation(value.agent_id, conversation["id"])
             selected = self.failover.select(value.profile_id, conversation["id"])
             profile_id, profile = selected.profile_id, selected.profile
             # Manual/primary inputs retain preflight validation. A backup uses
@@ -359,6 +364,9 @@ class ChatRuntime:
                     },
                 )
             self.failover.save_selection(run_id, selected)
+            capture_dependencies = getattr(getattr(self.app, "continuity", None), "capture_run_dependencies", None)
+            if capture_dependencies:
+                capture_dependencies(run_id, manifest.get("selected_message_ids", []))
             effort = self.failover.effort(run_id, profile_id, profile, value.effort)
             admission = {"input_guard": input_guard.capture(self.app, self.store.get(run_id)),
                          "source_grants": scope_snapshot(self.app, value.agent_id),
@@ -486,9 +494,7 @@ class ChatRuntime:
             current = self.store.get(run_id)
             if not input_guard.matches(self.app, current, checkpoint.get("input_guard")):
                 raise Conflict("原对话或来源授权已失效，请新建请求。")
-            if db.execute("SELECT 1 FROM chat_runs WHERE agent_id=? AND status='running'",
-                          (run["agent_id"],)).fetchone():
-                raise Conflict("这个体已有其他正在运行的对话。")
+            self._admit_conversation(run["agent_id"], run["conversation_id"])
             db.execute("UPDATE chat_runs SET status='running',finished_at=NULL WHERE id=?", (run_id,))
         checkpoint["step_limit"] = checkpoint.get("step_limit", self._max_steps()) + additional_steps
         self._control[run_id] = _RunControl()
@@ -512,10 +518,61 @@ class ChatRuntime:
         saved["grants"] = state.get("source_grants", {}).get("permissions", self.app.permissions.current(run["agent_id"]))
         self.checkpoints.save(run_id, saved, secret=state["credentials"].api_key)
 
+    def _default_conversation(self, agent_id):
+        main = getattr(getattr(self.app, "continuity", None), "main", None)
+        if main is not None and main.binding(agent_id) is not None:
+            return main.conversation(agent_id)
+        return self.app.conversations.default_real(agent_id)
+
+    def _admit_conversation(self, agent_id, conversation_id):
+        """One main/legacy lane + one explicitly related work lane per agent."""
+        checker = getattr(getattr(self.app, "continuity", None), "is_work_conversation", None)
+        work = bool(checker and checker(conversation_id))
+        with self.app.database.transaction() as db:
+            rows = db.execute("SELECT conversation_id FROM chat_runs WHERE agent_id=? AND status='running'", (agent_id,)).fetchall()
+            for row in rows:
+                if row[0] == conversation_id or bool(checker and checker(row[0])) == work:
+                    raise Conflict("这个体的同类上下文已有运行；允许主干和一个工作分支并行。")
+
+    def _ready_checkpoint(self, run_id, state):
+        """Pressure planning precedes both ready save and model_inflight save."""
+        self._assert_input_current(run_id)
+        run = self.store.get(run_id)
+        evidence = self._evidence.get(run_id, initial(coding=True))
+        candidate = self.compaction.plan(run, state, evidence=evidence, checkpoints=self.checkpoints)
+        if candidate is None:
+            self._save_checkpoint(run_id, state)
+            return
+        from lingnexus.common.verification import workspace_version
+
+        from .compaction import _serializable
+
+        expected = self.checkpoints.encoded(run_id)
+        # First run has no completed group; no valid candidate can exist yet.
+        self._assert_input_current(run_id)
+        def snapshot(value):
+            saved = _serializable(value, evidence)
+            saved["workspace_version"] = workspace_version(ChatToolScope(self.app, run["agent_id"], run_id).workdir)
+            saved["grants"] = value.get("source_grants", {}).get("permissions", self.app.permissions.current(run["agent_id"]))
+            return saved
+        with self.app.database.transaction():
+            self._assert_input_current(run_id)
+            self.checkpoints.activate_epoch(run_id, snapshot(candidate), expected_state=expected,
+                                            sealed_state=snapshot(state), secret=state["credentials"].api_key)
+        state.update(candidate)
+        self.store.append(run_id, "notice", {"run_id": run_id, "code": "context_epoch_started", "epoch": state["context_epoch"],
+                                           "message": "工作已在安全工具边界进入新的上下文代际。"})
+
     def _assert_input_current(self, run_id: str) -> None:
         state = self._states.get(run_id, {})
         if not input_guard.matches(self.app, self.store.get(run_id), state.get("input_guard")):
             raise FailoverBlocked("context_invalidated")
+        source_check = getattr(getattr(self.app, "continuity", None), "assert_run_sources", None)
+        if source_check:
+            try:
+                source_check(run_id)
+            except DomainError as error:
+                raise FailoverBlocked("context_invalidated") from error
         for projection in state.get("event_projection", []):
             if not projection.get("sent"):
                 continue
@@ -634,7 +691,8 @@ class ChatRuntime:
             }
             if recovery:
                 state.update({key: recovery[key] for key in (
-                    "payload", "effort", "step", "phase", "initial_length", "pending", "step_limit", "input_guard", "source_grants", "event_projection"
+                    "payload", "effort", "step", "phase", "initial_length", "pending", "step_limit", "input_guard", "source_grants", "event_projection",
+                    "context_epoch", "epoch_step", "replay_prefix", "private_chain", "applied_guidance"
                 ) if key in recovery})
             elif admission:
                 state.update(admission)
@@ -673,8 +731,12 @@ class ChatRuntime:
                                         [(call, text) for call, text, _, _ in results])
                     step += 1
                     state.update(step=step, phase="ready", pending=[])
-                    self._save_checkpoint(run_id, state)
+                    self._ready_checkpoint(run_id, state)
                     continue
+                # A recovered inflight HTTP request retries the exact saved input;
+                # only ready phases can start a different native chain.
+                if state.get("phase") == "ready":
+                    self._ready_checkpoint(run_id, state)
                 self.store.append(run_id, "step_started", {"run_id": run_id, "step": step})
                 stage = "checkpoint"
                 state.update(step=step, phase="model_inflight")
@@ -701,6 +763,9 @@ class ChatRuntime:
                     append_native_response(state["payload"], state["profile"].api_family, turn.continuation)
                 elif turn.calls:
                     append_tool_calls(state["payload"], state["profile"], turn.calls, turn.text)
+                if turn.text and turn.calls:
+                    self.app.work_events.record(run_id, "assistant_plan", turn.text, step=step,
+                                                metadata={"scope_grants": state["source_grants"]})
                 if not turn.calls:
                     stage = "completion"
                     if turn.finish_reason in COMPLETE_REASONS[state["profile"].api_family]:
@@ -724,7 +789,9 @@ class ChatRuntime:
                 )
                 step += 1
                 state.update(step=step, phase="ready", pending=[])
-                self._save_checkpoint(run_id, state)
+                self._ready_checkpoint(run_id, state)
+        except CompactionBlocked as exc:
+            self._fail(run_id, exc.code)
         except CredentialEcho:
             self._fail(run_id, "credential_in_response")
         except FailoverBlocked as exc:
@@ -759,6 +826,7 @@ class ChatRuntime:
             self.app.work_events.record(run_id, "guidance_applied", guidance,
                 step=state["step"], call_id=new_id(), metadata={"scope_grants": state["source_grants"]})
             append_user_message(state["payload"], state["profile"], guidance)
+            state.setdefault("applied_guidance", []).append(guidance)
 
     async def _step_call(
         self, run_id: str, step: int, state: dict, requested_effort: str | None
@@ -984,7 +1052,16 @@ class ChatRuntime:
         auto_full = bool(decision.replacement and decision.replacement.get("full_access"))
         self._assert_input_current(run_id)
         self.checkpoints.begin(run_id, step, call.id)
-        result = await self.dispatcher.execute(call.name, call.arguments, bound)
+        if call.name in {"event_records", "event_read"} and str(call.arguments.get("event_id", "")).startswith("run:"):
+            result = self.compaction.recall(run_id, call.name, call.arguments)
+        elif call.name in {"create_file", "write_file", "edit_file", "run_command"}:
+            async with self.execution_leases.guard(f"chat:{bound.agent_id}:{run_id}") as fence:
+                self._assert_input_current(run_id)
+                result = await self.dispatcher.execute(call.name, call.arguments, bound)
+                fence.update(result_fence(result.data))
+        else:
+            result = await self.dispatcher.execute(call.name, call.arguments, bound)
+        self._assert_input_current(run_id)
         account(self._evidence.setdefault(run_id, initial(coding=True)),
                 {"name": call.name, "arguments": call.arguments}, result.data)
         text = _tool_text(result)
@@ -1150,6 +1227,9 @@ class ChatRuntime:
             )
             self.failover.finish_attempt(run_id, "completed")
             if state := self._states.get(run_id):
+                inherit = getattr(getattr(self.app, "continuity", None), "inherit_answer_dependencies", None)
+                if inherit and message:
+                    inherit(run_id, message["id"])
                 state.update(phase="completed", assistant_message_id=message["id"] if message else None)
                 self._save_checkpoint(run_id, state)
 

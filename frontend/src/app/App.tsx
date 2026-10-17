@@ -11,6 +11,7 @@ import { SettingsPage } from "../features/settings/SettingsPage";
 import { ContentPage } from "../features/content/ContentPage";
 import { BrowserPage } from "../features/browser/BrowserPage";
 import { ChatPage } from "../features/chat/ChatPage";
+import { ExperienceViewer } from "../features/continuity/ExperienceViewer";
 import { ChatSessions } from "../features/chat/session";
 import { useConversations } from "../features/chat/useConversations";
 import { Shell } from "./Shell";
@@ -66,6 +67,11 @@ function AgentWorkspace({
             openSettings={() => setPage("settings")}
             openBrowser={() => setPage("browser")}
           />
+        )}
+        {page === "experiences" && (
+          <div className="page continuity-page">
+            <ExperienceViewer api={api} agentId={agent.id} />
+          </div>
         )}
         {page === "content" && <ContentPage api={api} agent={agent} />}
         {page === "browser" && <BrowserPage api={api} agent={agent} />}

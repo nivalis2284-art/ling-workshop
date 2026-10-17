@@ -239,7 +239,7 @@ def test_row_codec_round_trips_arbitrary_bytes_through_base64():
 # --- version 3: the M2 tables travel, with bytes preserved ----------------
 
 
-def test_export_v3_declares_m2_tables_and_a_byte_encoding(app, agent_id, event_run):
+def test_export_v4_declares_continuity_tables_and_a_byte_encoding(app, agent_id, event_run):
     chunks = store_chunks(RECORD_MARKER * 9000)  # More than one 64 KiB block.
     assert len(chunks) > 1 and all(len(chunk) == CHUNK_BYTES for chunk in chunks[:-1])
     assert 0 < len(chunks[-1]) <= CHUNK_BYTES
@@ -247,11 +247,13 @@ def test_export_v3_declares_m2_tables_and_a_byte_encoding(app, agent_id, event_r
     destination = app.database.path.parent / "portable"
     manifest = app.maintenance.export_to(destination)
 
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     assert manifest["blob_encoding"] == "base64"
     on_disk = {item.stem for item in destination.glob("*.json") if item.name != "manifest.json"}
     assert set(manifest["tables"]) == on_disk
     for table in M2_TABLES:
+        assert (destination / f"{table}.json").is_file(), table
+    for table in ("continuity_main_conversations", "continuity_experiences", "reflection_jobs"):
         assert (destination / f"{table}.json").is_file(), table
     assert set(manifest["tables"]).isdisjoint(PRIVATE_TABLES)
     # The chunk body is exported as an explicit marker, never as mangled text.
@@ -400,7 +402,9 @@ def downgrade_export(source, destination, version: int) -> dict:
     """Rebuild a pre-M2 export tree from a v3 tree, as an older release wrote it."""
     destination.mkdir()
     manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
-    dropped = set(M2_TABLES)
+    from lingnexus.maintenance.service import V4_TABLES
+
+    dropped = set(M2_TABLES) | set(V4_TABLES)
     if version == 1:
         dropped |= set(TASK_TABLES)
     manifest["tables"] = {
@@ -482,10 +486,10 @@ def test_legacy_export_that_smuggles_m2_tables_is_rejected(app, agent_id, event_
 def test_export_version_and_blob_encoding_must_agree(app, agent_id):
     source = app.database.path.parent / "portable-check"
     manifest = app.maintenance.export_to(source)
-    assert manifest["schema_version"] == 3 and manifest["blob_encoding"] == "base64"
+    assert manifest["schema_version"] == 4 and manifest["blob_encoding"] == "base64"
 
     cases = (
-        (lambda value: value.update(schema_version=4), "版本"),
+        (lambda value: value.update(schema_version=5), "版本"),
         (lambda value: value.pop("blob_encoding"), "编码"),
         (lambda value: value.update(blob_encoding="utf16"), "编码"),
     )

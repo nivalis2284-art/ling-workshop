@@ -10,13 +10,14 @@ import {
 } from "lucide-react";
 import { errorMessage } from "../../api/client";
 import type { LingApi } from "../../api/client";
-import type { Agent, WorkBranch } from "../../api/types";
+import type { Agent, WorkBranch, WorkGuidance } from "../../api/types";
 import { ConfirmDialog } from "../../shared/ConfirmDialog";
 import { ErrorNotice } from "../../shared/ui";
 import {
   continuityRequestId,
   workStatusLabel,
   workCanFinish,
+  workCanWake,
 } from "./api";
 import type { WorkBranchesState } from "./useContinuation";
 
@@ -44,6 +45,12 @@ function branchStateLabel(work: WorkBranch) {
   return workStatusLabel(work.status);
 }
 
+function guidanceStateLabel(item: WorkGuidance) {
+  if (item.consumed_at) return "已被子 Agent 读取";
+  if (item.delivery === "delivered") return "已交给运行，等待安全步边界";
+  return "等待读取";
+}
+
 function BranchDetails({
   api,
   work,
@@ -61,6 +68,10 @@ function BranchDetails({
   const [localError, setLocalError] = useState("");
   const [pausing, setPausing] = useState(false);
   const [finishing, setFinishing] = useState(false);
+
+  useEffect(() => {
+    void state.history(work.id);
+  }, [state.history, work.id, work.revision]);
 
   const alive = useRef(true);
   useEffect(() => {
@@ -91,7 +102,7 @@ function BranchDetails({
     const value = await state.guide(work.id, text, continuityRequestId());
     if (value) {
       setGuide("");
-      setStatus("指导已交给工作分支；来源和时间会随分支归档保留。");
+      setStatus("指导已交给工作分支；实际读取后会显示已读状态。");
     }
   };
 
@@ -107,6 +118,13 @@ function BranchDetails({
           ? "工作已经结束；只有服务端核验过交付后，摘要才会回归主干。"
           : "完成意图已记录，仍在核对执行与交付状态。",
       );
+  };
+
+  const wake = async () => {
+    setLocalError("");
+    const value = await state.wake(work.id, work.revision);
+    if (value)
+      setStatus("已唤醒同一个工作分支；它会先读取原任务状态与未完成项，再继续执行。");
   };
 
   const cancel = async () => {
@@ -135,6 +153,45 @@ function BranchDetails({
       {work.outcome && <p className="metadata">结果：{work.outcome}</p>}
       {work.delivery_state && <p className="metadata">交付：{work.delivery_state}</p>}
       {work.return_state && <p className="metadata">回归：{work.return_state}</p>}
+      {work.task_state_revision ? (
+        <p className="metadata">任务状态版本：{work.task_state_revision}</p>
+      ) : null}
+      {state.detail?.branchId === work.id && state.detail.taskState && (
+        <section className="continuity-task-state" aria-label="子 Agent 任务状态">
+          <h4>当前任务理解</h4>
+          {state.detail.taskState.unfinished.length > 0 && (
+            <>
+              <strong>未完成</strong>
+              <ul>{state.detail.taskState.unfinished.map((item) => <li key={item}>{item}</li>)}</ul>
+            </>
+          )}
+          {state.detail.taskState.decisions.length > 0 && (
+            <>
+              <strong>关键决策</strong>
+              <ul>{state.detail.taskState.decisions.map((item) => <li key={item}>{item}</li>)}</ul>
+            </>
+          )}
+          {state.detail.episodes.length > 0 && (
+            <p className="metadata">
+              共 {state.detail.episodes.length} 个唤醒阶段；当前阶段
+              {state.detail.episodes.at(-1)?.status ?? "未知"}。
+            </p>
+          )}
+          {state.detail.guidance.length > 0 && (
+            <div className="continuity-guidance-history" aria-label="指导读取状态">
+              <strong>最近指导</strong>
+              <ul>
+                {state.detail.guidance.slice(-3).map((item) => (
+                  <li key={item.id}>
+                    <span className="metadata">{guidanceStateLabel(item)}</span>
+                    <span>{item.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </section>
+      )}
 
       <div className="continuity-branch-actions">
         {work.run_id && ["running", "paused", "waiting", "finishing"].includes(work.status) && (
@@ -166,6 +223,16 @@ function BranchDetails({
             {finishing ? "正在核对…" : "完成并归档"}
           </button>
         )}
+        {workCanWake(work) && (
+          <button
+            className="button secondary small-button"
+            disabled={state.busyId === work.id}
+            onClick={() => void wake()}
+          >
+            <Play size={14} />
+            唤醒同一子 Agent
+          </button>
+        )}
       </div>
 
       {(localError || state.actionError) && (
@@ -188,7 +255,7 @@ function BranchDetails({
           placeholder="例如：先核对现有测试，再修登录失败；不要改动生产数据。"
           onChange={(event) => setGuide(event.target.value)}
         />
-        <button className="button secondary small-button" disabled={!guide.trim() || !!state.busyId || ["archived", "completed", "failed", "cancelled"].includes(work.status)}>
+        <button className="button secondary small-button" disabled={!guide.trim() || !!state.busyId || ["archived", "completed", "failed", "cancelled", "unknown", "pending_review", "awaiting_approval", "finishing", "interrupted"].includes(work.status)}>
           <Send size={14} />发送指导
         </button>
       </form>
@@ -358,8 +425,8 @@ export function WorkDrawer({
                         切换查看
                       </button>
                     )}
-                    {["archived", "completed"].includes(item.status) && item.archive_id && (
-                      <button className="text-button" onClick={() => onOpenExperience(item.archive_id!)}>
+                    {["archived", "completed"].includes(item.status) && (item.latest_archive || item.archive_id) && (
+                      <button className="text-button" onClick={() => onOpenExperience(item.latest_archive?.experience_id ?? item.archive_id!)}>
                         查看归档与原文
                       </button>
                     )}

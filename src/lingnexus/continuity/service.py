@@ -62,6 +62,24 @@ class Continuity:
     def request_finish(self,branch_id,expected_revision,*,run_id=None):
         return self.work_domain.finish(branch_id,expected_revision,run_id=run_id)
 
+    def wake(self,branch_id,expected_revision):
+        return self.work_domain.wake(branch_id,expected_revision)
+
+    def task_state(self,branch_id):
+        return self.work_domain.task_state(branch_id)
+
+    def task_states(self,branch_id):
+        return self.work_domain.task_states(branch_id)
+
+    def episodes(self,branch_id):
+        return self.work_domain.episodes(branch_id)
+
+    def archives(self,branch_id):
+        return self.work_domain.archives(branch_id)
+
+    def guidance(self,branch_id):
+        return self.work_domain.guidance(branch_id)
+
     def assert_fork(self,branch):
         return self.work_domain.assert_fork(branch)
 
@@ -107,7 +125,7 @@ class Continuity:
         if item.get('branch_id'):
             branch=self.work_domain.row(item['branch_id'])
             allowed={branch['conversation_id']}
-            if item['coverage']!='live' and branch['return_state']=='published':
+            if item['coverage']!='live':
                 allowed.add(branch['main_conversation_id'])
             if conv['id'] in allowed:
                 return

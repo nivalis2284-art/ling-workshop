@@ -38,6 +38,13 @@ class ChatRequest(Value):
     attachment_ids: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(
         default_factory=list, max_length=16
     )
+    # Internal coordinator binding: the public HTTP owner may still omit these.
+    # A work run must belong to an explicit branch episode, so the runtime can
+    # refuse a model finish without guessing from a conversation id.
+    work_episode_id: str | None = Field(default=None, min_length=1, max_length=128)
+    work_guidance_ids: list[
+        Annotated[str, Field(min_length=1, max_length=128)]
+    ] = Field(default_factory=list, max_length=64)
 
     @model_serializer(mode="wrap")
     def serialize(self, handler: SerializerFunctionWrapHandler) -> dict:
@@ -47,6 +54,10 @@ class ChatRequest(Value):
             result.pop("regenerate_message_id", None)
         if not self.attachment_ids:
             result.pop("attachment_ids", None)
+        if self.work_episode_id is None:
+            result.pop("work_episode_id", None)
+        if not self.work_guidance_ids:
+            result.pop("work_guidance_ids", None)
         return result
 
     @field_validator("attachment_ids")
@@ -54,6 +65,13 @@ class ChatRequest(Value):
     def valid_attachments(cls, value: list[str]) -> list[str]:
         if any(not item.strip() for item in value) or len(set(value)) != len(value):
             raise ValueError("Attachment IDs must be unique and nonblank")
+        return value
+
+    @field_validator("work_guidance_ids")
+    @classmethod
+    def valid_work_guidance(cls, value: list[str]) -> list[str]:
+        if any(not item.strip() for item in value) or len(set(value)) != len(value):
+            raise ValueError("Work guidance IDs must be unique and nonblank")
         return value
 
     @model_validator(mode="after")
@@ -70,6 +88,7 @@ class ChatRequest(Value):
         "effort",
         "conversation_id",
         "regenerate_message_id",
+        "work_episode_id",
     )
     @classmethod
     def nonblank(cls, value: str | None) -> str | None:

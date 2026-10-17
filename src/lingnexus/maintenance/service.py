@@ -138,6 +138,9 @@ CONTINUITY_TABLES = (
     "continuity_answer_dependencies",
     "continuity_experience_reads",
     "continuity_reflection_drafts",
+    "continuity_work_task_states",
+    "continuity_work_episodes",
+    "continuity_episode_archives",
 )
 REFLECTION_TABLES = (
     "reflection_policies",

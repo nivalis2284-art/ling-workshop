@@ -19,6 +19,16 @@ class BranchGuide(BranchStatus):
     request_id:str=Field(min_length=1,max_length=200)
 
 
+class BranchState(BranchStatus):
+    decisions:list[str]|None=Field(default=None,max_length=64)
+    progress:list[str]|None=Field(default=None,max_length=64)
+    unfinished:list[str]|None=Field(default=None,max_length=64)
+    verified:list[str]|None=Field(default=None,max_length=64)
+    unknowns:list[str]|None=Field(default=None,max_length=64)
+    artifacts:list[str]|None=Field(default=None,max_length=64)
+    sources:list[str]|None=Field(default=None,max_length=64)
+
+
 class ExperienceRecords(BaseModel):
     model_config=ConfigDict(extra='forbid',strict=True)
     experience_id:str=Field(min_length=1,max_length=200)

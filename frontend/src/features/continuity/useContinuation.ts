@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { errorMessage } from "../../api/client";
 import type { LingApi } from "../../api/client";
 import type {
+  EpisodeArchive,
   MainConversation,
   WorkBranch,
+  WorkEpisode,
+  WorkGuidance,
+  WorkTaskState,
 } from "../../api/types";
 import { continuationApi, continuityRequestId } from "./api";
 
@@ -104,6 +108,13 @@ export function useWorkBranches(api: LingApi, agentId: string) {
   const [status, setStatus] = useState<LoadState>("loading");
   const [error, setError] = useState("");
   const [busyId, setBusyId] = useState("");
+  const [detail, setDetail] = useState<{
+    branchId: string;
+    taskState: WorkTaskState | null;
+    episodes: WorkEpisode[];
+    archives: EpisodeArchive[];
+    guidance: WorkGuidance[];
+  } | null>(null);
   const [actionError, setActionError] = useState("");
   const controller = useRef<AbortController | null>(null);
   const mounted = useRef(true);
@@ -188,12 +199,31 @@ export function useWorkBranches(api: LingApi, agentId: string) {
     [busyId, replace],
   );
 
+  const history = useCallback(async (branchId: string) => {
+    const controller = new AbortController();
+    try {
+      const [taskState, episodes, archives, guidance] = await Promise.all([
+        client.taskState(branchId, controller.signal),
+        client.episodes(branchId, controller.signal),
+        client.archives(branchId, controller.signal),
+        client.guidance(branchId, controller.signal),
+      ]);
+      if (mounted.current) setDetail({ branchId, taskState, episodes, archives, guidance });
+      return { taskState, episodes, archives, guidance };
+    } catch (cause) {
+      if (mounted.current) setActionError(errorMessage(cause));
+      return null;
+    }
+  }, [client]);
+
   return {
     items,
     status,
     error,
     actionError,
     busyId,
+    detail,
+    history,
     refresh: read,
     start: async (input: {
       request_id: string;
@@ -221,6 +251,8 @@ export function useWorkBranches(api: LingApi, agentId: string) {
       act(id, () => client.cancel(id, expectedRevision)),
     finish: (id: string, expectedRevision: number) =>
       act(id, () => client.finish(id, expectedRevision)),
+    wake: (id: string, expectedRevision: number) =>
+      act(id, () => client.wake(id, expectedRevision)),
   };
 }
 

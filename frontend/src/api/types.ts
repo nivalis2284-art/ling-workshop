@@ -193,6 +193,9 @@ export interface WorkBranch {
   outcome?: string | null;
   delivery_state?: string | null;
   archive_id?: string | null;
+  current_episode_id?: string | null;
+  task_state_revision?: number;
+  latest_archive?: EpisodeArchive | null;
   return_state?: string | null;
   created_at: string;
   started_at?: string | null;
@@ -201,6 +204,59 @@ export interface WorkBranch {
   paused?: boolean;
   finish_requested?: boolean;
   queued_reason?: string | null;
+}
+
+export interface WorkTaskState {
+  branch_id: string;
+  revision: number;
+  objective: string;
+  decisions: string[];
+  progress: string[];
+  unfinished: string[];
+  verified: string[];
+  unknowns: string[];
+  artifacts: string[];
+  sources: string[];
+  run_id?: string | null;
+  created_at: string;
+}
+
+export interface WorkEpisode {
+  id: string;
+  branch_id: string;
+  ordinal: number;
+  predecessor_id?: string | null;
+  run_id?: string | null;
+  status: string;
+  reason?: string | null;
+  task_state_revision: number;
+  source_epoch: number;
+  opened_at: string;
+  closed_at?: string | null;
+}
+
+export interface EpisodeArchive {
+  archive_id: string;
+  branch_id: string;
+  episode_id: string;
+  experience_id: string;
+  outcome?: string | null;
+  archive_version: number;
+  head_id?: string | null;
+  members_digest?: string | null;
+  report: string;
+  created_at: string;
+}
+
+export interface WorkGuidance {
+  id: string;
+  episode_id?: string | null;
+  request_id: string;
+  text: string;
+  delivery: "queued" | "delivered" | "unknown";
+  created_at: string;
+  delivered_at?: string | null;
+  consumed_at?: string | null;
 }
 
 export type ExperienceKind = "work_branch" | "main_event" | "work_event";
@@ -220,6 +276,7 @@ export interface Experience {
   reason?: string | null;
   conversation_id?: string | null;
   branch_id?: string | null;
+  branch_status?: string | null;
   source_count: number;
 }
 

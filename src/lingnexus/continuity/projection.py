@@ -18,6 +18,22 @@ def fork_messages(continuity, agent_id, conversation_id, messages):
     suffix = '\n需要证据时按经历目录读取原文。'
     remaining = MAX_BACKGROUND_BYTES - len((wrapper + suffix).encode())
     lines, selected = [], []
+    # A later awake episode starts after prior work already exists. Keep its
+    # durable task state in front of the bounded historical excerpts so a wake
+    # does not have to infer its own goal, decisions or unfinished work again.
+    state = continuity.work_domain.task_state(branch['id'])
+    packet_parts = []
+    if state:
+        packet_parts.extend([f"【同一子 Agent 的任务状态 v{state['revision']}】", '目标：'+state['objective']])
+        for label, key in (('关键决策', 'decisions'), ('未完成', 'unfinished'),
+                           ('已验证', 'verified'), ('未知', 'unknowns')):
+            if state.get(key):
+                packet_parts.append(label+'：')
+                packet_parts.extend('- '+str(item) for item in state[key][-12:])
+    packet = '\n'.join(packet_parts)[:8192]
+    if packet:
+        wrapper += packet + '\n\n'
+        remaining = MAX_BACKGROUND_BYTES - len((wrapper + suffix).encode())
     for source in reversed(refs):
         prefix = '[' + source['occurred_at'] + '] '
         allowance = remaining - len((prefix + '\n').encode())

@@ -43,11 +43,16 @@ class ExperienceDirectory:
             if row is None or (agent_id is not None and row['agent_id']!=agent_id):
                 raise NotFound('经历不存在。')
             item=dict(row)
+            if item['branch_id']:
+                item['branch_status']=self.continuity.work_domain.row(item['branch_id'])['status']
             if item['coverage']=='live':
                 item['source_count']=db.execute('SELECT COUNT(*) FROM work_event_records WHERE conversation_id=?',
                                                 (item['conversation_id'],)).fetchone()[0]
             else:
                 item['source_count']=db.execute('SELECT COUNT(*) FROM continuity_experience_sources WHERE experience_id=?',(eid,)).fetchone()[0]
+                archive=db.execute('SELECT episode_id FROM continuity_episode_archives WHERE experience_id=?',(eid,)).fetchone()
+                if archive is not None:
+                    item['episode_id']=archive['episode_id']
         item['valid'],item['reason']=self.continuity.validate_experience(item)
         if not item['valid']:
             item['summary']=''

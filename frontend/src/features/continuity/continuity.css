@@ -276,6 +276,33 @@
 .continuity-guide .button {
   align-self: flex-start;
 }
+.continuity-task-state,
+.continuity-guidance-history {
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  border: .5px solid var(--line);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.continuity-task-state h4,
+.continuity-guidance-history strong {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+.continuity-task-state ul,
+.continuity-guidance-history ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+}
+.continuity-guidance-history li {
+  display: grid;
+  gap: 2px;
+}
 
 /* --- overlays / history ------------------------------------------------- */
 

@@ -6,12 +6,16 @@ import type {
   ExperienceRecordPage,
   ExperienceRecordText,
   MainConversation,
+  EpisodeArchive,
   ReflectionPolicy,
   ReflectionPreview,
   ReflectionRun,
   ReflectionCandidate,
   ReflectionQualification,
   WorkBranch,
+  WorkEpisode,
+  WorkGuidance,
+  WorkTaskState,
 } from "../../api/types";
 
 const segment = (value: string) => encodeURIComponent(value);
@@ -69,6 +73,14 @@ export function continuationApi(api: LingApi) {
       }),
     work: (id: string, signal?: AbortSignal) =>
       api.call<WorkBranch>("/work-branches/" + segment(id), { signal }),
+    taskState: (id: string, signal?: AbortSignal) =>
+      api.call<WorkTaskState | null>("/work-branches/" + segment(id) + "/task-state", { signal }),
+    episodes: (id: string, signal?: AbortSignal) =>
+      api.call<WorkEpisode[]>("/work-branches/" + segment(id) + "/episodes", { signal }),
+    archives: (id: string, signal?: AbortSignal) =>
+      api.call<EpisodeArchive[]>("/work-branches/" + segment(id) + "/archives", { signal }),
+    guidance: (id: string, signal?: AbortSignal) =>
+      api.call<WorkGuidance[]>("/work-branches/" + segment(id) + "/guidance", { signal }),
     guide: (id: string, text: string, requestId: string) =>
       api.call<WorkBranch>("/work-branches/" + segment(id) + "/guide", {
         method: "POST",
@@ -81,6 +93,11 @@ export function continuationApi(api: LingApi) {
       }),
     finish: (id: string, expectedRevision: number) =>
       api.call<WorkBranch>("/work-branches/" + segment(id) + "/finish", {
+        method: "POST",
+        body: JSON.stringify({ expected_revision: expectedRevision }),
+      }),
+    wake: (id: string, expectedRevision: number) =>
+      api.call<WorkBranch>("/work-branches/" + segment(id) + "/wake", {
         method: "POST",
         body: JSON.stringify({ expected_revision: expectedRevision }),
       }),
@@ -220,6 +237,8 @@ export function workStatusLabel(status: string) {
       failed: "失败",
       cancelled: "已取消",
       unknown: "结果不确定",
+      interrupted: "等待恢复或安全唤醒",
+      pending_review: "等待核对",
     }[status] ?? status
   );
 }
@@ -229,7 +248,11 @@ export function workCanOpen(work: WorkBranch) {
 }
 
 export function workCanFinish(work: WorkBranch) {
-  return ["running", "paused"].includes(work.status);
+  return ["running", "paused", "interrupted", "pending_review"].includes(work.status);
+}
+
+export function workCanWake(work: WorkBranch) {
+  return ["archived", "paused"].includes(work.status);
 }
 
 export function experienceKindLabel(kind: string) {

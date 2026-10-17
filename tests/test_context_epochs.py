@@ -31,6 +31,17 @@ class WorkHooks:
     def branch_for_conversation(self, conversation_id):
         return {"objective": "Read the discovered DECISION and create answer.txt with that exact value; verify it.", "id": "branch-fixture"} if self.is_work_conversation(conversation_id) else None
 
+    def task_state(self, branch_id):
+        return None
+
+    def archives(self, branch_id):
+        return []
+
+    class work_domain:
+        @staticmethod
+        def episode_for_run(branch_id, run_id):
+            return None
+
     def project_messages(self, agent, conversation, messages):
         return messages, []
 

@@ -264,6 +264,16 @@ class ChatRuntime:
                 "recovery_reason": reason,
             }
 
+    def work_episode(self, run_id: str) -> dict | None:
+        """Read the episode bound to this run for owner-visible recovery checks."""
+        with self.app.database.transaction() as db:
+            row = db.execute(
+                "SELECT e.*,b.status AS branch_status FROM continuity_work_episodes e "
+                "JOIN continuity_work_branches b ON b.id=e.branch_id WHERE e.run_id=?",
+                (run_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     def submit(self, value: ChatRequest) -> dict:
         """Validate before network activity; rejected new requests have no persisted effects."""
         if self._closed:
@@ -285,6 +295,17 @@ class ChatRuntime:
                 if old["fingerprint"] != fingerprint:
                     raise Conflict("The request_id already belongs to different chat input.")
                 return self.get_run(old["id"])
+            if value.work_episode_id is not None:
+                episode = db.execute(
+                    "SELECT * FROM continuity_work_episodes WHERE id=?",
+                    (value.work_episode_id,),
+                ).fetchone()
+                if episode is not None and episode["run_id"] is not None:
+                    previous = db.execute(
+                        "SELECT fingerprint FROM chat_runs WHERE id=?", (episode["run_id"],)
+                    ).fetchone()
+                    if previous is not None and previous["fingerprint"] == fingerprint:
+                        return self.get_run(episode["run_id"])
             run_id = new_id()
             conversation = (
                 self.app.conversations.for_chat(value.agent_id, value.conversation_id)
@@ -292,6 +313,24 @@ class ChatRuntime:
                 else self._default_conversation(value.agent_id)
             )
             self._admit_conversation(value.agent_id, conversation["id"])
+            if value.work_episode_id is not None:
+                branch_row = db.execute(
+                    "SELECT * FROM continuity_work_branches WHERE conversation_id=?",
+                    (conversation["id"],),
+                ).fetchone()
+                episode = db.execute(
+                    "SELECT * FROM continuity_work_episodes WHERE id=?",
+                    (value.work_episode_id,),
+                ).fetchone()
+                if (
+                    episode is None
+                    or branch_row is None
+                    or episode["branch_id"] != branch_row["id"]
+                    or episode["status"] != "active"
+                    or episode["run_id"] is not None
+                    or episode["task_state_revision"] != (branch_row["task_state_revision"] or 0)
+                ):
+                    raise Conflict("工作阶段已关闭或已有运行。")
             selected = self.failover.select(value.profile_id, conversation["id"])
             profile_id, profile = selected.profile_id, selected.profile
             # Manual/primary inputs retain preflight validation. A backup uses
@@ -341,6 +380,13 @@ class ChatRuntime:
                     utc_now(),
                 ),
             )
+            if value.work_episode_id is not None:
+                claimed = db.execute(
+                    "UPDATE continuity_work_episodes SET run_id=? WHERE id=? AND status='active' AND run_id IS NULL",
+                    (run_id, value.work_episode_id),
+                ).rowcount
+                if claimed != 1:
+                    raise Conflict("工作阶段已被另一个运行占用。")
             self.store.append(
                 run_id, "started", {"run_id": run_id, "conversation_id": conversation["id"]}
             )
@@ -370,7 +416,9 @@ class ChatRuntime:
             effort = self.failover.effort(run_id, profile_id, profile, value.effort)
             admission = {"input_guard": input_guard.capture(self.app, self.store.get(run_id)),
                          "source_grants": scope_snapshot(self.app, value.agent_id),
-                         "event_projection": manifest.get("work_events", [])}
+                         "event_projection": manifest.get("work_events", []),
+                         "work_guidance_ids": value.work_guidance_ids,
+                         "wake_episode_id": value.work_episode_id}
         self._control[run_id] = _RunControl()
         self._evidence[run_id] = initial(coding=True)
         task = loop.create_task(
@@ -449,18 +497,59 @@ class ChatRuntime:
         control = self._control.get(run_id)
         if control is None:
             raise Conflict("该对话回合不在进行中，无法暂停。")
-        control.pause_requested = True
+        with self.app.database.transaction() as db:
+            db.execute(
+                "INSERT INTO chat_run_controls(run_id,intent,revision,updated_at) VALUES(?, 'pause', 1, ?) "
+                "ON CONFLICT(run_id) DO UPDATE SET intent='pause',revision=revision+1,updated_at=excluded.updated_at",
+                (run_id, utc_now()),
+            )
+        self._restore_pause_intent(run_id, control)
         return {"run_id": run_id, "paused": True}
 
     def resume(self, run_id: str) -> dict:
         """Resume a paused run; the loop continues from the same step boundary."""
-        self.get_run(run_id)
+        run = self.get_run(run_id)
         control = self._control.get(run_id)
         if control is None:
-            raise Conflict("该对话回合不在进行中，无法恢复。")
+            # The process may have stopped while the durable pause intent was
+            # set. A runnerless, interrupted run can only continue through the
+            # exact same recovery gate; never turn a fresh control into a replay.
+            if run["status"] not in {"interrupted", "failed"}:
+                raise Conflict("该对话回合不在进行中，无法恢复。")
+            if not run["recoverable"]:
+                raise Conflict(run.get("recovery_reason") or "此运行缺少安全恢复点。")
+            self.recover(run_id)
+            with self.app.database.transaction() as db:
+                db.execute(
+                    "UPDATE chat_run_controls SET intent='running',revision=revision+1,updated_at=? WHERE run_id=?",
+                    (utc_now(), run_id),
+                )
+            recovered_control = self._control.get(run_id)
+            if recovered_control is not None:
+                recovered_control.pause_requested = False
+                recovered_control.resume_event.set()
+            return {"run_id": run_id, "paused": False}
+        with self.app.database.transaction() as db:
+            db.execute(
+                "UPDATE chat_run_controls SET intent='running',revision=revision+1,updated_at=? WHERE run_id=?",
+                (utc_now(), run_id),
+            )
         control.pause_requested = False
         control.resume_event.set()
         return {"run_id": run_id, "paused": False}
+
+    def _restore_pause_intent(self, run_id: str, control: _RunControl) -> None:
+        """The database is the source of truth for a requested pause.
+
+        The event loop may restart between the HTTP acknowledgement and the next
+        safe boundary. Re-read the durable row at each gate so a stale memory
+        flag cannot silently release a paused run.
+        """
+        with self.app.database.transaction() as db:
+            row = db.execute(
+                "SELECT intent FROM chat_run_controls WHERE run_id=?", (run_id,)
+            ).fetchone()
+        control.pause_requested = bool(row and row["intent"] == "pause")
 
     def recover(self, run_id: str, *, additional_steps: int = 0) -> dict:
         if self._closed or type(additional_steps) is not int or not 0 <= additional_steps <= 1000:
@@ -496,8 +585,17 @@ class ChatRuntime:
                 raise Conflict("原对话或来源授权已失效，请新建请求。")
             self._admit_conversation(run["agent_id"], run["conversation_id"])
             db.execute("UPDATE chat_runs SET status='running',finished_at=NULL WHERE id=?", (run_id,))
+            db.execute("UPDATE continuity_work_episodes SET status='active',reason=NULL,closed_at=NULL "
+                       "WHERE run_id=? AND status='interrupted'", (run_id,))
+            db.execute("UPDATE continuity_work_branches SET status='running',error_code=NULL,updated_at=? "
+                       "WHERE run_id=? AND status='interrupted'", (utc_now(), run_id))
         checkpoint["step_limit"] = checkpoint.get("step_limit", self._max_steps()) + additional_steps
         self._control[run_id] = _RunControl()
+        with self.app.database.transaction() as db:
+            db.execute(
+                "INSERT OR IGNORE INTO chat_run_controls(run_id,intent,revision,updated_at) VALUES(?, 'running', 1, ?)",
+                (run_id, utc_now()),
+            )
         self._evidence[run_id] = checkpoint.get("evidence", initial(coding=True))
         self.store.append(run_id, "resumed", {"run_id": run_id})
         task = asyncio.get_running_loop().create_task(self._execute(
@@ -615,6 +713,84 @@ class ChatRuntime:
         control.guides.append(text)
         return {"run_id": run_id, "queued": len(control.guides)}
 
+    def _mark_guidance_consumed(self, run_id: str, text: str) -> None:
+        """Mark the oldest delivered guidance only after it entered this payload."""
+        continuity = getattr(self.app, "continuity", None)
+        if continuity is None:
+            return
+        run = self.store.get(run_id)
+        work = continuity.branch_for_conversation(run["conversation_id"])
+        if work is None:
+            return
+        self._consume_guidance_ids(run_id, None, text=text)
+
+    def _record_wake_state(self, run_id: str, wake_episode_id: str | None = None) -> None:
+        """Capture why a successor episode was started before model activity.
+
+        This is a compact, evidence-linked baseline from durable rows; the full
+        transcript and the actual model request remain the authoritative source.
+        """
+        continuity = getattr(self.app, "continuity", None)
+        if continuity is None or wake_episode_id is None:
+            return
+        run = self.store.get(run_id)
+        branch = continuity.branch_for_conversation(run["conversation_id"])
+        if branch is None:
+            return
+        episode = continuity.work_domain.episode_for_run(branch["id"], run_id)
+        if episode is None or episode["status"] != "active":
+            return
+        previous = continuity.task_state(branch["id"]) or {}
+        try:
+            continuity.work_domain.record_task_state(
+                branch["id"], run_id,
+                progress=[*(previous.get("progress") or []),
+                          f"唤醒阶段 {episode['ordinal']} 已启动；读取到版本 {previous.get('revision', 0)} 的任务状态。"],
+                unfinished=previous.get("unfinished"),
+                decisions=previous.get("decisions"),
+                verified=previous.get("verified"),
+                unknowns=previous.get("unknowns"),
+            )
+        except DomainError:
+            return
+
+    def _consume_guidance_ids(self, run_id: str, ids: list[str] | None, *, text: str | None = None) -> None:
+        """Mark rows only after their exact text is part of the native payload.
+
+        A queued row from a successor episode has an explicit id and is consumed
+        with that id. Guidance delivered to a live run has no id at this layer,
+        so it is matched by the current episode and text at the boundary where it
+        was actually appended.
+        """
+        continuity = getattr(self.app, "continuity", None)
+        if continuity is None:
+            return
+        run = self.store.get(run_id)
+        branch = continuity.branch_for_conversation(run["conversation_id"])
+        if branch is None:
+            return
+        episode = continuity.work_domain.episode_for_run(branch["id"], run_id)
+        if episode is None:
+            return
+        with self.app.database.transaction() as db:
+            if ids:
+                rows = db.execute(
+                    "SELECT id,text FROM continuity_work_guidance WHERE branch_id=? AND episode_id=? "
+                    "AND consumed_at IS NULL AND id IN ("+','.join('?' for _ in ids)+") ORDER BY created_at,id",
+                    (branch["id"], episode["id"], *ids),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id,text FROM continuity_work_guidance WHERE branch_id=? AND episode_id=? "
+                    "AND consumed_at IS NULL AND delivery='delivered' AND text=? ORDER BY created_at,id LIMIT 1",
+                    (branch["id"], episode["id"], text),
+                ).fetchall()
+            for row in rows:
+                db.execute(
+                    "UPDATE continuity_work_guidance SET consumed_at=COALESCE(consumed_at,?) WHERE id=?",
+                    (utc_now(), row["id"]),
+                )
+
     async def aclose(self) -> None:
         """Interrupt pending runs before the application closes its runtime credentials."""
         self._closed = True
@@ -697,6 +873,9 @@ class ChatRuntime:
             elif admission:
                 state.update(admission)
             self._states[run_id] = state
+            if admission:
+                self._consume_guidance_ids(run_id, admission.get("work_guidance_ids"))
+                self._record_wake_state(run_id, admission.get("wake_episode_id"))
             # Discovery can block on first use (spawning servers, handshakes);
             # keep it off the event loop like the remote calls themselves.
             declare_tools(
@@ -814,6 +993,7 @@ class ChatRuntime:
         control = self._control.get(run_id)
         if control is None:
             return
+        self._restore_pause_intent(run_id, control)
         if control.pause_requested:
             self.store.append(run_id, "paused", {"run_id": run_id})
             while control.pause_requested:
@@ -825,6 +1005,7 @@ class ChatRuntime:
             self._assert_input_current(run_id)
             self.app.work_events.record(run_id, "guidance_applied", guidance,
                 step=state["step"], call_id=new_id(), metadata={"scope_grants": state["source_grants"]})
+            self._mark_guidance_consumed(run_id, guidance)
             append_user_message(state["payload"], state["profile"], guidance)
             state.setdefault("applied_guidance", []).append(guidance)
 
@@ -1232,6 +1413,7 @@ class ChatRuntime:
                     inherit(run_id, message["id"])
                 state.update(phase="completed", assistant_message_id=message["id"] if message else None)
                 self._save_checkpoint(run_id, state)
+            self._record_work_round(run_id, text)
 
     def _fail(self, run_id: str, code: str, *, status: str = "failed") -> None:
         with self.app.database.transaction() as db:
@@ -1253,3 +1435,75 @@ class ChatRuntime:
                     "message": ERROR_MESSAGES[code],
                 },
             )
+        self._fail_work_episode(run_id, status, code)
+
+    def _record_work_round(self, run_id: str, final_text: str) -> None:
+        """Persist this run's real outcome without claiming task completion.
+
+        The transcript and safe records remain authoritative. This only adds a
+        compact task-state revision so a later wake can distinguish what was
+        verified from what is still unfinished, and marks this awake episode as
+        ended by an ordinary round completion.
+        """
+        continuity = getattr(self.app, "continuity", None)
+        if continuity is None:
+            return
+        run = self.store.get(run_id)
+        branch = continuity.branch_for_conversation(run["conversation_id"])
+        if branch is None:
+            return
+        episode = continuity.work_domain.episode_for_run(branch["id"], run_id)
+        if episode is None or episode["status"] != "active":
+            return
+        previous = continuity.task_state(branch["id"]) or {}
+        progress = list(previous.get("progress", []))
+        unfinished = list(previous.get("unfinished", []))
+        verified = list(previous.get("verified", []))
+        unknowns = list(previous.get("unknowns", []))
+        decisions = list(previous.get("decisions", []))
+        if final_text:
+            progress = [*progress, {"kind": "round_finished", "detail": final_text[:512]}]
+        if not unfinished:
+            unfinished = ["需要所有者确认任务是否真正完成并归档。"]
+        try:
+            continuity.work_domain.record_task_state(
+                branch["id"], run_id, decisions=list_to_strings(decisions),
+                progress=list_to_strings(progress), unfinished=list_to_strings(unfinished),
+                verified=list_to_strings(verified), unknowns=list_to_strings(unknowns),
+            )
+            continuity.work_domain.settle_episode(branch, "paused", "round_completed")
+        except DomainError:
+            # The run's own durable status and safe records stay intact; a task
+            # state failure is surfaced by the coordinator as a recoverable gap.
+            return
+
+    def _settle_work_episode(self, run_id: str, status: str, reason: str) -> None:
+        """Close the episode attached to this exact run, if this is work."""
+        with self.app.database.transaction() as db:
+            episode = db.execute(
+                "SELECT * FROM continuity_work_episodes WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if episode is None:
+                return
+            branch = db.execute(
+                "SELECT * FROM continuity_work_branches WHERE id=?", (episode["branch_id"],)
+            ).fetchone()
+            if branch is None or branch["current_episode_id"] != episode["id"]:
+                return
+            db.execute(
+                "UPDATE continuity_work_episodes SET status=?,reason=?,closed_at=? "
+                "WHERE id=? AND status='active'",
+                (status, reason, utc_now(), episode["id"]),
+            )
+
+    def _fail_work_episode(self, run_id: str, status: str, reason: str) -> None:
+        if status == "interrupted":
+            self._settle_work_episode(run_id, "interrupted", reason)
+        else:
+            self._settle_work_episode(run_id, "pending_review", reason)
+
+
+def list_to_strings(values):
+    """Task-state rows are stored as strings; preserve legacy structured entries."""
+    return [value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            for value in values]

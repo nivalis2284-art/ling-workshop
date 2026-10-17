@@ -21,9 +21,18 @@ def call(scope,name,args):
                     cid not in {branch['conversation_id'],branch['main_conversation_id']}):
                 raise PermissionDenied('调用交流没有该工作的显式关系。')
             if name=='work_branch_status':
-                value=c.work(branch['id'])
+                value={'work':c.work(branch['id']),'task_state':c.task_state(branch['id']),
+                       'episodes':c.episodes(branch['id']),'archives':c.archives(branch['id'])}
             elif name=='work_branch_guide':
                 value=c.guide(branch['id'],args['text'],args['request_id'])
+            elif name=='work_branch_state':
+                if cid!=branch['conversation_id']:
+                    raise PermissionDenied('任务状态只能由工作本身记录。')
+                value=c.work_domain.record_task_state(branch['id'],scope.run_id,
+                    decisions=args.get('decisions'),progress=args.get('progress'),
+                    unfinished=args.get('unfinished'),verified=args.get('verified'),
+                    unknowns=args.get('unknowns'),artifacts=args.get('artifacts'),
+                    sources=args.get('sources'))
             elif name=='work_branch_finish':
                 if cid!=branch['conversation_id']:
                     raise PermissionDenied('finish 工具只能由工作本身记录意图。')

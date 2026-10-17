@@ -70,6 +70,31 @@ def work_get(branch_id:str,request:Request):
     return service(request).work(branch_id)
 
 
+@router.get('/work-branches/{branch_id}/task-state')
+def task_state(branch_id:str,request:Request):
+    return service(request).task_state(branch_id)
+
+
+@router.get('/work-branches/{branch_id}/task-states')
+def task_states(branch_id:str,request:Request):
+    return service(request).task_states(branch_id)
+
+
+@router.get('/work-branches/{branch_id}/episodes')
+def episodes(branch_id:str,request:Request):
+    return service(request).episodes(branch_id)
+
+
+@router.get('/work-branches/{branch_id}/archives')
+def archives(branch_id:str,request:Request):
+    return service(request).archives(branch_id)
+
+
+@router.get('/work-branches/{branch_id}/guidance')
+def guidance(branch_id:str,request:Request):
+    return service(request).guidance(branch_id)
+
+
 @router.post('/work-branches/{branch_id}/guide')
 def guide(branch_id:str,value:GuideInput,request:Request):
     return service(request).guide(branch_id,**value.model_dump())
@@ -85,6 +110,13 @@ async def cancel(branch_id:str,value:RevisionInput,request:Request):
 @router.post('/work-branches/{branch_id}/finish')
 async def finish(branch_id:str,value:RevisionInput,request:Request):
     item=service(request).request_finish(branch_id,**value.model_dump())
+    await request.app.state.services.branch_coordinator.tick()
+    return service(request).work(item['id'])
+
+
+@router.post('/work-branches/{branch_id}/wake')
+async def wake(branch_id:str,value:RevisionInput,request:Request):
+    item=service(request).wake(branch_id,**value.model_dump())
     await request.app.state.services.branch_coordinator.tick()
     return service(request).work(item['id'])
 

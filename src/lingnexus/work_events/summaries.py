@@ -60,6 +60,7 @@ MAX_OVERVIEW_BYTES = 1536
 MAX_SUMMARY_BYTES = 2048
 MAX_IDS = 40
 MAX_REPLY_BYTES = 32 * 1024
+CLOSE_TIMEOUT_SECONDS = 5.0
 
 ACTIVE_STATES = ("queued", "running", "retry")
 RETRYABLE_CODES = frozenset(
@@ -252,6 +253,8 @@ class EventSummaryRunner:
         self._active = False
         self._running: tuple[str, str] | None = None
         self._cancel_event: asyncio.Event | None = None
+        self._job_task: asyncio.Task | None = None
+        self._closing = False
 
     # --- owner-facing configuration and inspection ------------------------
 
@@ -397,6 +400,8 @@ class EventSummaryRunner:
 
     async def tick(self) -> dict:
         """One bounded batch; never claims while the foreground is busy."""
+        if self._closing:
+            return {"status": "closed", "processed": 0}
         if self._active:
             return {"status": "busy", "processed": 0}
         if await self._busy():
@@ -409,6 +414,8 @@ class EventSummaryRunner:
                 if job is None:
                     break
                 processed.append(await self._run_job(job))
+                if self._closing:
+                    break
                 # Yield between jobs so a chat turn or task never waits on this
                 # loop, and stop the batch once the foreground needs us.
                 await asyncio.sleep(0)
@@ -426,6 +433,19 @@ class EventSummaryRunner:
         }
 
     async def aclose(self) -> None:
+        """Interrupt one active job and wait a bounded time for it to settle."""
+        self._closing = True
+        self._signal_cancel()
+        task = self._job_task
+        current = asyncio.current_task()
+        if task is not None and task is not current and not task.done():
+            _, pending = await asyncio.wait({task}, timeout=CLOSE_TIMEOUT_SECONDS)
+            if pending:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                with contextlib.suppress(BaseException):
+                    task.result()
         if self._owns_client:
             await self._client.aclose()
 
@@ -563,6 +583,7 @@ class EventSummaryRunner:
     # --- one job -----------------------------------------------------------
 
     async def _run_job(self, job: dict) -> dict:
+        self._job_task = asyncio.current_task()
         self._running = (job["id"], job["agent_id"])
         self._cancel_event = asyncio.Event()
         try:
@@ -570,6 +591,8 @@ class EventSummaryRunner:
         except Exception:  # noqa: BLE001 -- arbitrary failures become one safe code
             return self._retry_or_fail(job, "runner_error")
         finally:
+            if self._job_task is asyncio.current_task():
+                self._job_task = None
             self._running = None
             self._cancel_event = None
 
@@ -996,6 +1019,9 @@ class EventSummaryRunner:
         self._revalidate(job, event)
         if not activation:
             await asyncio.sleep(0)
+            # Revocation/cancellation can commit while this task yields. Never
+            # admit cached fragments using the pre-yield authorization alone.
+            self._revalidate(job, event)
 
     async def _between_calls(self, job: dict) -> None:
         await asyncio.sleep(0)

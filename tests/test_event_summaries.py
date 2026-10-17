@@ -389,6 +389,72 @@ def test_cancel_interrupts_an_in_flight_request(app, agent_id):
     assert app.work_events.get(event["id"])["summary_kind"] == "rule"
 
 
+def test_aclose_interrupts_a_hung_request_and_releases_runner(app, agent_id):
+    profile_id = with_profile(app)
+    _cid, event, _run = closed_event(app, agent_id)
+    started = asyncio.Event()
+
+    async def handler(request):
+        started.set()
+        await asyncio.sleep(30)  # cancellation must not wait for the transport
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text="")
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            runner = EventSummaryRunner(app, client=client)
+            enable(runner, agent_id, profile_id)
+            job = runner.enqueue(event["id"])
+            task = asyncio.create_task(runner.tick())
+            await asyncio.wait_for(started.wait(), 5)
+            await asyncio.wait_for(runner.aclose(), 2)
+            assert task.done()
+            result = await asyncio.wait_for(task, 1)
+            assert runner._running is None
+            assert runner._cancel_event is None
+            assert runner._job_task is None
+            return job, result
+
+    job, result = asyncio.run(scenario())
+    assert result["job"]["id"] == job["id"]
+    assert result["job"]["status"] == "cancelled"
+    assert result["job"]["error_code"] == "cancelled_by_owner"
+    assert app.work_events.get(event["id"])["summary_kind"] == "rule"
+
+
+def test_aclose_cleans_up_after_supervisor_cancels_its_worker(app, agent_id):
+    from lingnexus.background import Supervisor
+
+    profile_id = with_profile(app)
+    _cid, event, _run = closed_event(app, agent_id)
+    started = asyncio.Event()
+
+    async def handler(request):
+        started.set()
+        await asyncio.sleep(30)  # the outer task cancellation must also close HTTP
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text="")
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            runner = EventSummaryRunner(app, client=client)
+            enable(runner, agent_id, profile_id)
+            runner.enqueue(event["id"])
+            supervisor = Supervisor(app, foreground_busy=lambda: False)
+            supervisor.event_summaries = runner
+            # This is the shutdown order used by the application lifespan.
+            supervisor._work_task = asyncio.create_task(supervisor.run_now())
+            await asyncio.wait_for(started.wait(), 5)
+            await asyncio.wait_for(supervisor.aclose(), 2)
+            await asyncio.wait_for(runner.aclose(), 2)
+            assert runner._job_task is None
+            assert runner._running is None
+            assert runner._cancel_event is None
+            assert runner.jobs(event["id"])[0]["status"] == "retry"
+            assert await runner.tick() == {"status": "closed", "processed": 0}
+            assert client.is_closed is False
+
+    asyncio.run(scenario())
+
+
 def test_disabling_mid_job_prevents_any_activation(app, agent_id):
     profile_id = with_profile(app)
     _cid, event, _run = closed_event(app, agent_id)
@@ -421,6 +487,35 @@ def test_revoked_grant_stops_further_requests_mid_job(app, agent_id):
     runner.enqueue(event["id"])
     result = run(runner)
     assert len(requests) == 1, "a withdrawn grant must stop the next request"
+    assert result["job"]["status"] == "stale"
+    assert result["job"]["error_code"] == "event_changed"
+    assert app.work_events.get(event["id"])["summary_kind"] == "rule"
+
+
+def test_withdrawal_during_request_admission_sends_zero_http(app, agent_id):
+    profile_id = with_profile(app)
+    cid, event, _run = closed_event(app, agent_id)
+    ids = sources(app, agent_id, cid, event["id"])
+    requests = []
+    runner = runner_for(app, client_for([sse(summary_reply("不应发送", ids[:1]))], requests))
+    enable(runner, agent_id, profile_id, max_calls=1)
+    runner.enqueue(event["id"])
+
+    original = runner._revalidate
+    checks = []
+
+    def revoke_after_first_fence(job, current):
+        checks.append(True)
+        if len(checks) == 1:
+            # The request guard yields next. Commit the withdrawal while its
+            # first authorization snapshot has passed but HTTP has not started.
+            asyncio.get_running_loop().call_soon(revoke, app, agent_id)
+        original(job, current)
+
+    runner._revalidate = revoke_after_first_fence
+    result = run(runner)
+    assert len(checks) == 2, "the post-yield fence must run before HTTP"
+    assert requests == []
     assert result["job"]["status"] == "stale"
     assert result["job"]["error_code"] == "event_changed"
     assert app.work_events.get(event["id"])["summary_kind"] == "rule"
